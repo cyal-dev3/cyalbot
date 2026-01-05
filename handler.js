@@ -1092,20 +1092,41 @@ export async function participantsUpdate({ id, participants, action }) {
   const chat = global.db.data.chats[id] || {};
   const botTt = global.db.data.settings[mconn?.conn?.user?.jid] || {};
   let text = '';
+
+  // Normalizar participants: pueden venir como strings JSON o como JIDs directos
+  const normalizedParticipants = participants.map(p => {
+    if (typeof p === 'string') {
+      try {
+        const parsed = JSON.parse(p);
+        return parsed.phoneNumber || parsed.id || p;
+      } catch {
+        return p;
+      }
+    }
+    return p?.phoneNumber || p?.id || String(p);
+  });
+
   switch (action) {
     case 'add':
     case 'remove':
       if (chat.welcome && !chat?.isBanned) {
-        if (action === 'remove' && participants.includes(m?.conn?.user?.jid)) return;
+        if (action === 'remove' && normalizedParticipants.includes(m?.conn?.user?.jid)) return;
         const groupMetadata = await m?.conn?.groupMetadata(id) || (conn?.chats[id] || {}).metadata;
-        for (const user of participants) {
+        for (const user of normalizedParticipants) {
           try {
           let pp = await m?.conn?.profilePictureUrl(user, 'image').catch(_ => 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png?q=60');
            const apii = await mconn?.conn?.getFile(pp);
            const antiArab = JSON.parse(fs.readFileSync('./src/antiArab.json'));
            const userPrefix = antiArab.some((prefix) => user.startsWith(prefix));
-           const botTt2 = groupMetadata?.participants?.find((u) => m?.conn?.decodeJid(u.id) == m?.conn?.user?.jid) || {};
-           const isBotAdminNn = botTt2?.admin === 'admin' || false;
+           // Buscar al bot en los participantes del grupo (soporta tanto LID como JID)
+           const botJid = m?.conn?.user?.jid || m?.conn?.user?.id;
+           const botNumber = botJid?.split('@')[0]?.split(':')[0];
+           const botTt2 = groupMetadata?.participants?.find((u) => {
+             const odecoded = m?.conn?.decodeJid(u.id);
+             const participantNumber = odecoded?.split('@')[0]?.split(':')[0];
+             return participantNumber === botNumber || odecoded === botJid;
+           }) || {};
+           const isBotAdminNn = botTt2?.admin === 'admin' || botTt2?.admin === 'superadmin' || false;
            text = (action === 'add' ? (chat.sWelcome || tradutor.texto1 || conn.welcome || 'Welcome, @user!').replace('@subject', await m?.conn?.getName(id)).replace('@desc', groupMetadata?.desc?.toString() || '*𝚂𝙸𝙽 𝙳𝙴𝚂𝙲𝚁𝙸𝙿𝙲𝙸𝙾𝙽*').replace('@user', '@' + user.split('@')[0]) :
             (chat.sBye || tradutor.texto2 || conn.bye || 'Bye, @user!')).replace('@user', '@' + user.split('@')[0]);
             if (userPrefix && chat.antiArab && botTt.restrict && isBotAdminNn && action === 'add') {
@@ -1132,7 +1153,7 @@ export async function participantsUpdate({ id, participants, action }) {
       if (!text) {
         text = (chat?.sDemote || tradutor.texto4 || conn?.sdemote || '@user ```is no longer Admin```');
       }
-      text = text.replace('@user', '@' + participants[0].split('@')[0]);
+      text = text.replace('@user', '@' + normalizedParticipants[0].split('@')[0]);
       if (chat.detect && !chat?.isBanned) {
         mconn?.conn?.sendMessage(id, { text, mentions: mconn?.conn?.parseMention(text) });
       }
