@@ -1,11 +1,11 @@
 {
   "plugins": {
     "menu": {
-      "menu_header": "╭═══〘 ✯✯✯✯✯✯✯✯✯ 〙══╮\n║ ◉— *𝐓𝐡𝐞 𝐌𝐲𝐬𝐭𝐢𝐜 - 𝐁𝐨𝐭* —◉\n║≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡║\n║➤ *Hello,* @username\n║≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡║\n║➤ *Owner:* @author\n║➤ *Number:* wa.me/@owner\n║➤ *PayPal:* paypal.me/BrunoSob\n║➤ *Date:* @week, @date\n║➤ *Uptime:* @uptime\n║➤ *Users:* @rtotal\n║➤ *Registered:* @rtotalreg\n╰═══╡✯✯✯✯✯✯✯✯✯╞═══╯",
-      "user_info": "┏━━━━━━━━━━━━━━━━┓\n┃ *< USER INFO />*\n┃≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡┃\n┣ ✯ *Level:* @level\n┣ ✯ *Experience:* @exp\n┣ ✯ *Rank:* @role\n┣ ✯ *Diamonds:* @limit\n┣ ✯ *MysticCoins:* @money\n┣ ✯ *Tokens:* @joincount\n┣ ✯ *Premium:* @premium\n┗━━━━━━━━━━━━━━━━┛\n",
-      "section_header": "┏━━━━━━━━━━━━━━━━┓\n┃ @category\n┃≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡┃",
-      "command_item": "┣ ඬ⃟  □ @cmd @islimit",
-      "section_footer": "┗━━━━━━━━━━━━━━━━┛\n",
+      "menu_header": "╭═══〘 *Cyal Bot* 〙═══╮\n║ Hello, @username\n║─────────────────\n║ Owner: @author\n║ Number: wa.me/@owner\n║ Date: @week, @date\n║ Uptime: @uptime\n║ Users: @rtotal\n║ Registered: @rtotalreg\n╰═══════════════════╯",
+      "user_info": "╭─── Your Info ───╮\n│ Level: @level\n│ XP: @exp\n│ Rank: @role\n│ Diamonds: @limit\n│ Coins: @money\n│ Tokens: @joincount\n│ Premium: @premium\n╰─────────────────╯\n",
+      "section_header": "╭─ @category ─╮",
+      "command_item": "│ @cmd @islimit",
+      "section_footer": "╰─────────────╯\n",
       "error_message": "[ ❌ ] An error occurred while generating the menu:",
       "premium": {
         "yes": "✅",

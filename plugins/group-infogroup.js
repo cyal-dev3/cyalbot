@@ -4,7 +4,7 @@ const handler = async (m, {conn, participants, groupMetadata}) => {
   const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
   const tradutor = _translate.plugins.gc_infogroup
 
-  const pp = await conn.profilePictureUrl(m.chat, 'image') || imagen1 ||'./src/avatar_contact.png';
+  const pp = await conn.profilePictureUrl(m.chat, 'image').catch(() => null);
   const {antiToxic, antiTraba, antidelete, antiviewonce, isBanned, welcome, detect, detect2, sWelcome, sBye, sPromote, sDemote, antiLink, antiLink2, modohorny, autosticker, modoadmin, audios, delete: del} = global.db.data.chats[m.chat];
   const groupAdmins = participants.filter((p) => p.admin);
   const listAdmin = groupAdmins.map((v, i) => `${i + 1}. @${v.id.split('@')[0]}`).join('\n');
@@ -44,7 +44,11 @@ ${tradutor.texto1[19]}  ${antiToxic ? '✅' : '❌'}
 ${tradutor.texto1[20]}  ${antiTraba ? '✅' : '❌'} 
 ${tradutor.texto1[21]}  ${modoadmin ? '✅' : '❌'} 
 `.trim();
-  conn.sendFile(m.chat, pp, 'error.jpg', text, m, false, {mentions: [...groupAdmins.map((v) => v.id), owner]});
+  if (pp) {
+    conn.sendFile(m.chat, pp, 'group.jpg', text, m, false, {mentions: [...groupAdmins.map((v) => v.id), owner]});
+  } else {
+    conn.sendMessage(m.chat, {text: text, mentions: [...groupAdmins.map((v) => v.id), owner]}, {quoted: m});
+  }
 };
 handler.help = ['infogrup'];
 handler.tags = ['group'];

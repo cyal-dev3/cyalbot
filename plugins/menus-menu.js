@@ -354,12 +354,7 @@ const handler = async (m, { conn, usedPrefix, __dirname, isPrems }) => {
         
         text = text.replace(new RegExp(`%(${Object.keys(replace).sort((a, b) => b.length - a.length).join`|`})`, 'g'), (_, name) => '' + replace[name]);
 
-        let pp;
-        const imageMap = {'es': global.imagen1, 'en': global.imagen4, 'ar': global.imagen5 };
-        
-        pp = imageMap[idioma.toLowerCase()] || global.imagen1;
-
-        await conn.sendMessage(m.chat, { image: pp , caption: text.trim(), mentions: [m.sender] }, { quoted: m });
+        await conn.sendMessage(m.chat, { text: text.trim(), mentions: [m.sender] }, { quoted: m });
     } catch (e) {
         await m.reply(`${tradutor?.error_message} ${e.message}`);
     }

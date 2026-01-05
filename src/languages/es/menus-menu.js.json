@@ -1,13 +1,13 @@
 {
     "plugins": {
         "menu": {
-            "menu_header": "╭═══〘 ✯✯✯✯✯✯✯✯✯ 〙══╮\n║ ◉— *𝐓𝐡𝐞 𝐌𝐲𝐬𝐭𝐢𝐜 - 𝐁𝐨𝐭* —◉\n║≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡║\n║➤ *Hola,* @username\n║≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡║\n║➤ *Owner:* @author\n║➤ *Numero:* wa.me/@owner\n║➤ *PayPal:* paypal.me/BrunoSob\n║➤ *Fecha:* @week, @date\n║➤ *Tiempo activo:* @uptime\n║➤ *Usuarios:* @rtotal\n║➤ *Registrados:* @rtotalreg\n╰═══╡✯✯✯✯✯✯✯✯✯╞═══╯",
+            "menu_header": "╭═══〘 *Cyal Bot* 〙═══╮\n║ Hola, @username\n║─────────────────\n║ Owner: @author\n║ Numero: wa.me/@owner\n║ Fecha: @week, @date\n║ Uptime: @uptime\n║ Usuarios: @rtotal\n║ Registrados: @rtotalreg\n╰═══════════════════╯",
             
-            "user_info": "┏━━━━━━━━━━━━━━━━┓\n┃ *< INFO DEL USUARIO />*\n┃≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡┃\n┣ ✯ *Nivel:* @level\n┣ ✯ *Experiencia:* @exp\n┣ ✯ *Rango:* @role\n┣ ✯ *Diamantes:* @limit\n┣ ✯ *MysticCoins:* @money\n┣ ✯ *Tokens:* @joincount\n┣ ✯ *Premium:* @premium\n┗━━━━━━━━━━━━━━━━┛\n",
+            "user_info": "╭─── Tu Info ───╮\n│ Nivel: @level\n│ XP: @exp\n│ Rango: @role\n│ Diamantes: @limit\n│ Coins: @money\n│ Tokens: @joincount\n│ Premium: @premium\n╰───────────────╯\n",
             
-            "section_header": "┏━━━━━━━━━━━━━━━━┓\n┃ @category\n┃≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡┃",
-            "command_item": "┣ ඬ⃟  □ @cmd @islimit",
-            "section_footer": "┗━━━━━━━━━━━━━━━━┛\n",
+            "section_header": "╭─ @category ─╮",
+            "command_item": "│ @cmd @islimit",
+            "section_footer": "╰─────────────╯\n",
             
             "error_message": "[ ❌ ] Ocurrió un error al generar el menú:",
             
