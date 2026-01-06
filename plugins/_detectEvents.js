@@ -61,6 +61,33 @@ export async function before(m, { conn, participants }) {
       m.messageStubType = 32;
     }
 
+    // Si es un evento de promote/demote, invalidar el caché del grupo
+    // para que el bot obtenga la metadata fresca la próxima vez
+    const isAdminChangeEvent = m.messageStubType === 29 || m.messageStubType === 30 ||
+                                m.messageStubType === 'GROUP_PARTICIPANT_PROMOTE' ||
+                                m.messageStubType === 'GROUP_PARTICIPANT_DEMOTE';
+
+    if (isAdminChangeEvent) {
+      // Invalidar caché local
+      groupMetadataCache.delete(m.chat);
+
+      // Invalidar caché de conn.chats
+      if (conn.chats && conn.chats[m.chat]) {
+        delete conn.chats[m.chat].metadata;
+      }
+
+      // Forzar actualización de metadata del grupo
+      try {
+        const freshMetadata = await conn.groupMetadata(m.chat);
+        if (conn.chats && conn.chats[m.chat]) {
+          conn.chats[m.chat].metadata = freshMetadata;
+        }
+        groupMetadataCache.set(m.chat, freshMetadata);
+      } catch (e) {
+        console.error('[DETECT-EVENTS] Error actualizando metadata del grupo:', e);
+      }
+    }
+
     // Resolver el sender usando el sistema LID mejorado
     const realSender = await resolveLidFromCache(m?.sender, m?.chat, conn);
 
