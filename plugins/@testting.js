@@ -7,6 +7,7 @@ import NodeID3 from 'node-id3';
 import fs from 'fs';
 import { load } from 'cheerio';
 import ytmp33 from '../src/libraries/ytmp33.js';
+import { ogmp3 } from '../src/libraries/youtubedl.js';
 const { generateWAMessageFromContent, prepareWAMessageMedia } = (await import("baileys")).default;
 
 const AUDIO_SIZE_LIMIT = 50 * 1024 * 1024;
@@ -68,11 +69,28 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
             let audioBuffer = null;
             let errorMessages = [];
 
-            // 1. Intentar ssvid.net primero
+            // 1. Intentar ogmp3 (apiapi.lat) - MÁS CONFIABLE
+            if (!audioBuffer) {
+                try {
+                    console.log('🎵 Intentando ogmp3 (apiapi.lat)...');
+                    const ogResult = await ogmp3.download(video.url, '320', 'audio');
+                    if (ogResult?.status && ogResult?.result?.download) {
+                        audioBuffer = await downloadAndValidateAudio(ogResult.result.download);
+                        console.log('✅ ogmp3 exitoso, tamaño:', audioBuffer.length);
+                    } else {
+                        throw new Error(ogResult?.error || 'No se obtuvo resultado válido');
+                    }
+                } catch (e) {
+                    errorMessages.push(`ogmp3: ${e.message}`);
+                    console.log('❌ ogmp3 falló:', e.message);
+                }
+            }
+
+            // 2. Fallback: ssvid.net
             if (!audioBuffer) {
                 try {
                     console.log('🎵 Intentando ssvid.net...');
-                    const downloadResult = await yt.download(video.url, format);
+                    const downloadResult = await yt.download(video.url, 'mp3');
                     if (downloadResult?.dlink) {
                         audioBuffer = await downloadAndValidateAudio(downloadResult.dlink);
                         console.log('✅ ssvid.net exitoso, tamaño:', audioBuffer.length);
@@ -85,7 +103,7 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
                 }
             }
 
-            // 2. Fallback: ytmp33 (notube.net)
+            // 3. Fallback: ytmp33 (notube.net)
             if (!audioBuffer) {
                 try {
                     console.log('🎵 Intentando ytmp33 (notube.net)...');

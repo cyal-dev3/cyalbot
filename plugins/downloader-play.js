@@ -2,6 +2,7 @@ import fs from 'fs'
 import fetch from 'node-fetch'
 import yts from 'yt-search'
 import ytmp33 from '../src/libraries/ytmp33.js'
+import { ogmp3 } from '../src/libraries/youtubedl.js'
 
 // Función para descargar audio como buffer y validar
 async function downloadAndValidate(url) {
@@ -48,22 +49,39 @@ let handler = async (m, { conn, args, text, usedPrefix, command }) => {
     let audioBuffer = null;
     let errorMessages = [];
 
-    // Intento 1: ytmp33 (notube.net)
+    // Intento 1: ogmp3 (apiapi.lat) - MÁS CONFIABLE
     try {
-      console.log('🎵 Intentando ytmp33 (notube.net)...');
-      const audiodlp = await ytmp33(videoUrl);
-      if (audiodlp?.status && audiodlp?.resultados?.descargar) {
-        audioBuffer = await downloadAndValidate(audiodlp.resultados.descargar);
-        console.log('✅ ytmp33 exitoso, tamaño:', audioBuffer.length);
+      console.log('🎵 Intentando ogmp3 (apiapi.lat)...');
+      const ogResult = await ogmp3.download(videoUrl, '320', 'audio');
+      if (ogResult?.status && ogResult?.result?.download) {
+        audioBuffer = await downloadAndValidate(ogResult.result.download);
+        console.log('✅ ogmp3 exitoso, tamaño:', audioBuffer.length);
       } else {
-        throw new Error('ytmp33 no devolvió resultado válido');
+        throw new Error(ogResult?.error || 'No se obtuvo resultado válido');
       }
     } catch (error) {
-      errorMessages.push(`ytmp33: ${error.message}`);
-      console.log('❌ Error en ytmp33:', error.message);
+      errorMessages.push(`ogmp3: ${error.message}`);
+      console.log('❌ Error en ogmp3:', error.message);
     }
 
-    // Intento 2: Ruby-core
+    // Intento 2: ytmp33 (notube.net)
+    if (!audioBuffer) {
+      try {
+        console.log('🎵 Intentando ytmp33 (notube.net)...');
+        const audiodlp = await ytmp33(videoUrl);
+        if (audiodlp?.status && audiodlp?.resultados?.descargar) {
+          audioBuffer = await downloadAndValidate(audiodlp.resultados.descargar);
+          console.log('✅ ytmp33 exitoso, tamaño:', audioBuffer.length);
+        } else {
+          throw new Error('ytmp33 no devolvió resultado válido');
+        }
+      } catch (error) {
+        errorMessages.push(`ytmp33: ${error.message}`);
+        console.log('❌ Error en ytmp33:', error.message);
+      }
+    }
+
+    // Intento 3: Ruby-core
     if (!audioBuffer) {
       try {
         console.log('🎵 Intentando Ruby-core...');
