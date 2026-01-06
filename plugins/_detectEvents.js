@@ -10,7 +10,7 @@ const groupMetadataCache = new Map();
 
 export async function before(m, { conn, participants }) {
   if (!m?.messageStubType || !m?.isGroup || m?.messageStubType == 2) return;
-  
+
   const safeOperation = async (operation, fallback = null) => {
     try {
       return await operation();
@@ -20,16 +20,50 @@ export async function before(m, { conn, participants }) {
     }
   };
 
-  try {     
+  // Función auxiliar para normalizar números de teléfono mexicanos (52 vs 521)
+  const normalizePhoneNumber = (phone) => {
+    if (!phone) return phone;
+    // Remover el sufijo @s.whatsapp.net si existe
+    let number = phone.replace(/@s\.whatsapp\.net$/, '');
+    // Normalizar números mexicanos: 521XXXXXXXXXX -> 52XXXXXXXXXX
+    if (number.startsWith('521') && number.length === 13) {
+      number = '52' + number.slice(3);
+    }
+    return number;
+  };
+
+  // Función auxiliar para parsear messageStubParameters que vienen como JSON
+  const parseStubParameter = (param) => {
+    if (!param) return null;
+    try {
+      // Intentar parsear como JSON
+      const parsed = JSON.parse(param);
+      // Si tiene phoneNumber, usarlo y normalizarlo
+      if (parsed.phoneNumber) {
+        const normalized = normalizePhoneNumber(parsed.phoneNumber);
+        return normalized + '@s.whatsapp.net';
+      }
+      // Si tiene id (LID), devolverlo
+      if (parsed.id) {
+        return parsed.id;
+      }
+      return param;
+    } catch {
+      // Si no es JSON, tratar como JID directo
+      return param;
+    }
+  };
+
+  try {
     if (m.messageStubType === 'GROUP_PARTICIPANT_REMOVE') {
       m.messageStubType = 28;
     } else if (m.messageStubType === 'GROUP_PARTICIPANT_LEAVE') {
       m.messageStubType = 32;
     }
-    
+
     // Resolver el sender usando el sistema LID mejorado
-    const realSender = await resolveLidFromCache(m?.sender, m?.chat);
-    
+    const realSender = await resolveLidFromCache(m?.sender, m?.chat, conn);
+
     const idioma = global.db?.data?.users[realSender]?.language || global.defaultLenguaje;
     const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}/_detectEvents.js.json`));
     const tradutor = _translate._detectevents;
@@ -45,21 +79,30 @@ export async function before(m, { conn, participants }) {
         groupMetadataCache.set(m.chat, groupMetadata);
         groupName = groupMetadata.subject || "el grupo";
         pp = await safeOperation(() => conn.profilePictureUrl(m.chat, 'image').catch(() => pp), pp);
-        img = await safeOperation(() => fetch(pp).then(res => res.buffer()));
+        img = await safeOperation(async () => {
+          const res = await fetch(pp);
+          const arrayBuffer = await res.arrayBuffer();
+          return Buffer.from(arrayBuffer);
+        });
       }
     } else {
       groupName = groupMetadata.subject || "el grupo";
       pp = await safeOperation(() => conn.profilePictureUrl(m.chat, 'image').catch(() => pp), pp);
-      img = await safeOperation(() => fetch(pp).then(res => res.buffer()));
+      img = await safeOperation(async () => {
+        const res = await fetch(pp);
+        const arrayBuffer = await res.arrayBuffer();
+        return Buffer.from(arrayBuffer);
+      });
     }
 
     const chat = global?.db?.data?.chats[m.chat];
     const groupAdmins = participants.filter((p) => p.admin);
-    
-    // Resolver todos los parámetros del stub usando el sistema LID
+
+    // Resolver todos los parámetros del stub - parseando JSON si es necesario
     const resolvedStubParameters = await Promise.all(
       (m.messageStubParameters || []).map(async (param) => {
-        return await resolveLidFromCache(param, m.chat);
+        const parsedParam = parseStubParameter(param);
+        return await resolveLidFromCache(parsedParam, m.chat, conn);
       })
     );
     
@@ -71,7 +114,7 @@ export async function before(m, { conn, participants }) {
       switch (m.messageStubType) {
         case 29:
           await safeOperation(async () => {
-            const userDisplay = getUserDisplayName(resolvedStubParameters[0]);
+            const userDisplay = getUserDisplayName(resolvedStubParameters[0], conn);
             let txt = `${tradutor.promote.header}\n\n${tradutor.promote.group.replace('@group', groupName)}\n${tradutor.promote.new_admin.replace('@user', userDisplay)}\n${tradutor.promote.executed_by.replace('@user', `@${realSender.split('@')[0]}`)}`;
             await conn.sendMessage(m.chat, { image: img || {url: pp}, caption: txt, mentions: mentionsString }, { quoted: fkontak2 });
           });
@@ -79,7 +122,7 @@ export async function before(m, { conn, participants }) {
 
         case 30:
           await safeOperation(async () => {
-            const userDisplay = getUserDisplayName(resolvedStubParameters[0]);
+            const userDisplay = getUserDisplayName(resolvedStubParameters[0], conn);
             let txt = `${tradutor.demote.header}\n\n${tradutor.demote.group.replace('@group', groupName)}\n${tradutor.demote.removed_admin.replace('@user', userDisplay)}\n${tradutor.demote.executed_by.replace('@user', `@${realSender.split('@')[0]}`)}`;
             await conn.sendMessage(m.chat, { image: img || {url: pp}, caption: txt, mentions: mentionsString }, { quoted: fkontak2 });
           });
@@ -87,7 +130,7 @@ export async function before(m, { conn, participants }) {
 
         case 27:
           await safeOperation(async () => {
-            const userDisplay = getUserDisplayName(resolvedStubParameters[0]);
+            const userDisplay = getUserDisplayName(resolvedStubParameters[0], conn);
             let txt = `${tradutor.member_add.header}\n\n${tradutor.member_add.group.replace('@group', groupName)}\n`;
             if (!realSender.endsWith('@g.us')) {
               txt += `${tradutor.member_add.added_user.replace('@user', userDisplay)}\n${tradutor.member_add.added_by.replace('@user', `@${realSender.split('@')[0]}`)}`;
@@ -100,7 +143,7 @@ export async function before(m, { conn, participants }) {
 
         case 28:
           await safeOperation(async () => {
-            const userDisplay = getUserDisplayName(resolvedStubParameters[0]);
+            const userDisplay = getUserDisplayName(resolvedStubParameters[0], conn);
             let txt = `${tradutor.member_remove.header}\n\n${tradutor.member_remove.group.replace('@group', groupName)}\n`;
             const isSelfRemoval = resolvedStubParameters[0] === realSender;
             if (!realSender.endsWith('@g.us')) {
@@ -118,7 +161,7 @@ export async function before(m, { conn, participants }) {
 
         case 32:
           await safeOperation(async () => {
-            const userDisplay = getUserDisplayName(resolvedStubParameters[0]);
+            const userDisplay = getUserDisplayName(resolvedStubParameters[0], conn);
             let txt = `${tradutor.member_remove.header}\n\n${tradutor.member_remove.group.replace('@group', groupName)}\n`;
             txt += `${tradutor.member_remove.self_removed.replace('@user', userDisplay)}`;
             await conn.sendMessage(m.chat, { image: { url: pp }, caption: txt, mentions: [resolvedStubParameters[0]] }, { quoted: fkontak2 });

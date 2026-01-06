@@ -776,10 +776,9 @@ async function connectionUpdate(update) {
       }
       await global.reloadHandler(true).catch(console.error);
     } else if (reason === DisconnectReason.connectionReplaced) {
-      if (shouldLogError('connectionReplaced')) {
-        conn.logger.error(`[ ⚠️ ] Conexión reemplazada, se ha abierto otra nueva sesión. Por favor, cierra la sesión actual primero.`);
-      }
-      await global.reloadHandler(true).catch(console.error);
+      conn.logger.error(`[ ⚠️ ] Conexión reemplazada, se ha abierto otra nueva sesión. Por favor, cierra la sesión actual primero.`);
+      conn.logger.error(`[ ⚠️ ] El bot se detendrá. Cierra la otra sesión y vuelve a iniciar.`);
+      process.exit(1); // Detener el proceso en lugar de reconectar en loop
     } else if (reason === DisconnectReason.loggedOut) {
       if (shouldLogError('loggedOut')) {
         conn.logger.error(`[ ⚠️ ] Conexion cerrada, por favor elimina la carpeta ${global.authFile} y escanea nuevamente.`);
