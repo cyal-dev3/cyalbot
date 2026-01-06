@@ -107,7 +107,7 @@ let handler = async (m, { conn, args, text, usedPrefix, command }) => {
       }
     }
 
-    // Intento 4: cobalt.tools API (nuevo fallback)
+    // Intento 4: cobalt.tools API
     if (!audioBuffer) {
       try {
         console.log('🎵 Intentando cobalt.tools...');
@@ -139,6 +139,63 @@ let handler = async (m, { conn, args, text, usedPrefix, command }) => {
       } catch (err4) {
         errorMessages.push(`cobalt: ${err4.message}`);
         console.log('❌ Error en cobalt.tools:', err4.message);
+      }
+    }
+
+    // Intento 5: nyxs.pw API
+    if (!audioBuffer) {
+      try {
+        console.log('🎵 Intentando nyxs.pw...');
+        const nyxs = await (
+          await fetch(`https://api.nyxs.pw/dl/yt-direct?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 })
+        ).json();
+        if (nyxs?.status && nyxs?.result?.audioUrl) {
+          audioBuffer = await downloadAndValidate(nyxs.result.audioUrl);
+          console.log('✅ nyxs.pw exitoso, tamaño:', audioBuffer.length);
+        } else {
+          throw new Error('nyxs.pw no devolvió resultado válido');
+        }
+      } catch (err5) {
+        errorMessages.push(`nyxs: ${err5.message}`);
+        console.log('❌ Error en nyxs.pw:', err5.message);
+      }
+    }
+
+    // Intento 6: vreden API
+    if (!audioBuffer) {
+      try {
+        console.log('🎵 Intentando vreden...');
+        const vreden = await (
+          await fetch(`https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 })
+        ).json();
+        if (vreden?.status && vreden?.result?.download?.url) {
+          audioBuffer = await downloadAndValidate(vreden.result.download.url);
+          console.log('✅ vreden exitoso, tamaño:', audioBuffer.length);
+        } else {
+          throw new Error('vreden no devolvió resultado válido');
+        }
+      } catch (err6) {
+        errorMessages.push(`vreden: ${err6.message}`);
+        console.log('❌ Error en vreden:', err6.message);
+      }
+    }
+
+    // Intento 7: lolhuman API
+    if (!audioBuffer) {
+      try {
+        console.log('🎵 Intentando lolhuman...');
+        const lol = await (
+          await fetch(`https://api.lolhuman.xyz/api/ytaudio?apikey=GataDios&url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 })
+        ).json();
+        if (lol?.status === 200 && lol?.result?.link) {
+          audioBuffer = await downloadAndValidate(lol.result.link);
+          console.log('✅ lolhuman exitoso, tamaño:', audioBuffer.length);
+        } else {
+          throw new Error('lolhuman no devolvió resultado válido');
+        }
+      } catch (err7) {
+        errorMessages.push(`lolhuman: ${err7.message}`);
+        console.log('❌ Error en lolhuman:', err7.message);
       }
     }
 

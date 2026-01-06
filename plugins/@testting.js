@@ -152,6 +152,63 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
                 }
             }
 
+            // 5. Fallback: yt-dlp via API alternativa
+            if (!audioBuffer) {
+                try {
+                    console.log('🎵 Intentando API nyxs.pw...');
+                    const nyxs = await (
+                        await fetch(`https://api.nyxs.pw/dl/yt-direct?url=${encodeURIComponent(video.url)}`)
+                    ).json();
+                    if (nyxs?.status && nyxs?.result?.audioUrl) {
+                        audioBuffer = await downloadAndValidateAudio(nyxs.result.audioUrl);
+                        console.log('✅ nyxs.pw exitoso, tamaño:', audioBuffer.length);
+                    } else {
+                        throw new Error('No se obtuvo resultado válido');
+                    }
+                } catch (e) {
+                    errorMessages.push(`nyxs: ${e.message}`);
+                    console.log('❌ nyxs.pw falló:', e.message);
+                }
+            }
+
+            // 6. Fallback: vreden API
+            if (!audioBuffer) {
+                try {
+                    console.log('🎵 Intentando API vreden...');
+                    const vreden = await (
+                        await fetch(`https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(video.url)}`)
+                    ).json();
+                    if (vreden?.status && vreden?.result?.download?.url) {
+                        audioBuffer = await downloadAndValidateAudio(vreden.result.download.url);
+                        console.log('✅ vreden exitoso, tamaño:', audioBuffer.length);
+                    } else {
+                        throw new Error('No se obtuvo resultado válido');
+                    }
+                } catch (e) {
+                    errorMessages.push(`vreden: ${e.message}`);
+                    console.log('❌ vreden falló:', e.message);
+                }
+            }
+
+            // 7. Fallback: lolhuman API
+            if (!audioBuffer) {
+                try {
+                    console.log('🎵 Intentando API lolhuman...');
+                    const lol = await (
+                        await fetch(`https://api.lolhuman.xyz/api/ytaudio?apikey=GataDios&url=${encodeURIComponent(video.url)}`)
+                    ).json();
+                    if (lol?.status === 200 && lol?.result?.link) {
+                        audioBuffer = await downloadAndValidateAudio(lol.result.link);
+                        console.log('✅ lolhuman exitoso, tamaño:', audioBuffer.length);
+                    } else {
+                        throw new Error('No se obtuvo resultado válido');
+                    }
+                } catch (e) {
+                    errorMessages.push(`lolhuman: ${e.message}`);
+                    console.log('❌ lolhuman falló:', e.message);
+                }
+            }
+
             if (!audioBuffer) {
                 throw new Error(`No se pudo obtener el audio de ninguna API. Errores: ${errorMessages.join(', ')}`);
             }
