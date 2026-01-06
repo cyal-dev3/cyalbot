@@ -5,16 +5,12 @@ import fetch from 'node-fetch';
 import axios from 'axios';
 import NodeID3 from 'node-id3';
 import fs from 'fs';
-import { spawn } from 'child_process';
 import { load } from 'cheerio';
-import { tmpdir } from 'os';
-import { join } from 'path';
 import ytmp33 from '../src/libraries/ytmp33.js';
 const { generateWAMessageFromContent, prepareWAMessageMedia } = (await import("baileys")).default;
 
 const AUDIO_SIZE_LIMIT = 50 * 1024 * 1024;
 const VIDEO_SIZE_LIMIT = 100 * 1024 * 1024;
-const TMP_DIR = join(process.cwd(), './src/tmp');
 
 let handler = async (m, { conn, args, usedPrefix, command }) => {
     const _translate = JSON.parse(fs.readFileSync(`./src/languages/es/${m.plugin}.json`));
@@ -124,43 +120,59 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
                 fetch(video.thumbnail).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab))
             ]);
 
-            let lyricsData = await Genius.searchLyrics(video.title).catch(() => null);
-            if (!lyricsData && !isYouTubeUrl) {
-                lyricsData = await Genius.searchLyrics(query).catch(() => null);
-            }
-
-            const formattedLyrics = lyricsData ? formatLyrics(lyricsData.lyrics) : null;
-            
-            const tags = {
-                title: video.title,
-                artist: video.author.name,
-                album: 'YouTube Audio',
-                APIC: thumbnailBuffer,
-                year: new Date().getFullYear(),
-                comment: {
-                    language: 'spa',
-                    text: `🟢 ᴅᴇsᴄᴀʀɢᴀ ᴘᴏʀ @ʙʀᴜɴᴏsᴏʙʀɪɴᴏ 🟢\n\nVideo De YouTube: ${video.url}`
-                }
-            };
-
-            if (formattedLyrics) {
-                tags.unsynchronisedLyrics = {
-                    language: 'spa',
-                    text: `🟢 ᴅᴇsᴄᴀʀɢᴀ ᴘᴏʀ @ʙʀᴜɴᴏsᴏʙʀɪɴᴏ 🟢\n\nTitulo: ${video.title}\n\n${formattedLyrics}`
-                };
-            }
-
-            const taggedBuffer = NodeID3.write(tags, audioBuffer);
             const fileName = `${sanitizeFileName(video.title.substring(0, 64))}.mp3`;
 
+            // Verificar si es un MP3 válido (comienza con ID3 tag o frame sync)
+            const isValidMp3 = (audioBuffer[0] === 0x49 && audioBuffer[1] === 0x44 && audioBuffer[2] === 0x33) || // ID3
+                              (audioBuffer[0] === 0xFF && (audioBuffer[1] & 0xE0) === 0xE0); // Frame sync
+
+            let finalBuffer = audioBuffer;
+
+            if (isValidMp3) {
+                try {
+                    let lyricsData = await Genius.searchLyrics(video.title).catch(() => null);
+                    if (!lyricsData && !isYouTubeUrl) {
+                        lyricsData = await Genius.searchLyrics(query).catch(() => null);
+                    }
+
+                    const formattedLyrics = lyricsData ? formatLyrics(lyricsData.lyrics) : null;
+
+                    const tags = {
+                        title: video.title,
+                        artist: video.author.name,
+                        album: 'YouTube Audio',
+                        APIC: thumbnailBuffer,
+                        year: new Date().getFullYear(),
+                        comment: {
+                            language: 'spa',
+                            text: `🟢 ᴅᴇsᴄᴀʀɢᴀ ᴘᴏʀ @ʙʀᴜɴᴏsᴏʙʀɪɴᴏ 🟢\n\nVideo De YouTube: ${video.url}`
+                        }
+                    };
+
+                    if (formattedLyrics) {
+                        tags.unsynchronisedLyrics = {
+                            language: 'spa',
+                            text: `🟢 ᴅᴇsᴄᴀʀɢᴀ ᴘᴏʀ @ʙʀᴜɴᴏsᴏʙʀɪɴᴏ 🟢\n\nTitulo: ${video.title}\n\n${formattedLyrics}`
+                        };
+                    }
+
+                    finalBuffer = NodeID3.write(tags, audioBuffer);
+                } catch (tagError) {
+                    console.log('⚠️ No se pudieron agregar tags ID3, enviando audio sin tags');
+                    finalBuffer = audioBuffer;
+                }
+            } else {
+                console.log('⚠️ Audio no es MP3 válido, enviando sin modificar');
+            }
+
             try {
-                const audioSize = taggedBuffer.length;
+                const audioSize = finalBuffer.length;
                 const shouldSendAsDocument = audioSize > AUDIO_SIZE_LIMIT;
 
                 if (shouldSendAsDocument) {
-                    const documentMedia = await prepareWAMessageMedia({ document: taggedBuffer }, { upload: conn.waUploadToServer });
+                    const documentMedia = await prepareWAMessageMedia({ document: finalBuffer }, { upload: conn.waUploadToServer });
                     const thumbnailMedia = await prepareWAMessageMedia({ image: thumbnailBuffer }, { upload: conn.waUploadToServer });
-                    
+
                     const msg = generateWAMessageFromContent(m.chat, {
                         documentMessage: {
                             ...documentMedia.documentMessage,
@@ -174,79 +186,24 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
                             }
                         }
                     }, { quoted: m });
-                    
+
                     await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id });
                 } else {
-                    const sentMsg = await conn.sendMessage(m.chat, { audio: taggedBuffer, fileName: `${sanitizeFileName(video.title)}.mp3`, mimetype: 'audio/mpeg' }, { quoted: m });
-                    
-                    setTimeout(async () => {
-                        try {
-                            if (sentMsg && sentMsg.message) {
-                                const audioMsg = sentMsg.message.audioMessage;
-                                const duration = audioMsg?.seconds || 0;
-                                
-                                
-                                if (duration === 0 || !duration) {
-                                    
-                                    try {
-                                        const repairedBuffer = await repairAudioBuffer(taggedBuffer, fileName);
-                                        
-                                        if (repairedBuffer) {
-                                            
-                                            const repairedSize = repairedBuffer.length;
-                                            const shouldSendRepairedAsDocument = repairedSize > AUDIO_SIZE_LIMIT;
-                                            
-                                            if (!shouldSendRepairedAsDocument) {
-                                                await conn.sendMessage(m.chat, { audio: repairedBuffer, fileName: `${sanitizeFileName(video.title)}.mp3`, mimetype: 'audio/mpeg' }, { quoted: sentMsg });
-                                            } else {
-                                                const documentMedia = await prepareWAMessageMedia({ document: repairedBuffer }, { upload: conn.waUploadToServer });
-                                                const thumbnailMedia = await prepareWAMessageMedia({ image: thumbnailBuffer }, { upload: conn.waUploadToServer });
-                                                
-                                                const repairMsg = generateWAMessageFromContent(m.chat, {
-                                                    documentMessage: {
-                                                        ...documentMedia.documentMessage,
-                                                        fileName: `${sanitizeFileName(video.title.substring(0, 64))}.mp3`,
-                                                        mimetype: 'audio/mpeg',
-                                                        jpegThumbnail: thumbnailMedia.imageMessage.jpegThumbnail,
-                                                        contextInfo: {
-                                                            mentionedJid: [],
-                                                            forwardingScore: 0,
-                                                            isForwarded: false
-                                                        }
-                                                    }
-                                                }, { quoted: sentMsg });
-                                                
-                                                await conn.relayMessage(m.chat, repairMsg.message, { messageId: repairMsg.key.id });
-                                            }
-                                        } else {
-                                            console.log('DEBUG: repairAudioBuffer retornó null o undefined');
-                                        }
-                                    } catch (repairError) {
-                                        console.log('DEBUG: Error en repairAudioBuffer:', repairError.message);
-                                    }
-                                } else {
-                                }
-                            } else {
-                                console.log('DEBUG: sentMsg o sentMsg.message es undefined');
-                            }
-                        } catch (verifyError) {
-                            console.log('DEBUG: Error en verificación de duración:', verifyError.message);
-                        }
-                    }, 2000);
+                    await conn.sendMessage(m.chat, { audio: finalBuffer, fileName: `${sanitizeFileName(video.title)}.mp3`, mimetype: 'audio/mpeg' }, { quoted: m });
                 }
             } catch (audioError) {
                 const errorMsg = audioError.message || audioError.toString();
-                if (errorMsg.includes('Media upload failed') || 
-                    errorMsg.includes('ENOSPC') || 
+                if (errorMsg.includes('Media upload failed') ||
+                    errorMsg.includes('ENOSPC') ||
                     errorMsg.includes('no space left') ||
                     errorMsg.includes('Internal Server Error') ||
-                    errorMsg.includes('size') || 
+                    errorMsg.includes('size') ||
                     errorMsg.includes('memory')) {
-                    
+
                     try {
-                        const documentMedia = await prepareWAMessageMedia({ document: taggedBuffer }, { upload: conn.waUploadToServer });
+                        const documentMedia = await prepareWAMessageMedia({ document: finalBuffer }, { upload: conn.waUploadToServer });
                         const thumbnailMedia = await prepareWAMessageMedia({ image: thumbnailBuffer }, { upload: conn.waUploadToServer });
-                        
+
                         const msg = generateWAMessageFromContent(m.chat, {
                             documentMessage: {
                                 ...documentMedia.documentMessage,
@@ -577,73 +534,3 @@ const Genius = {
     }
 };
 
-async function repairAudioBuffer(audioBuffer, fileName) {
-    
-    if (!fs.existsSync(TMP_DIR)) {
-        fs.mkdirSync(TMP_DIR, { recursive: true });
-    }
-    
-    const inputPath = join(TMP_DIR, `input_${Date.now()}_${fileName}`);
-    const outputPath = join(TMP_DIR, `repaired_${Date.now()}_${fileName}`);
-    
-    
-    try {
-        fs.writeFileSync(inputPath, audioBuffer);
-
-        return new Promise((resolve, reject) => {
-            
-            const ffmpeg = spawn('ffmpeg', [
-                '-i', inputPath,
-                '-c:a', 'libmp3lame',
-                '-b:a', '128k',
-                '-ac', '2',
-                '-ar', '44100',
-                '-y',
-                outputPath
-            ]);
-            
-            let stderr = '';
-            
-            ffmpeg.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-            
-            ffmpeg.on('close', (code) => {
-                try {
-                    if (code === 0 && fs.existsSync(outputPath)) {
-                        const repairedBuffer = fs.readFileSync(outputPath);
-                        
-                        fs.unlinkSync(inputPath);
-                        fs.unlinkSync(outputPath);
-                        
-                        resolve(repairedBuffer);
-                    } else {
-                        reject(new Error(`FFmpeg process failed with code ${code}: ${stderr}`));
-                    }
-                } catch (error) {
-                    reject(error);
-                }
-            });
-            
-            ffmpeg.on('error', (error) => {
-                reject(error);
-            });
-            
-            setTimeout(() => {
-                if (ffmpeg.exitCode === null) {
-                    ffmpeg.kill();
-                    reject(new Error('FFmpeg timeout'));
-                }
-            }, 30000);
-        });
-        
-    } catch (error) {
-        console.log('DEBUG: Error en repairAudioBuffer:', error.message);
-        try {
-            if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        } catch (cleanupError) {
-        }
-        throw error;
-    }
-}
