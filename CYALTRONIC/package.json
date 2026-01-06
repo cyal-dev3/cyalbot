@@ -1,0 +1,41 @@
+{
+  "name": "cyaltronic",
+  "version": "1.0.0",
+  "description": "🤖 CYALTRONIC - Bot de WhatsApp RPG en TypeScript",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "qr": "node dist/index.js --method=qr",
+    "code": "node dist/index.js --method=code"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "rpg",
+    "typescript",
+    "baileys"
+  ],
+  "author": "Cyal",
+  "license": "MIT",
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "baileys": "^6.7.16",
+    "chalk": "^5.3.0",
+    "lowdb": "^7.0.1",
+    "node-cache": "^5.1.2",
+    "pino": "^9.5.0",
+    "play-dl": "^1.9.7",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
