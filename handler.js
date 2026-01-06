@@ -720,13 +720,22 @@ export async function handler(chatUpdate) {
     const _user = global.db.data && global.db.data.users && global.db.data.users[m.sender];
     const groupMetadata = m.isGroup ? { ...(conn.chats[m.chat]?.metadata || await this.groupMetadata(m.chat).catch(_ => null) || {}), ...(((conn.chats[m.chat]?.metadata || await this.groupMetadata(m.chat).catch(_ => null) || {}).participants) && { participants: ((conn.chats[m.chat]?.metadata || await this.groupMetadata(m.chat).catch(_ => null) || {}).participants || []).map(p => ({ ...p, id: p.jid, jid: p.jid, lid: p.lid })) }) } : {};
     //const groupMetadata = (m.isGroup ? ((conn.chats[m.chat] || {}).metadata || await this.groupMetadata(m.chat).catch((_) => null)) : {}) || {};
-    const participants = ((m.isGroup ? groupMetadata.participants : []) || []).map(participant => ({ id: participant.jid, jid: participant.jid, lid: participant.lid, admin: participant.admin }));
+    const participants = ((m.isGroup ? groupMetadata.participants : []) || []).map(participant => ({ id: participant.jid || participant.id, jid: participant.jid || participant.id, lid: participant.lid, admin: participant.admin }));
     //const participants = (m.isGroup ? groupMetadata.participants : []) || [];
     const user = (m.isGroup ? participants.find((u) => conn.decodeJid(u.jid) === m.sender) : {}) || {}; // User Data
-    const bot = (m.isGroup ? participants.find((u) => conn.decodeJid(u.jid) == this.user.jid) : {}) || {}; // Your Data
+
+    // Buscar al bot en participants - intentar múltiples métodos
+    const botJid = this.user?.jid;
+    const botNumber = botJid?.split('@')[0]?.replace(/:/g, '');
+    let bot = (m.isGroup ? participants.find((u) => {
+      const pJid = conn.decodeJid(u.jid);
+      const pNumber = pJid?.split('@')[0]?.replace(/:/g, '');
+      return pJid === botJid || pNumber === botNumber;
+    }) : {}) || {};
+
     const isRAdmin = user?.admin == 'superadmin' || false;
     const isAdmin = isRAdmin || user?.admin == 'admin' || false; // Is User Admin?
-    const isBotAdmin = bot?.admin || false; // Are you Admin?
+    const isBotAdmin = bot?.admin === 'admin' || bot?.admin === 'superadmin' || false; // Are you Admin?
 
     const ___dirname = path.join(path.dirname(fileURLToPath(import.meta.url)), './plugins');
     for (const name in global.plugins) {
@@ -910,6 +919,7 @@ ${tradutor.texto1[1]} ${messageNumber}/3
           fail('group', m, this);
           continue;
         } else if (plugin.botAdmin && !isBotAdmin) { // You Admin
+          console.log('[HANDLER] botAdmin check failed - isBotAdmin:', isBotAdmin, 'bot:', bot, 'plugin:', name);
           fail('botAdmin', m, this);
           continue;
         } else if (plugin.admin && !isAdmin) { // User Admin
