@@ -1,13 +1,3 @@
-/*
-
-⚠ PROHIBIDO EDITAR ⚠ -- ⚠ PROHIBIDO EDITAR ⚠ -- ⚠ PROHIBIDO EDITAR ⚠
-
-El codigo de este archivo fue realizado por:
-- ReyEndymion (https://github.com/ReyEndymion)
-
-⚠ PROHIBIDO EDITAR ⚠ -- ⚠ PROHIBIDO EDITAR ⚠ -- ⚠ PROHIBIDO EDITAR ⚠
-
-*/
 
 function _0x7d77(_0x3884d3, _0x297cf0) {
   const _0x5346a4=_0x5346(); return _0x7d77=function(_0x7d7709, _0x34044c) {

@@ -1643,20 +1643,330 @@ END:VCARD
     },
     enumerable: true,
 },*/
+        /**
+         * Detecta y parsea menciones en texto
+         * Soporta múltiples formatos:
+         * - @número (ej: @5491123456789)
+         * - @número@s.whatsapp.net (JID completo)
+         * - @número@lid (LID completo)
+         * - @+número (con código de país)
+         * - Números con espacios, guiones o paréntesis
+         * - Números en formato internacional
+         */
         parseMention: {
       value(text = "") {
         try {
+          if (!text || typeof text !== "string") return [];
+
+          const mentions = new Set();
+
+          // Lista completa de códigos de país válidos
+          const codigosValidos = ["1","7","20","27","30","31","32","33","34","36","39","40","41","43","44","45","46","47","48","49","51","52","53","54","55","56","57","58","60","61","62","63","64","65","66","81","82","84","86","90","91","92","93","94","95","98","211","212","213","216","218","220","221","222","223","224","225","226","227","228","229","230","231","232","233","234","235","236","237","238","239","240","241","242","243","244","245","246","247","248","249","250","251","252","253","254","255","256","257","258","260","261","262","263","264","265","266","267","268","269","290","291","297","298","299","350","351","352","353","354","355","356","357","358","359","370","371","372","373","374","375","376","377","378","379","380","381","382","383","385","386","387","389","420","421","423","500","501","502","503","504","505","506","507","508","509","590","591","592","593","594","595","596","597","598","599","670","672","673","674","675","676","677","678","679","680","681","682","683","684","685","686","687","688","689","690","691","692","850","852","853","855","856","880","882","883","886","888","960","961","962","963","964","965","966","967","968","970","971","972","973","974","975","976","977","992","993","994","995","996","998"];
+
+          /**
+           * Valida si un número es un teléfono válido
+           */
           const esNumeroValido = (numero) => {
-            const len = numero.length;
-            if (len < 8 || len > 13) return false; 
-            if (len > 10 && numero.startsWith("9")) return false;
-            const codigosValidos = ["1","7","20","27","30","31","32","33","34","36","39","40","41","43","44","45","46","47","48","49","51","52","53","54","55","56","57","58","60","61","62","63","64","65","66","81","82","84","86","90","91","92","93","94","95","98","211","212","213","216","218","220","221","222","223","224","225","226","227","228","229","230","231","232","233","234","235","236","237","238","239","240","241","242","243","244","245","246","248","249","250","251","252","253","254","255","256","257","258","260","261","262","263","264","265","266","267","268","269","290","291","297","298","299","350","351","352","353","354","355","356","357","358","359","370","371","372","373","374","375","376","377","378","379","380","381","382","383","385","386","387","389","420","421","423","500","501","502","503","504","505","506","507","508","509","590","591","592","593","594","595","596","597","598","599","670","672","673","674","675","676","677","678","679","680","681","682","683","685","686","687","688","689","690","691","692","850","852","853","855","856","880","886","960","961","962","963","964","965","966","967","968","970","971","972","973","974","975","976","977","978","979","992","993","994","995","996","998"]; 
-            return codigosValidos.some((codigo) => numero.startsWith(codigo));
+            if (!numero) return false;
+            const limpio = numero.replace(/[\s\-\(\)\+]/g, "");
+            const len = limpio.length;
+            // Rango de longitud válido para números internacionales
+            if (len < 7 || len > 15) return false;
+            // Debe ser solo dígitos después de limpiar
+            if (!/^\d+$/.test(limpio)) return false;
+            // Verificar código de país
+            return codigosValidos.some((codigo) => limpio.startsWith(codigo));
           };
-          return (text.match(/@(\d{5,20})/g) || []).map((m) => m.substring(1)).map((numero) => esNumeroValido(numero) ? `${numero}@s.whatsapp.net` : `${numero}@lid`, );
+
+          /**
+           * Limpia y normaliza un número
+           */
+          const limpiarNumero = (numero) => {
+            if (!numero) return "";
+            return numero.replace(/[\s\-\(\)\+]/g, "").replace(/^0+/, "");
+          };
+
+          /**
+           * Convierte un identificador a JID o LID
+           */
+          const convertirAJid = (identificador) => {
+            if (!identificador) return null;
+
+            // Si ya es un JID completo válido
+            if (identificador.endsWith("@s.whatsapp.net")) {
+              const numero = identificador.split("@")[0].replace(/[^0-9]/g, "");
+              if (numero.length >= 7) return `${numero}@s.whatsapp.net`;
+            }
+
+            // Si es un LID completo
+            if (identificador.endsWith("@lid")) {
+              return identificador;
+            }
+
+            // Limpiar el número
+            const limpio = limpiarNumero(identificador);
+            if (!limpio || limpio.length < 5) return null;
+
+            // Si es número válido -> JID, sino -> LID
+            if (esNumeroValido(limpio)) {
+              return `${limpio}@s.whatsapp.net`;
+            } else if (limpio.length >= 5 && limpio.length <= 30) {
+              // Podría ser un LID o identificador especial
+              return `${limpio}@lid`;
+            }
+
+            return null;
+          };
+
+          // ============================================
+          // PATRONES DE DETECCIÓN (del más específico al más general)
+          // ============================================
+
+          // 1. JID completo: @número@s.whatsapp.net
+          const jidPattern = /@?(\d{5,20})@s\.whatsapp\.net/gi;
+          let match;
+          while ((match = jidPattern.exec(text)) !== null) {
+            const jid = `${match[1]}@s.whatsapp.net`;
+            mentions.add(jid);
+          }
+
+          // 2. LID completo: @número@lid o número@lid
+          const lidPattern = /@?(\d{5,30})@lid/gi;
+          while ((match = lidPattern.exec(text)) !== null) {
+            const lid = `${match[1]}@lid`;
+            mentions.add(lid);
+          }
+
+          // 3. Mención con @ seguida de número (formato más común)
+          // Soporta: @5491123456789, @+5491123456789, @(549) 112-345-6789
+          const mentionPattern = /@\+?[\d\s\-\(\)]{7,25}/g;
+          const mentionMatches = text.match(mentionPattern) || [];
+          for (const m of mentionMatches) {
+            const limpio = limpiarNumero(m.substring(1)); // Quitar @
+            if (limpio.length >= 7 && limpio.length <= 15) {
+              const jid = convertirAJid(limpio);
+              if (jid) mentions.add(jid);
+            }
+          }
+
+          // 4. Patrón original mejorado: @número simple (5-20 dígitos)
+          const simplePattern = /@(\d{5,20})\b/g;
+          while ((match = simplePattern.exec(text)) !== null) {
+            const numero = match[1];
+            // Evitar duplicados con patrones anteriores
+            const existeJid = `${numero}@s.whatsapp.net`;
+            const existeLid = `${numero}@lid`;
+            if (!mentions.has(existeJid) && !mentions.has(existeLid)) {
+              const jid = convertirAJid(numero);
+              if (jid) mentions.add(jid);
+            }
+          }
+
+          // 5. Números con formato internacional en contexto de mención
+          // Detecta: @52 1 5512345678, @+52-155-1234-5678
+          const intlPattern = /@\+?(\d{1,4})[\s\-]?(\d{2,4})[\s\-]?(\d{3,4})[\s\-]?(\d{3,5})/g;
+          while ((match = intlPattern.exec(text)) !== null) {
+            const numero = (match[1] + match[2] + match[3] + match[4]).replace(/\D/g, "");
+            if (numero.length >= 10 && numero.length <= 15) {
+              const jid = convertirAJid(numero);
+              if (jid) mentions.add(jid);
+            }
+          }
+
+          // 6. Detectar JIDs/LIDs sueltos sin @ (en caso de referencias directas)
+          // Solo si están en formato reconocible
+          const looseJidPattern = /\b(\d{10,15})@s\.whatsapp\.net\b/gi;
+          while ((match = looseJidPattern.exec(text)) !== null) {
+            mentions.add(`${match[1]}@s.whatsapp.net`);
+          }
+
+          const looseLidPattern = /\b(\d{5,30})@lid\b/gi;
+          while ((match = looseLidPattern.exec(text)) !== null) {
+            mentions.add(`${match[1]}@lid`);
+          }
+
+          // Filtrar resultados inválidos y devolver array único
+          return [...mentions].filter(jid => {
+            if (!jid) return false;
+            const numero = jid.split("@")[0];
+            return numero && numero.length >= 5;
+          });
+
         } catch (error) {
-          console.error("Error:", error);
+          console.error("[parseMention] Error:", error.message || error);
           return [];
+        }
+      },
+      enumerable: true,
+    },
+        /**
+         * Versión extendida de parseMention con soporte para:
+         * - @everyone / @todos - Menciona a todos los participantes del grupo
+         * - @admins / @admin - Menciona solo a los administradores
+         * - Resolución automática de LIDs a JIDs
+         * - Detección mejorada de números en múltiples formatos
+         *
+         * @param {string} text - Texto a analizar
+         * @param {string} groupJid - JID del grupo (opcional, requerido para @everyone/@admins)
+         * @param {object} options - Opciones adicionales
+         * @returns {Promise<Array>} - Array de JIDs mencionados
+         */
+        parseMentionExtended: {
+      async value(text = "", groupJid = null, options = {}) {
+        try {
+          if (!text || typeof text !== "string") return [];
+
+          const mentions = new Set();
+          const textLower = text.toLowerCase();
+
+          // ============================================
+          // DETECTAR @everyone / @todos / @all
+          // ============================================
+          const everyonePatterns = /@(everyone|todos|all|todo el mundo|everybody)\b/gi;
+          const hasEveryone = everyonePatterns.test(text);
+
+          if (hasEveryone && groupJid && groupJid.endsWith("@g.us")) {
+            try {
+              const metadata = await conn.groupMetadata(groupJid);
+              if (metadata?.participants) {
+                for (const p of metadata.participants) {
+                  const jid = p.id || p.jid;
+                  if (jid && !jid.endsWith("@lid")) {
+                    mentions.add(jid);
+                  } else if (jid?.endsWith("@lid")) {
+                    // Intentar resolver LID
+                    if (typeof conn.resolveLidToJid === "function") {
+                      const resolved = await conn.resolveLidToJid(jid, groupJid).catch(() => null);
+                      if (resolved && !resolved.endsWith("@lid")) {
+                        mentions.add(resolved);
+                      } else {
+                        mentions.add(jid);
+                      }
+                    } else {
+                      mentions.add(jid);
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.error("[parseMentionExtended] Error obteniendo participantes:", e.message);
+            }
+          }
+
+          // ============================================
+          // DETECTAR @admins / @admin / @administradores
+          // ============================================
+          const adminsPatterns = /@(admins?|administradores?|mods?|moderadores?)\b/gi;
+          const hasAdmins = adminsPatterns.test(text);
+
+          if (hasAdmins && groupJid && groupJid.endsWith("@g.us")) {
+            try {
+              const metadata = await conn.groupMetadata(groupJid);
+              if (metadata?.participants) {
+                const admins = metadata.participants.filter(
+                  (p) => p.admin === "admin" || p.admin === "superadmin"
+                );
+                for (const p of admins) {
+                  const jid = p.id || p.jid;
+                  if (jid && !jid.endsWith("@lid")) {
+                    mentions.add(jid);
+                  } else if (jid?.endsWith("@lid")) {
+                    if (typeof conn.resolveLidToJid === "function") {
+                      const resolved = await conn.resolveLidToJid(jid, groupJid).catch(() => null);
+                      if (resolved && !resolved.endsWith("@lid")) {
+                        mentions.add(resolved);
+                      } else {
+                        mentions.add(jid);
+                      }
+                    } else {
+                      mentions.add(jid);
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.error("[parseMentionExtended] Error obteniendo admins:", e.message);
+            }
+          }
+
+          // ============================================
+          // USAR parseMention BASE PARA NÚMEROS
+          // ============================================
+          const baseMentions = conn.parseMention(text);
+          for (const jid of baseMentions) {
+            // Si es un LID, intentar resolver
+            if (jid.endsWith("@lid") && groupJid) {
+              if (typeof conn.resolveLidToJid === "function") {
+                try {
+                  const resolved = await conn.resolveLidToJid(jid, groupJid);
+                  if (resolved && !resolved.endsWith("@lid")) {
+                    mentions.add(resolved);
+                  } else {
+                    mentions.add(jid);
+                  }
+                } catch {
+                  mentions.add(jid);
+                }
+              } else {
+                mentions.add(jid);
+              }
+            } else {
+              mentions.add(jid);
+            }
+          }
+
+          // ============================================
+          // DETECTAR MENCIONES POR NOMBRE DE USUARIO
+          // Busca @nombre en participantes del grupo
+          // ============================================
+          if (groupJid && groupJid.endsWith("@g.us") && options.matchNames !== false) {
+            const namePattern = /@([a-zA-ZáéíóúñÁÉÍÓÚÑ][a-zA-ZáéíóúñÁÉÍÓÚÑ0-9_\s]{1,25})\b/g;
+            let nameMatch;
+
+            while ((nameMatch = namePattern.exec(text)) !== null) {
+              const mentionName = nameMatch[1].toLowerCase().trim();
+              // Ignorar palabras reservadas
+              if (["everyone", "todos", "all", "admins", "admin", "administradores"].includes(mentionName)) {
+                continue;
+              }
+
+              try {
+                const metadata = await conn.groupMetadata(groupJid);
+                if (metadata?.participants) {
+                  for (const p of metadata.participants) {
+                    // Buscar en nombre del contacto
+                    const contactName = (conn.getName(p.id || p.jid) || "").toLowerCase();
+                    const pushName = (p.notify || p.name || "").toLowerCase();
+
+                    if (contactName.includes(mentionName) || pushName.includes(mentionName)) {
+                      const jid = p.id || p.jid;
+                      if (jid && !jid.endsWith("@lid")) {
+                        mentions.add(jid);
+                      } else if (jid?.endsWith("@lid")) {
+                        if (typeof conn.resolveLidToJid === "function") {
+                          const resolved = await conn.resolveLidToJid(jid, groupJid).catch(() => null);
+                          mentions.add(resolved || jid);
+                        } else {
+                          mentions.add(jid);
+                        }
+                      }
+                      break; // Solo agregar la primera coincidencia por nombre
+                    }
+                  }
+                }
+              } catch (e) {
+                // Silenciar errores de búsqueda por nombre
+              }
+            }
+          }
+
+          // Filtrar y devolver
+          return [...mentions].filter(jid => jid && jid.length > 0);
+
+        } catch (error) {
+          console.error("[parseMentionExtended] Error:", error.message || error);
+          // Fallback a parseMention básico
+          return conn.parseMention(text);
         }
       },
       enumerable: true,
@@ -2135,7 +2445,7 @@ export function smsg(conn, m, hasParent) {
 }
 
 // https://github.com/Nurutomo/wabot-aq/issues/490
-// Fix 2025 - @BrunoSobrino - LID Resolved
+// Fix 2025 - @Cyal - LID Resolved
 export function serialize() {
     const MediaType = ["imageMessage", "videoMessage", "audioMessage", "stickerMessage", "documentMessage"];
     const safeEndsWith = (str, suffix) =>
@@ -2177,11 +2487,11 @@ export function serialize() {
                     const messageId = this.id || "";
                     const isFromBot = this?.fromMe || areJidsSameUser(userId, sender);
                     //if (!isFromBot) return false;
-                    const baileysStarts = ['NJX-', 'Lyru-', 'META-', 'EvoGlobalBot-', 'FizzxyTheGreat-', 'BAE5', '3EB0', 'B24E', '8SCO', 'SUKI', 'MYSTIC-'];
+                    const baileysStarts = ['NJX-', 'Lyru-', 'META-', 'EvoGlobalBot-', 'FizzxyTheGreat-', 'BAE5', '3EB0', 'B24E', '8SCO', 'SUKI', 'CYAL-'];
                     const hasKnownPrefix = baileysStarts.some(prefix => messageId.startsWith(prefix));
 		            const isSukiPattern = /^SUKI[A-F0-9]+$/.test(messageId);
-					const isMysticPattern = /^MYSTIC[A-F0-9]+$/.test(messageId);
-                    return isMysticPattern || isSukiPattern || hasKnownPrefix || false;
+					const isCyalPattern = /^CYAL[A-F0-9]+$/.test(messageId);
+                    return isCyalPattern || isSukiPattern || hasKnownPrefix || false;
                 } catch (e) {
                     console.error("Error en isBaileys getter:", e);
                     return false;
@@ -2346,39 +2656,74 @@ export function serialize() {
         mentionedJid: {
             get() {
                 try {
-                    const mentioned = this.conn.parseMention(this.text).length > 0 ? this.conn.parseMention(this.text) : this.msg?.contextInfo?.mentionedJid || [];
+                    // Combinar menciones del texto parseado y del contextInfo
+                    const fromText = this.conn.parseMention(this.text || "");
+                    const fromContext = this.msg?.contextInfo?.mentionedJid || [];
+
+                    // Usar Set para eliminar duplicados
+                    const allMentions = new Set([...fromText, ...fromContext]);
+                    const mentioned = [...allMentions];
+
                     const groupChatId = this.chat?.endsWith("@g.us") ? this.chat : null;
 
-                    const processJid = (user) => {
+                    const processJid = async (user) => {
                         try {
+                            // Extraer JID de objetos
                             if (user && typeof user === "object") {
                                 user = user.lid || user.jid || user.id || "";
                             }
-                            if (typeof user === "string" && user.includes("@lid") && groupChatId) {
-                                const resolved = String.prototype.resolveLidToRealJid.call(
-                                    user,
-                                    groupChatId,
-                                    this.conn
-                                );
-                                return resolved.then(res => typeof res === "string" ? res : user);
+
+                            if (!user || typeof user !== "string") return null;
+
+                            // Limpiar el JID
+                            user = user.trim();
+
+                            // Si es un LID, intentar resolver
+                            if (user.includes("@lid") && groupChatId) {
+                                // Intentar con resolveLidToJid del conn primero
+                                if (typeof this.conn.resolveLidToJid === "function") {
+                                    try {
+                                        const resolved = await this.conn.resolveLidToJid(user, groupChatId);
+                                        if (resolved && !resolved.endsWith("@lid")) {
+                                            return resolved;
+                                        }
+                                    } catch {}
+                                }
+
+                                // Fallback a String.prototype.resolveLidToRealJid
+                                if (typeof String.prototype.resolveLidToRealJid === "function") {
+                                    try {
+                                        const resolved = await String.prototype.resolveLidToRealJid.call(
+                                            user,
+                                            groupChatId,
+                                            this.conn
+                                        );
+                                        if (typeof resolved === "string" && !resolved.endsWith("@lid")) {
+                                            return resolved;
+                                        }
+                                    } catch {}
+                                }
                             }
-                            return Promise.resolve(user);
+
+                            return user;
                         } catch (e) {
-                            console.error("Error processing JID:", user, e);
-                            return Promise.resolve(user);
+                            console.error("[mentionedJid] Error processing:", user, e.message);
+                            return user;
                         }
                     };
 
-                    const processed = mentioned.map(processJid);
-
-                    return Promise.all(processed)
-                        .then(jids => jids.filter(jid => jid && typeof jid === "string"))
+                    return Promise.all(mentioned.map(processJid))
+                        .then(jids => {
+                            // Filtrar nulos y duplicados
+                            const unique = [...new Set(jids.filter(jid => jid && typeof jid === "string"))];
+                            return unique;
+                        })
                         .catch(e => {
-                            console.error("Error en mentionedJid getter:", e);
-                            return [];
+                            console.error("[mentionedJid] Error:", e.message);
+                            return mentioned.filter(jid => jid && typeof jid === "string");
                         });
                 } catch (e) {
-                    console.error("Error en mentionedJid getter:", e);
+                    console.error("[mentionedJid] Fatal error:", e.message);
                     return Promise.resolve([]);
                 }
             },
@@ -2584,11 +2929,11 @@ export function serialize() {
                                     const messageId = this.id || "";
                                     const isFromBot = this?.fromMe || areJidsSameUser(userId, sender);
                                     //if (!isFromBot) return false;
-                                    const baileysStarts = ['NJX-', 'Lyru-', 'META-', 'EvoGlobalBot-', 'FizzxyTheGreat-', 'BAE5', '3EB0', 'B24E', '8SCO', 'SUKI', 'MYSTIC-'];
+                                    const baileysStarts = ['NJX-', 'Lyru-', 'META-', 'EvoGlobalBot-', 'FizzxyTheGreat-', 'BAE5', '3EB0', 'B24E', '8SCO', 'SUKI', 'CYAL-'];
                                     const hasKnownPrefix = baileysStarts.some(prefix => messageId.startsWith(prefix));
 				                    const isSukiPattern = /^SUKI[A-F0-9]+$/.test(messageId);
-									const isMysticPattern = /^MYSTIC[A-F0-9]+$/.test(messageId);
-                                    return isMysticPattern || isSukiPattern || hasKnownPrefix || false;
+									const isCyalPattern = /^CYAL[A-F0-9]+$/.test(messageId);
+                                    return isCyalPattern || isSukiPattern || hasKnownPrefix || false;
                                 },
                                 enumerable: true,
                             },

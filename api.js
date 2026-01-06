@@ -15,12 +15,12 @@ global.openai_key = 'sk-0';
 global.openai_org_id = 'org-3';
 /* Obtén tu ID de organización en este enlace: https://platform.openai.com/account/org-settings */
 
-global.MyApiRestBaseUrl = 'https://api.cafirexos.com'; // Bloqueo de IP -> usar esta para no ser bloqueado: 'https://api-brunosobrino.onrender.com';
-global.MyApiRestApikey = 'BrunoSobrino';
+global.MyApiRestBaseUrl = 'https://api.cafirexos.com';
+global.MyApiRestApikey = 'CyalBot';
 
-global.MyApiRestBaseUrl2 = 'https://api-brunosobrino-dcaf9040.koyeb.app';
+global.MyApiRestBaseUrl2 = 'https://api.cafirexos.com';
 
-global.MyApiRestBaseUrl3 = 'https://api-brunosobrino.onrender.com'; 
+global.MyApiRestBaseUrl3 = 'https://api.cafirexos.com'; 
 
 global.keysZens = ['LuOlangNgentot', 'c2459db922', '37CC845916', '6fb0eff124', 'hdiiofficial', 'fiktod', 'BF39D349845E', '675e34de8a', '0b917b905e6f'];
 global.keysxxx = keysZens[Math.floor(keysZens.length * Math.random())];
@@ -28,7 +28,7 @@ global.keysxteammm = ['29d4b59a4aa687ca', '5LTV57azwaid7dXfz5fzJu', 'cb15ed422c7
 global.keysxteam = keysxteammm[Math.floor(keysxteammm.length * Math.random())];
 global.keysneoxrrr = ['5VC9rvNx', 'cfALv5'];
 global.keysneoxr = keysneoxrrr[Math.floor(keysneoxrrr.length * Math.random())];
-global.lolkeysapi = ['GataDiosV3']; // ['BrunoSobrino_2']
+global.lolkeysapi = ['GataDiosV3'];
 global.itsrose = ['4b146102c4d500809da9d1ff'];
 
 global.APIs = {
@@ -55,7 +55,7 @@ global.APIs = {
 },
 global.APIKeys = {
   'https://api.xteam.xyz': `${keysxteam}`,
-  'https://api.stellarwa.xyz': `BrunoSobrino`,
+  'https://api.stellarwa.xyz': `CyalBot`,
   'https://api.lolhuman.xyz': 'GataDios',
   'https://api.neoxr.my.id': `${keysneoxr}`,
   'https://api.zahwazein.xyz': `${keysxxx}`,
@@ -148,7 +148,7 @@ global.rpg = {
       kambing: '🐐 Cabra',
       kerbau: '🐃 Búfalo',
       lion: '🦁 León',
-      money: '👾 MysticCoins',
+      money: '👾 CyalCoins',
       monyet: '🐒 Mono',
       panda: '🐼 Panda',
       snake: '🐍 Serpiente',
@@ -272,8 +272,8 @@ global.rpgshop = { // Tienda
       berlian: '♦️ Joya',
       kyubi: '🌀 Magia',
       gold: '👑 Oro',
-      money: '👾 MysticCoins',
-      tiketcoin: '🎫 mystic Tickers',
+      money: '👾 CyalCoins',
+      tiketcoin: '🎫 Cyal Tickets',
       stamina: '✨ Energía',
       potion: '🥤 Poción',
       aqua: '💧 Agua',

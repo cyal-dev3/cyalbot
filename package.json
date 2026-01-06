@@ -1,5 +1,5 @@
 {
-  "name": "TheMystic-Bot-MD",
+  "name": "CyalBot",
   "version": "1.0.0",
   "description": "Un chatbot automatizado para WhatsApp basado en Node.js, que permite realizar múltiples funciones y personalizaciones en la plataforma.",
   "main": "index.js",
@@ -16,16 +16,16 @@
     "eslint": "eslint .",
     "eslintfix": "eslint --fix ."
   },
-  "homepage": "https://github.com/BrunoSobrino/TheMystic-Bot-MD",
+  "homepage": "https://github.com/cyal/CyalBot",
   "author": {
-    "name": "BrunoSobrino"
+    "name": "Cyal"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BrunoSobrino/TheMystic-Bot-MD.git"
+    "url": "git+https://github.com/cyal/CyalBot.git"
   },
   "bugs": {
-    "url": "https://github.com/BrunoSobrino/TheMystic-Bot-MD/issues"
+    "url": "https://github.com/cyal/CyalBot/issues"
   },
   "license": "GPL-3.0-or-later",
   "dependencies": {

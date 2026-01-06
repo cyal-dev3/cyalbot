@@ -7,8 +7,18 @@ const handler = async (m, {conn, text, usedPrefix, command}) => {
   const tradutor = _translate.plugins.owner_delprem
 
   let who;
-  if (m.isGroup) who = await await m.mentionedJid[0] ? await await m.mentionedJid[0] : m.quoted ? await m?.quoted?.sender : false;
-  else who = m.chat;
+  if (m.isGroup) {
+    const mentioned = await m.mentionedJid;
+    if (mentioned && mentioned[0]) {
+      who = mentioned[0];
+    } else if (m.quoted) {
+      who = await m.quoted.sender;
+    } else {
+      who = false;
+    }
+  } else {
+    who = m.chat;
+  }
   const user = global.db.data.users[who];
   if (!who) throw tradutor.texto1;
   if (!user) throw tradutor.texto2;

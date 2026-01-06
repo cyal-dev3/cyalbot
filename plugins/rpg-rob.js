@@ -11,8 +11,18 @@ const handler = async (m, {conn, usedPrefix, command}) => {
   const time = global.db.data.users[m.sender].lastrob + 7200000;
   if (new Date - global.db.data.users[m.sender].lastrob < 7200000) throw `${tradutor.texto1[0]} ${msToTime(time - new Date())} ${tradutor.texto1[1]}`;
   let who;
-  if (m.isGroup) who = await await m.mentionedJid[0] ? await await m.mentionedJid[0] : m.quoted ? await m?.quoted?.sender : false;
-  else who = m.chat;
+  if (m.isGroup) {
+    const mentioned = await m.mentionedJid;
+    if (mentioned && mentioned[0]) {
+      who = mentioned[0];
+    } else if (m.quoted) {
+      who = await m.quoted.sender;
+    } else {
+      who = false;
+    }
+  } else {
+    who = m.chat;
+  }
   if (!who) throw tradutor.texto2;
   if (!(who in global.db.data.users)) throw tradutor.texto3;
   const users = global.db.data.users[who];

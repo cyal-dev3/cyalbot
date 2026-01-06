@@ -10,12 +10,17 @@ const handler = async (m, {conn, args, text, command, usedPrefix}) => {
   if (m.mentionedJid.length === 0 && args.length > 0) m.mentionedJid = conn.parseMention(text)
   let who;
   if (m.isGroup) {
-    who = conn.parseMention(text).length > 0 ?
-      conn.parseMention(text)[0] :
-      m.quoted ?
-      await m?.quoted?.sender :
-      text;
-  } else who = m.chat;
+    const parsedMention = conn.parseMention(text);
+    if (parsedMention && parsedMention.length > 0) {
+      who = parsedMention[0];
+    } else if (m.quoted) {
+      who = await m.quoted.sender;
+    } else {
+      who = text;
+    }
+  } else {
+    who = m.chat;
+  }
   const user = global.db.data.users[who];
   const bot = global.db.data.settings[conn.user.jid] || {};
   const dReason = 'Sin motivo';

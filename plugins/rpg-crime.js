@@ -15,9 +15,19 @@ const handler = async (m, { conn, usedPrefix, command, groupMetadata, participan
 
   const date = global.db.data.users[m.sender].crime + 3600000; //3600000 = 1 hs
   if (new Date - global.db.data.users[m.sender].crime < 3600000) return m.reply(`${tradutor.texto1} ${msToTime(date - new Date())}`)
-  let randow
-  if (m.isGroup) randow = await await m.mentionedJid[0] ? await await m.mentionedJid[0] : m.quoted ? await m?.quoted?.sender : false
-  else randow = m.chat
+  let randow;
+  if (m.isGroup) {
+    const mentioned = await m.mentionedJid;
+    if (mentioned && mentioned[0]) {
+      randow = mentioned[0];
+    } else if (m.quoted) {
+      randow = await m.quoted.sender;
+    } else {
+      randow = false;
+    }
+  } else {
+    randow = m.chat;
+  }
   try {
     let ps = groupMetadata.participants.map(v => v.id)
     let randow = ps.getRandom()

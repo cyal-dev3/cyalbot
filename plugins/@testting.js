@@ -1,4 +1,4 @@
-// Plugin para test de comandos - powered by @BrunoSobrino
+// Plugin para test de comandos - powered by @Cyal
 // Si vas a robar deja creditos o doname >:v
 import yts from 'yt-search';
 import fetch from 'node-fetch';

@@ -2,8 +2,18 @@ import axios from 'axios';
 import cheerio from 'cheerio';
 const handler = async (m, {command, conn}) => {
   const apikey = global.keysxxx;
-  const who = await m.mentionedJid && await await m.mentionedJid[0] ? await await m.mentionedJid[0] : m.fromMe ? conn.user.jid : m.sender;
-  const name = await conn.getName[who];
+  let who;
+  if (m.quoted) {
+    who = await m.quoted.sender;
+  } else {
+    const mentioned = await m.mentionedJid;
+    if (mentioned && mentioned[0]) {
+      who = mentioned[0];
+    } else {
+      who = m.fromMe ? conn.user.jid : m.sender;
+    }
+  }
+  const name = conn.getName(who);
   const fgif = m;
 
   if (command == 'wpmontaña') {

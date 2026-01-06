@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const pluginsDir = path.join(__dirname, '../plugins');
 const gitignorePath = path.join(__dirname, '../.gitignore');
 
-// no es necesario verificar que exista lka carpeta plugins, ya que existe en mystic. pero puede ser util para otros bots
+// no es necesario verificar que exista la carpeta plugins, ya que existe en cyal. pero puede ser util para otros bots
 const ensurePluginsDirExists = () => {
   if (!fs.existsSync(pluginsDir)) {
     fs.mkdirSync(pluginsDir, { recursive: true });

@@ -47,14 +47,14 @@ const handler = async (m, { conn, args }) => {
             genre: song.tags,
             comment: {
                 language: 'spa',
-                text: `👑 By @BrunoSobrino 👑\n\nGénero: ${song.tags}\nDuración: ${song.duration}s`
+                text: `🤖 By @Cyal 🤖\n\nGénero: ${song.tags}\nDuración: ${song.duration}s`
             }
         };
         
         if (song.lyrics) {
             tags.unsynchronisedLyrics = {
                 language: 'spa',
-                text: `👑 By @BrunoSobrino 👑\n\nTítulo: ${song.title}\n\n${song.lyrics}`.substring(0, 5000)
+                text: `🤖 By @Cyal 🤖\n\nTítulo: ${song.title}\n\n${song.lyrics}`.substring(0, 5000)
             };
         }
         

@@ -10,8 +10,15 @@ const handler = async (m, { conn, args, usedPrefix, command }) => {
 
     let who;
     if (m.isGroup) {
-      who = await await m.mentionedJid[0] ? await await m.mentionedJid[0] : m.quoted ? await m?.quoted?.sender : false;
-    } else { 
+      const mentioned = await m.mentionedJid;
+      if (mentioned && mentioned[0]) {
+        who = mentioned[0];
+      } else if (m.quoted) {
+        who = await m.quoted.sender;
+      } else {
+        who = false;
+      }
+    } else {
       who = m.chat;
     }
       const textquien = `${tradutor.texto1}\n◉ ${usedPrefix + command} @${global.suittag}`;

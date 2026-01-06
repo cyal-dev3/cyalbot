@@ -5,7 +5,7 @@ const handler = (m) => m;
 
 export async function all(m) {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
+  const idioma = datas.db.data.users[m.sender]?.language || global.defaultLenguaje
   const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
   const tradutor = _translate.plugins._premium
 
@@ -15,9 +15,16 @@ export async function all(m) {
         user.premiumTime = 0;
         user.premium = false;
         const JID = Object.keys(global.db.data.users).find((key) => global.db.data.users[key] === user);
-        const usuarioJid = JID.split`@`[0];
-        const textoo = `*[❗] @${usuarioJid} ${tradutor.texto1}`;
-        await this.sendMessage(JID, {text: textoo, mentions: [JID]}, {quoted: ''});
+
+        if (!JID || !JID.includes('@')) continue;
+
+        try {
+          const usuarioJid = JID.split('@')[0];
+          const textoo = `*[❗] @${usuarioJid} ${tradutor.texto1}`;
+          await this.sendMessage(JID, {text: textoo, mentions: [JID]});
+        } catch (e) {
+          console.error('Error enviando mensaje de expiración premium:', e);
+        }
       }
     }
   }

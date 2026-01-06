@@ -760,7 +760,7 @@ Use: ${usedPrefix}glx
 
                         break;
                     case 'criador':
-                        let msgcriador = `🛈 *INFORMACIÓN SOBRE EL CREADOR:*\n\n👨 *_creador del juego galaxia:_*\nhttps://github.com/jeffersonalionco\n\n👨 *_Creador del BOT:_*\nhttps://github.com/BrunoSobrino`
+                        let msgcriador = `🛈 *INFORMACIÓN SOBRE EL CREADOR:*\n\n👨 *_creador del juego galaxia:_*\nhttps://github.com/jeffersonalionco\n\n👨 *_Creador del BOT:_*\nhttps://github.com/cyal`
                         enviarButton1(m.sender, msgcriador)
                         break;
                     case 'atacar':
@@ -1610,7 +1610,7 @@ Tu ganaste:
         // Notificação automatica para cada usuario Jogador do Game GLX
         if (!data1.notificacao.recebidas.includes(api.notificacao.id)) {
             let number = data1.perfil.id.replace(/\D/g, '')
-            let str = `*🔔 - Notificación del juego*\n\n*[BOT]* _The Mystic Bot MD_ \n*_Para:_ @${number}*\n\n`
+            let str = `*🔔 - Notificación del juego*\n\n*[BOT]* _Cyal Bot_ \n*_Para:_ @${number}*\n\n`
 
             let msg = api.notificacao.msg // Mensagem de notificação na API 
 

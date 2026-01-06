@@ -6,8 +6,18 @@ const handler = async (m, {conn, text, command, usedPrefix}) => {
 
   const pp = './src/assets/images/menu/main/warn.jpg';
   let who;
-  if (m.isGroup) who = conn.parseMention(text).length > 0 ? await conn.parseMention(text)[0] : m.quoted ? await m?.quoted?.sender : text;
-  else who = m.chat;
+  if (m.isGroup) {
+    const parsedMention = conn.parseMention(text);
+    if (parsedMention && parsedMention.length > 0) {
+      who = parsedMention[0];
+    } else if (m.quoted) {
+      who = await m.quoted.sender;
+    } else {
+      who = text;
+    }
+  } else {
+    who = m.chat;
+  }
   const user = global.db.data.users[who];
   const bot = global.db.data.settings[conn.user.jid] || {};
   const warntext = `${tradutor.texto1}\n*${usedPrefix + command} @${global.suittag}*`;

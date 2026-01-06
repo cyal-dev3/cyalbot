@@ -1,6 +1,7 @@
 import fs from 'fs'
 import fetch from 'node-fetch'
 import yts from 'yt-search'
+import ytmp33 from '../src/libraries/ytmp33.js'
 
 let handler = async (m, { conn, args, text, usedPrefix, command }) => {
   const datas = global;
@@ -8,7 +9,7 @@ let handler = async (m, { conn, args, text, usedPrefix, command }) => {
   const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`));
   const tradutor = _translate.plugins.descargas_play
 
-  if (!text) throw `${tradutor.texto1[0]} ${usedPrefix + command} ${tradutor.texto1[1]}`;      
+  if (!text) throw `${tradutor.texto1[0]} ${usedPrefix + command} ${tradutor.texto1[1]}`;
   let additionalText = '';
   if (['play'].includes(command)) {
     additionalText = 'audio';
@@ -23,11 +24,16 @@ let handler = async (m, { conn, args, text, usedPrefix, command }) => {
 
   if (command === 'play') {
     try {
-      const audiodlp = await tools.downloader.ytmp3(regex + result.videoId);
-      const downloader = audiodlp.download;
-      conn.sendMessage(m.chat, { audio: { url: downloader }, mimetype: "audio/mpeg" }, { quoted: m });
+      // Usar ytmp33 (notube.net)
+      const audiodlp = await ytmp33(regex + result.videoId);
+      if (audiodlp?.status && audiodlp?.resultados?.descargar) {
+        const downloader = audiodlp.resultados.descargar;
+        await conn.sendMessage(m.chat, { audio: { url: downloader }, mimetype: "audio/mpeg" }, { quoted: m });
+      } else {
+        throw new Error('ytmp33 no devolvió resultado válido');
+      }
     } catch (error) {
-      console.log('❌ Error en tools.downloader.ytmp3, intentando Ruby-core fallback...', error);
+      console.log('❌ Error en ytmp33, intentando Ruby-core fallback...', error);
       try {
         const ruby = await (
           await fetch(
@@ -42,40 +48,70 @@ let handler = async (m, { conn, args, text, usedPrefix, command }) => {
             { quoted: m }
           );
         } else {
-          conn.reply(m.chat, tradutor.texto6, m);
+          throw new Error('Ruby-core no devolvió resultado válido');
         }
       } catch (err2) {
-        console.log('❌ Falla en fallback Ruby-core mp3:', err2);
-        conn.reply(m.chat, tradutor.texto6, m);
+        console.log('❌ Falla en Ruby-core, intentando API Delirius...', err2);
+        try {
+          const delirius = await (
+            await fetch(
+              `${global.BASE_API_DELIRIUS}/api/download/ytmp3?url=${encodeURIComponent(regex + result.videoId)}`
+            )
+          ).json();
+          if (delirius?.status && delirius?.data?.download?.url) {
+            await conn.sendMessage(
+              m.chat,
+              { audio: { url: delirius.data.download.url }, mimetype: "audio/mpeg" },
+              { quoted: m }
+            );
+          } else {
+            conn.reply(m.chat, tradutor.texto6, m);
+          }
+        } catch (err3) {
+          console.log('❌ Falla en API Delirius mp3:', err3);
+          conn.reply(m.chat, tradutor.texto6, m);
+        }
       }
     }
   }
 
   if (command === 'play2') {
     try {
-      const videodlp = await tools.downloader.ytmp4(regex + result.videoId);
-      const downloader = videodlp.download;
-      conn.sendMessage(m.chat, { video: { url: downloader }, mimetype: "video/mp4" }, { quoted: m });
+      // Intentar Ruby-core primero para videos
+      const ruby = await (
+        await fetch(
+          `https://ruby-core.vercel.app/api/download/youtube/mp4?url=${encodeURIComponent(regex + result.videoId)}`
+        )
+      ).json();
+      if (ruby?.status && ruby?.download?.url) {
+        const videoLink = ruby.download.url;
+        await conn.sendMessage(
+          m.chat,
+          { video: { url: videoLink }, mimetype: "video/mp4" },
+          { quoted: m }
+        );
+      } else {
+        throw new Error('Ruby-core mp4 no devolvió resultado válido');
+      }
     } catch (error) {
-      console.log('❌ Error en tools.downloader.ytmp4, intentando Ruby-core fallback...', error);
+      console.log('❌ Error en Ruby-core mp4, intentando API Delirius...', error);
       try {
-        const ruby = await (
+        const delirius = await (
           await fetch(
-            `https://ruby-core.vercel.app/api/download/youtube/mp4?url=${encodeURIComponent(regex + result.videoId)}`
+            `${global.BASE_API_DELIRIUS}/api/download/ytmp4?url=${encodeURIComponent(regex + result.videoId)}`
           )
         ).json();
-        if (ruby?.status && ruby?.download?.url) {
-          const videoLink = ruby.download.url;
+        if (delirius?.status && delirius?.data?.download?.url) {
           await conn.sendMessage(
             m.chat,
-            { video: { url: videoLink }, mimetype: "video/mp4" },
+            { video: { url: delirius.data.download.url }, mimetype: "video/mp4" },
             { quoted: m }
           );
         } else {
           conn.reply(m.chat, tradutor.texto6, m);
         }
       } catch (err2) {
-        console.log('❌ Falla en fallback Ruby-core mp4:', err2);
+        console.log('❌ Falla en API Delirius mp4:', err2);
         conn.reply(m.chat, tradutor.texto6, m);
       }
     }

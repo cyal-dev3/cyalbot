@@ -1,4 +1,4 @@
-/* Codigo hecho por @Fabri115 y mejorado por BrunoSobrino */
+/* Codigo hecho por @Fabri115 y mejorado por Cyal */
 
 import { readdirSync, unlinkSync, existsSync, promises as fs, rmSync, readFileSync } from 'fs';
 import path from 'path';
@@ -13,7 +13,7 @@ const handler = async (m, { conn, usedPrefix }) => {
     return conn.sendMessage(m.chat, {text: tradutor.texto1}, {quoted: m});
   }
   const chatId = m.isGroup ? [m.chat, m.sender] : [m.sender];
-  const sessionPath = './MysticSession/';
+  const sessionPath = './CyalSession/';
   try {
     const files = await fs.readdir(sessionPath);
     let filesDeleted = 0;

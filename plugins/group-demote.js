@@ -16,12 +16,18 @@ const handler = async (m, {conn, usedPrefix, text}) => {
   if (number.length > 13 || (number.length < 11 && number.length > 0)) return conn.reply(m.chat, tradutor.texto2, m);
 
   try {
+    var user;
     if (text) {
-      var user = number + '@s.whatsapp.net';
-    } else if (await m?.quoted?.sender) {
-      var user = await m?.quoted?.sender;
-    } else if (await m.mentionedJid) {
-      var user = number + '@s.whatsapp.net';
+      user = number + '@s.whatsapp.net';
+    } else if (m.quoted) {
+      user = await m.quoted.sender;
+    } else {
+      const mentioned = await m.mentionedJid;
+      if (mentioned && mentioned[0]) {
+        user = mentioned[0];
+      } else {
+        user = number + '@s.whatsapp.net';
+      }
     }
   } catch (e) {
   } finally {

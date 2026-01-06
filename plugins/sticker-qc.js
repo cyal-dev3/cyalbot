@@ -17,7 +17,17 @@ let text
         text = m.quoted.text;
     } else throw tradutor.texto1;
    if (!text) return m.reply(tradutor.texto2);
-    const who = await m.mentionedJid && await await m.mentionedJid[0] ? await await m.mentionedJid[0] : m.fromMe ? conn.user.jid : m.sender; 
+    let who;
+    if (m.quoted) {
+      who = await m.quoted.sender;
+    } else {
+      const mentioned = await m.mentionedJid;
+      if (mentioned && mentioned[0]) {
+        who = mentioned[0];
+      } else {
+        who = m.fromMe ? conn.user.jid : m.sender;
+      }
+    } 
     const mentionRegex = new RegExp(`@${who.split('@')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'g');
     const mishi = text.replace(mentionRegex, '');
    if (mishi.length > 30) return m.reply(tradutor.texto3);

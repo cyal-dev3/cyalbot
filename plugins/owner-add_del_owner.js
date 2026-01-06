@@ -6,7 +6,17 @@ const handler = async (m, { conn, text, args, usedPrefix, command }) => {
   const tradutor = _translate.plugins.owner_add_del_owner
 
   const why = `${tradutor.texto1[0]} ${usedPrefix + command}* @${m.sender.split('@')[0]}\n*◉ ${usedPrefix + command}* ${m.sender.split('@')[0]}\n*◉ ${usedPrefix + command}* <responder>`;
-  const who = await await m.mentionedJid[0] ? await await m.mentionedJid[0] : m.quoted ? await m?.quoted?.sender : text ? text.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : false;
+  let who;
+  const mentioned = await m.mentionedJid;
+  if (mentioned && mentioned[0]) {
+    who = mentioned[0];
+  } else if (m.quoted) {
+    who = await m.quoted.sender;
+  } else if (text) {
+    who = text.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+  } else {
+    who = false;
+  }
   if (!who) return conn.reply(m.chat, why, m, {mentions: [m.sender]});
   switch (command) {
     case 'addowner':
