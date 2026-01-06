@@ -17,12 +17,14 @@ global.defaultLenguaje = 'es';
 
 // NOTA: Para números de México móvil, el formato es 52 + 1 + 10 dígitos
 // Si tu número es 331-442-9560, el formato completo es 5213314429560
+// También se incluye el LID para compatibilidad con el nuevo sistema de WhatsApp
 global.owner = [
   ['5213314429560', '👑 Cyal 👑', true],
-  ['523314429560', '👑 Cyal 👑', true]  // Formato alternativo sin el 1
+  ['523314429560', '👑 Cyal 👑', true],  // Formato alternativo sin el 1
+  ['174912593502302', '👑 Cyal 👑', true]  // LID del owner
 ];
 
-global.suittag = ['5213314429560', '523314429560'];
+global.suittag = ['5213314429560', '523314429560', '174912593502302'];
 global.prems = [];
 
 // Base Rest Api

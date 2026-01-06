@@ -680,12 +680,10 @@ export async function handler(chatUpdate) {
     if (typeof m.text !== 'string') {
       m.text = '';
     }
-    const isROwner = [...global.owner.map(([number]) => number)].map((v) => v.replace(/[^0-9]/g, '') + '@s.whatsapp.net').includes(m.sender);
-    const isOwner = isROwner || m.fromMe;
-    const isMods = isOwner || global.mods.map((v) => v.replace(/[^0-9]/g, '') + '@s.whatsapp.net').includes(m.sender);
-    const isPrems = isROwner || isOwner || isMods || global.db.data.users[m.sender].premiumTime > 0; // || global.db.data.users[m.sender].premium = 'true'
 
-    if (opts['queque'] && m.text && !(isMods || isPrems)) {
+    // NOTA: isROwner, isOwner, isMods, isPrems se definen más abajo después de obtener participants
+
+    if (opts['queque'] && m.text) {
       const queque = this.msgqueque; const time = 1000 * 5;
       const previousID = queque[queque.length - 1];
       queque.push(m.id || m.key.id);
@@ -804,6 +802,62 @@ export async function handler(chatUpdate) {
     const isRAdmin = user?.admin == 'superadmin' || false;
     const isAdmin = isRAdmin || user?.admin == 'admin' || false; // Is User Admin?
     const isBotAdmin = bot?.admin === 'admin' || bot?.admin === 'superadmin' || false; // Are you Admin?
+
+    // Función para verificar si el sender es owner (soporta JID y LID)
+    const checkIsOwner = (sender) => {
+      // Lista de números de owner normalizados
+      const ownerNumbers = [...global.owner.map(([number]) => number)].map((v) => v.replace(/[^0-9]/g, ''));
+
+      // Verificación tradicional por JID
+      if (ownerNumbers.map(n => n + '@s.whatsapp.net').includes(sender)) {
+        return true;
+      }
+
+      // Verificación directa por LID (si el LID está en la lista de owners)
+      if (sender?.endsWith('@lid')) {
+        const senderLidNumber = sender.split('@')[0];
+        if (ownerNumbers.includes(senderLidNumber)) {
+          return true;
+        }
+
+        // Buscar en los participantes del grupo si hay un phoneNumber que coincida
+        if (m.isGroup && participants.length > 0) {
+          const senderParticipant = participants.find(p => p.lid === sender || p.id === sender);
+          if (senderParticipant?.phoneNumber) {
+            const senderNum = senderParticipant.phoneNumber.replace(/[^0-9]/g, '');
+            // Comparar con owners (exacto o últimos 10 dígitos)
+            for (const ownerNum of ownerNumbers) {
+              if (senderNum === ownerNum) return true;
+              if (senderNum.slice(-10) === ownerNum.slice(-10) && senderNum.slice(-10).length === 10) return true;
+            }
+          }
+        }
+
+        // Intentar usar el LidResolver si está disponible
+        try {
+          if (conn.lid?.getUserInfo) {
+            const lidNumber = sender.split('@')[0];
+            const userInfo = conn.lid.getUserInfo(lidNumber);
+            if (userInfo?.phoneNumber || userInfo?.jid) {
+              const resolvedNumber = (userInfo.phoneNumber || userInfo.jid).replace(/[^0-9]/g, '');
+              for (const ownerNum of ownerNumbers) {
+                if (resolvedNumber === ownerNum) return true;
+                if (resolvedNumber.slice(-10) === ownerNum.slice(-10) && resolvedNumber.slice(-10).length === 10) return true;
+              }
+            }
+          }
+        } catch (e) {
+          // Silenciar error
+        }
+      }
+
+      return false;
+    };
+
+    const isROwner = checkIsOwner(m.sender);
+    const isOwner = isROwner || m.fromMe;
+    const isMods = isOwner || global.mods.map((v) => v.replace(/[^0-9]/g, '') + '@s.whatsapp.net').includes(m.sender);
+    const isPrems = isROwner || isOwner || isMods || global.db.data.users[m.sender]?.premiumTime > 0;
 
     const ___dirname = path.join(path.dirname(fileURLToPath(import.meta.url)), './plugins');
     for (const name in global.plugins) {
