@@ -95,15 +95,47 @@ const handler = async (m, {conn, participants, command, usedPrefix, text}) => {
     return m.reply(tradutor.texto4);
   }
 
-  // Verificar que el usuario este en el grupo
-  const isInGroup = participants.some(p => (p.id || p.jid) === mentionedUser);
+  // Verificar que el usuario este en el grupo (soporta JID y LID)
+  const mentionedNumber = mentionedUser?.split('@')[0]?.replace(/[^0-9]/g, '');
+  const isInGroup = participants.some(p => {
+    const pId = p.id || p.jid;
+    const pLid = p.lid;
+    const pPhone = p.phoneNumber?.replace(/[^0-9]/g, '');
+
+    // Comparar por ID/JID directo
+    if (pId === mentionedUser) return true;
+    // Comparar por LID
+    if (pLid === mentionedUser) return true;
+    // Comparar por número de teléfono
+    if (pPhone && mentionedNumber && pPhone === mentionedNumber) return true;
+    // Comparar últimos 10 dígitos
+    if (pPhone && mentionedNumber) {
+      const pLast10 = pPhone.slice(-10);
+      const mLast10 = mentionedNumber.slice(-10);
+      if (pLast10 === mLast10 && pLast10.length === 10) return true;
+    }
+    return false;
+  });
+
   if (!isInGroup) {
     return m.reply(`El usuario no esta en el grupo.`);
   }
 
+  // Si el mentionedUser es un LID, intentar obtener el JID real para la operación
+  let userToKick = mentionedUser;
+  if (mentionedUser?.endsWith('@lid')) {
+    // Buscar el participante que coincida con este LID
+    const foundP = participants.find(p => p.lid === mentionedUser || p.id === mentionedUser);
+    if (foundP?.phoneNumber) {
+      userToKick = foundP.phoneNumber + '@s.whatsapp.net';
+    } else if (foundP?.jid && !foundP.jid.endsWith('@lid')) {
+      userToKick = foundP.jid;
+    }
+  }
+
   try {
-    const response = await conn.groupParticipantsUpdate(m.chat, [mentionedUser], 'remove');
-    const userTag = mentionedUser.split('@')[0];
+    const response = await conn.groupParticipantsUpdate(m.chat, [userToKick], 'remove');
+    const userTag = userToKick.split('@')[0];
 
     if (response[0]?.status === '200') {
       m.reply(`Usuario @${userTag} expulsado.`, m.chat, {mentions: [mentionedUser]});
