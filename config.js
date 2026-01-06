@@ -4,7 +4,7 @@ import {fileURLToPath} from 'url';
 import fs from 'fs'; 
 import moment from 'moment-timezone';
 
-global.botnumber = "522205944006"
+global.botnumber = "5212205944006"
 global.confirmCode = ""
 global.authFile = `CyalSession`;
 
@@ -15,11 +15,14 @@ global.isBaileysFail = false;
 
 global.defaultLenguaje = 'es';
 
+// NOTA: Para números de México móvil, el formato es 52 + 1 + 10 dígitos
+// Si tu número es 331-442-9560, el formato completo es 5213314429560
 global.owner = [
-  ['523314429560', '👑 Cyal 👑', true]
+  ['5213314429560', '👑 Cyal 👑', true],
+  ['523314429560', '👑 Cyal 👑', true]  // Formato alternativo sin el 1
 ];
 
-global.suittag = ['523314429560'];
+global.suittag = ['5213314429560', '523314429560'];
 global.prems = [];
 
 // Base Rest Api
@@ -59,7 +62,7 @@ global.cyalbot2 = '';
 global.waitt = '*_[ ⏳ ] Cargando..._*';
 global.waittt = '*_[ ⏳ ] Cargando..._*';
 global.waitttt = '*_[ ⏳ ] Cargando..._*';
-global.nomorown = '523314429560';
+global.nomorown = '5213314429560';
 global.pdoc = ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/msword', 'application/pdf', 'text/rtf'];
 global.cmenut = '❖––––––『';
 global.cmenub = '┊✦ ';

@@ -718,19 +718,87 @@ export async function handler(chatUpdate) {
 
     let usedPrefix;
     const _user = global.db.data && global.db.data.users && global.db.data.users[m.sender];
-    const groupMetadata = m.isGroup ? { ...(conn.chats[m.chat]?.metadata || await this.groupMetadata(m.chat).catch(_ => null) || {}), ...(((conn.chats[m.chat]?.metadata || await this.groupMetadata(m.chat).catch(_ => null) || {}).participants) && { participants: ((conn.chats[m.chat]?.metadata || await this.groupMetadata(m.chat).catch(_ => null) || {}).participants || []).map(p => ({ ...p, id: p.jid, jid: p.jid, lid: p.lid })) }) } : {};
-    //const groupMetadata = (m.isGroup ? ((conn.chats[m.chat] || {}).metadata || await this.groupMetadata(m.chat).catch((_) => null)) : {}) || {};
-    const participants = ((m.isGroup ? groupMetadata.participants : []) || []).map(participant => ({ id: participant.jid || participant.id, jid: participant.jid || participant.id, lid: participant.lid, admin: participant.admin }));
-    //const participants = (m.isGroup ? groupMetadata.participants : []) || [];
-    const user = (m.isGroup ? participants.find((u) => conn.decodeJid(u.jid) === m.sender) : {}) || {}; // User Data
+
+    // Obtener metadata del grupo con mejor manejo de caché
+    let groupMetadata = {};
+    if (m.isGroup) {
+      try {
+        groupMetadata = conn.chats[m.chat]?.metadata || await this.groupMetadata(m.chat).catch(_ => null) || {};
+        // Guardar en caché para futuras consultas
+        if (groupMetadata && Object.keys(groupMetadata).length > 0) {
+          if (!conn.chats[m.chat]) conn.chats[m.chat] = {};
+          conn.chats[m.chat].metadata = groupMetadata;
+        }
+      } catch (e) {
+        groupMetadata = {};
+      }
+    }
+
+    // Función auxiliar para extraer número de teléfono de diferentes formatos
+    const extractPhoneNumber = (participant) => {
+      if (!participant) return null;
+      // Si tiene phoneNumber directo (nuevo formato LID)
+      if (participant.phoneNumber) {
+        return participant.phoneNumber.replace(/@.*$/, '').replace(/[^0-9]/g, '');
+      }
+      // Si tiene jid tradicional
+      if (participant.jid && !participant.jid.endsWith('@lid')) {
+        return participant.jid.split('@')[0].replace(/:/g, '').replace(/[^0-9]/g, '');
+      }
+      // Si tiene id que no es LID
+      if (participant.id && !participant.id.endsWith('@lid')) {
+        return participant.id.split('@')[0].replace(/:/g, '').replace(/[^0-9]/g, '');
+      }
+      return null;
+    };
+
+    // Procesar participantes para soportar tanto JID como LID
+    const rawParticipants = (m.isGroup ? groupMetadata.participants : []) || [];
+    const participants = rawParticipants.map(p => {
+      const phoneNum = extractPhoneNumber(p);
+      return {
+        ...p,
+        id: p.jid || p.id,
+        jid: p.jid || p.id,
+        lid: p.lid || p.id,
+        phoneNumber: phoneNum,
+        admin: p.admin
+      };
+    });
+
+    // Extraer número del sender para comparación
+    const senderNumber = m.sender?.split('@')[0]?.replace(/:/g, '').replace(/[^0-9]/g, '');
+
+    // Buscar usuario en participantes - comparar por JID, LID o número de teléfono
+    const user = (m.isGroup ? participants.find((u) => {
+      const decodedJid = conn.decodeJid(u.jid);
+      const pNumber = extractPhoneNumber(u);
+      // Comparar por JID decodificado
+      if (decodedJid === m.sender) return true;
+      // Comparar por número de teléfono
+      if (pNumber && senderNumber && pNumber === senderNumber) return true;
+      // Comparar por LID si el sender es un LID
+      if (m.sender?.endsWith('@lid') && u.lid === m.sender) return true;
+      return false;
+    }) : {}) || {};
 
     // Buscar al bot en participants - intentar múltiples métodos
     const botJid = this.user?.jid;
-    const botNumber = botJid?.split('@')[0]?.replace(/:/g, '');
+    const botNumber = botJid?.split('@')[0]?.replace(/:/g, '').replace(/[^0-9]/g, '');
     let bot = (m.isGroup ? participants.find((u) => {
       const pJid = conn.decodeJid(u.jid);
-      const pNumber = pJid?.split('@')[0]?.replace(/:/g, '');
-      return pJid === botJid || pNumber === botNumber;
+      const pNumber = extractPhoneNumber(u);
+      // Comparar por JID
+      if (pJid === botJid) return true;
+      // Comparar por número de teléfono
+      if (pNumber && botNumber && pNumber === botNumber) return true;
+      // Comparar número sin código de país (últimos 10 dígitos)
+      if (pNumber && botNumber) {
+        const pLast10 = pNumber.slice(-10);
+        const botLast10 = botNumber.slice(-10);
+        if (pLast10 === botLast10 && pLast10.length === 10) return true;
+      }
+      return false;
     }) : {}) || {};
 
     const isRAdmin = user?.admin == 'superadmin' || false;
@@ -1145,11 +1213,21 @@ export async function participantsUpdate({ id, participants, action }) {
            const userPrefix = antiArab.some((prefix) => user.startsWith(prefix));
            // Buscar al bot en los participantes del grupo (soporta tanto LID como JID)
            const botJid = m?.conn?.user?.jid || m?.conn?.user?.id;
-           const botNumber = botJid?.split('@')[0]?.split(':')[0];
+           const botNumber = botJid?.split('@')[0]?.replace(/:/g, '').replace(/[^0-9]/g, '');
            const botTt2 = groupMetadata?.participants?.find((u) => {
              const odecoded = m?.conn?.decodeJid(u.id);
-             const participantNumber = odecoded?.split('@')[0]?.split(':')[0];
-             return participantNumber === botNumber || odecoded === botJid;
+             const participantNumber = odecoded?.split('@')[0]?.replace(/:/g, '').replace(/[^0-9]/g, '');
+             // También verificar phoneNumber si existe
+             const pPhoneNumber = u.phoneNumber?.replace(/@.*$/, '').replace(/[^0-9]/g, '');
+             if (participantNumber === botNumber || odecoded === botJid) return true;
+             if (pPhoneNumber && botNumber && pPhoneNumber === botNumber) return true;
+             // Comparar últimos 10 dígitos
+             if (pPhoneNumber && botNumber) {
+               const pLast10 = pPhoneNumber.slice(-10);
+               const botLast10 = botNumber.slice(-10);
+               if (pLast10 === botLast10 && pLast10.length === 10) return true;
+             }
+             return false;
            }) || {};
            const isBotAdminNn = botTt2?.admin === 'admin' || botTt2?.admin === 'superadmin' || false;
            text = (action === 'add' ? (chat.sWelcome || tradutor.texto1 || conn.welcome || 'Welcome, @user!').replace('@subject', await m?.conn?.getName(id)).replace('@desc', groupMetadata?.desc?.toString() || '*𝚂𝙸𝙽 𝙳𝙴𝚂𝙲𝚁𝙸𝙿𝙲𝙸𝙾𝙽*').replace('@user', '@' + user.split('@')[0]) :
