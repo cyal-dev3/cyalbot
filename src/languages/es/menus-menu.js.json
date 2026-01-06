@@ -1,21 +1,21 @@
-﻿{
+{
     "plugins": {
         "menu": {
             "menu_header": "╭═══〘 *Cyal Bot* 〙═══╮\n║ Hola, @username\n║─────────────────\n║ Owner: @author\n║ Numero: wa.me/@owner\n║ Fecha: @week, @date\n║ Uptime: @uptime\n║ Usuarios: @rtotal\n║ Registrados: @rtotalreg\n╰═══════════════════╯",
-            
+
             "user_info": "╭─── Tu Info ───╮\n│ Nivel: @level\n│ XP: @exp\n│ Rango: @role\n│ Diamantes: @limit\n│ Coins: @money\n│ Tokens: @joincount\n│ Premium: @premium\n╰───────────────╯\n",
-            
+
             "section_header": "╭─ @category ─╮",
             "command_item": "│ @cmd @islimit",
             "section_footer": "╰─────────────╯\n",
-            
+
             "error_message": "[ ❌ ] Ocurrió un error al generar el menú:",
-            
+
             "premium": {
                 "yes": "✅",
                 "no": "❌"
             },
-            
+
             "tags": {
                 "info": "<INFORMACION>",
                 "jadibot": "<SUBBOTS>",

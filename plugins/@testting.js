@@ -9,6 +9,7 @@ import { spawn } from 'child_process';
 import { load } from 'cheerio';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import ytmp33 from '../src/libraries/ytmp33.js';
 const { generateWAMessageFromContent, prepareWAMessageMedia } = (await import("baileys")).default;
 
 const AUDIO_SIZE_LIMIT = 50 * 1024 * 1024;
@@ -43,11 +44,79 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
         const isAudio = command === 'test' || command === 'play' || command === 'ytmp3';
         const format = isAudio ? 'mp3' : '720p';
 
-        const downloadResult = await yt.download(video.url, format);
-        
-        if (!downloadResult || !downloadResult.dlink) throw new Error('No se pudo obtener el enlace de descarga');
+        let mediaUrl = null;
 
-        const mediaUrl = downloadResult.dlink;
+        if (isAudio) {
+            // Intentar múltiples APIs para audio
+            // 1. Intentar ssvid.net primero
+            try {
+                const downloadResult = await yt.download(video.url, format);
+                if (downloadResult?.dlink) {
+                    mediaUrl = downloadResult.dlink;
+                }
+            } catch (e) {
+                console.log('❌ ssvid.net falló:', e.message);
+            }
+
+            // 2. Fallback: ytmp33 (notube.net)
+            if (!mediaUrl) {
+                try {
+                    const result = await ytmp33(video.url);
+                    if (result?.status && result?.resultados?.descargar) {
+                        mediaUrl = result.resultados.descargar;
+                    }
+                } catch (e) {
+                    console.log('❌ ytmp33 falló:', e.message);
+                }
+            }
+
+            // 3. Fallback: cobalt.tools API
+            if (!mediaUrl) {
+                try {
+                    const cobaltRes = await fetch('https://api.cobalt.tools/api/json', {
+                        method: 'POST',
+                        headers: {
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            url: video.url,
+                            vCodec: 'h264',
+                            vQuality: '720',
+                            aFormat: 'mp3',
+                            isAudioOnly: true
+                        })
+                    });
+                    const cobaltData = await cobaltRes.json();
+                    if (cobaltData?.url) {
+                        mediaUrl = cobaltData.url;
+                    }
+                } catch (e) {
+                    console.log('❌ cobalt.tools falló:', e.message);
+                }
+            }
+
+            // 4. Fallback: API Delirius
+            if (!mediaUrl && global.BASE_API_DELIRIUS) {
+                try {
+                    const delirius = await (
+                        await fetch(`${global.BASE_API_DELIRIUS}/api/download/ytmp3?url=${encodeURIComponent(video.url)}`)
+                    ).json();
+                    if (delirius?.status && delirius?.data?.download?.url) {
+                        mediaUrl = delirius.data.download.url;
+                    }
+                } catch (e) {
+                    console.log('❌ API Delirius falló:', e.message);
+                }
+            }
+
+            if (!mediaUrl) throw new Error('No se pudo obtener el audio de ninguna API disponible');
+        } else {
+            // Para video, usar ssvid.net
+            const downloadResult = await yt.download(video.url, format);
+            if (!downloadResult || !downloadResult.dlink) throw new Error('No se pudo obtener el enlace de descarga');
+            mediaUrl = downloadResult.dlink;
+        }
 
         if (isAudio) {
             const [audioBuffer, thumbnailBuffer] = await Promise.all([
