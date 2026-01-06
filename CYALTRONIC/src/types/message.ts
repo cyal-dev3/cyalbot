@@ -37,6 +37,8 @@ export interface SerializedMessage {
   pushName: string;
   mentionedJid: string[];
   quoted?: QuotedMessage;
+  /** Mensaje original de Baileys (para descargar media) */
+  rawMessage?: proto.IWebMessageInfo;
   reply: (text: string) => Promise<proto.WebMessageInfo | undefined>;
   react: (emoji: string) => Promise<void>;
 }

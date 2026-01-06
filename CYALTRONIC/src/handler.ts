@@ -183,6 +183,7 @@ export class MessageHandler {
       pushName: m.pushName || '',
       mentionedJid,
       quoted,
+      rawMessage: m,
 
       // Método para responder
       reply: async (replyText: string) => {

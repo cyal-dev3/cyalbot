@@ -53,11 +53,99 @@ export class Database {
   /**
    * Obtiene un usuario por su JID
    * Si no existe, lo crea con valores por defecto
+   * Si existe pero le faltan campos, los agrega con valores por defecto
    */
   getUser(jid: string): UserRPG {
     if (!this.db.data.users[jid]) {
       this.db.data.users[jid] = { ...DEFAULT_USER };
       this.isDirty = true;
+    } else {
+      // Migrar usuarios existentes: agregar campos faltantes con valores por defecto
+      const user = this.db.data.users[jid];
+      let needsMigration = false;
+
+      for (const [key, defaultValue] of Object.entries(DEFAULT_USER)) {
+        if (!(key in user)) {
+          (user as unknown as Record<string, unknown>)[key] = defaultValue;
+          needsMigration = true;
+        }
+      }
+
+      // Asegurar que los objetos anidados existan
+      if (!user.equipment) {
+        user.equipment = { weapon: null, armor: null, accessory: null };
+        needsMigration = true;
+      }
+      if (!user.inventory) {
+        user.inventory = [];
+        needsMigration = true;
+      }
+      if (!user.combatStats) {
+        user.combatStats = {
+          totalKills: 0,
+          dungeonsCompleted: 0,
+          pvpWins: 0,
+          pvpLosses: 0,
+          totalDamageDealt: 0,
+          totalDamageReceived: 0,
+          bossesKilled: 0
+        };
+        needsMigration = true;
+      }
+      if (!user.achievements) {
+        user.achievements = [];
+        needsMigration = true;
+      }
+      if (!user.titles) {
+        user.titles = ['🌱 Novato'];
+        needsMigration = true;
+      }
+      if (!user.currentTitle) {
+        user.currentTitle = '🌱 Novato';
+        needsMigration = true;
+      }
+      if (!user.activeBuffs) {
+        user.activeBuffs = [];
+        needsMigration = true;
+      }
+      if (!user.dailyQuests) {
+        user.dailyQuests = [];
+        needsMigration = true;
+      }
+      if (!user.weeklyQuests) {
+        user.weeklyQuests = [];
+        needsMigration = true;
+      }
+
+      // Asegurar valores numéricos válidos
+      if (typeof user.maxHealth !== 'number' || isNaN(user.maxHealth)) {
+        user.maxHealth = 100;
+        needsMigration = true;
+      }
+      if (typeof user.maxMana !== 'number' || isNaN(user.maxMana)) {
+        user.maxMana = 20;
+        needsMigration = true;
+      }
+      if (typeof user.maxStamina !== 'number' || isNaN(user.maxStamina)) {
+        user.maxStamina = 100;
+        needsMigration = true;
+      }
+      if (typeof user.attack !== 'number' || isNaN(user.attack)) {
+        user.attack = 10;
+        needsMigration = true;
+      }
+      if (typeof user.defense !== 'number' || isNaN(user.defense)) {
+        user.defense = 5;
+        needsMigration = true;
+      }
+      if (typeof user.critChance !== 'number' || isNaN(user.critChance)) {
+        user.critChance = 5;
+        needsMigration = true;
+      }
+
+      if (needsMigration) {
+        this.isDirty = true;
+      }
     }
     return this.db.data.users[jid];
   }

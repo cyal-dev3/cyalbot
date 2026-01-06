@@ -292,7 +292,38 @@ const MENU_CATEGORIES: MenuCategory[] = [
         cmd: 'play',
         aliases: ['musica', 'music', 'cancion'],
         description: 'Descargar música',
-        usage: '/play [nombre]'
+        usage: '/play [nombre/URL]'
+      }
+    ]
+  },
+  {
+    emoji: '🎨',
+    name: 'Stickers',
+    description: 'Crear y convertir stickers',
+    commands: [
+      {
+        cmd: 's',
+        aliases: ['sticker', 'stiker', 'stick'],
+        description: 'Crear sticker de imagen/video',
+        usage: '/s (responde a imagen/video)'
+      },
+      {
+        cmd: 'toimg',
+        aliases: ['toimage', 'img', 'imagen'],
+        description: 'Sticker a imagen PNG',
+        usage: '/toimg (responde a sticker)'
+      },
+      {
+        cmd: 'tovideo',
+        aliases: ['tovid', 'video'],
+        description: 'Sticker animado a video',
+        usage: '/tovideo (responde a sticker)'
+      },
+      {
+        cmd: 'togif',
+        aliases: ['gif'],
+        description: 'Sticker animado a GIF',
+        usage: '/togif (responde a sticker)'
       }
     ]
   }

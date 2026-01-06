@@ -1,15 +1,36 @@
 /**
  * 🎵 Plugin de Música - CYALTRONIC
  * Descarga y envía música desde YouTube, Spotify y SoundCloud
+ * Usa @distube/ytdl-core como método principal (más estable)
  */
 
 import play from 'play-dl';
+import ytdl from '@distube/ytdl-core';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 
 // Configurar play-dl para no usar cookies (evita errores)
 play.setToken({
   useragent: ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36']
 });
+
+/**
+ * Descarga audio usando @distube/ytdl-core (más estable)
+ */
+async function downloadWithYtdl(url: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+
+    const stream = ytdl(url, {
+      filter: 'audioonly',
+      quality: 'highestaudio',
+      highWaterMark: 1 << 25
+    });
+
+    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+    stream.on('error', (err: Error) => reject(err));
+  });
+}
 
 /**
  * Detecta el tipo de URL o si es una búsqueda
@@ -158,23 +179,32 @@ export const playPlugin: PluginHandler = {
         `⏱️ Duración: ${duration}`
       );
 
-      // Obtener stream de audio
-      let audioStream;
+      // Obtener audio buffer
+      let audioBuffer: Buffer;
 
       if (source === 'soundcloud') {
-        audioStream = await play.stream(videoUrl, { quality: 2 });
+        // SoundCloud usa play-dl
+        const audioStream = await play.stream(videoUrl, { quality: 2 });
+        const chunks: Buffer[] = [];
+        for await (const chunk of audioStream.stream) {
+          chunks.push(Buffer.from(chunk));
+        }
+        audioBuffer = Buffer.concat(chunks);
       } else {
-        audioStream = await play.stream(videoUrl, { quality: 2 });
+        // YouTube usa @distube/ytdl-core (más estable)
+        try {
+          audioBuffer = await downloadWithYtdl(videoUrl);
+        } catch (ytdlError) {
+          // Fallback a play-dl si ytdl falla
+          console.log('ytdl-core falló, intentando con play-dl...');
+          const audioStream = await play.stream(videoUrl, { quality: 2 });
+          const chunks: Buffer[] = [];
+          for await (const chunk of audioStream.stream) {
+            chunks.push(Buffer.from(chunk));
+          }
+          audioBuffer = Buffer.concat(chunks);
+        }
       }
-
-      // Convertir stream a buffer
-      const chunks: Buffer[] = [];
-
-      for await (const chunk of audioStream.stream) {
-        chunks.push(Buffer.from(chunk));
-      }
-
-      const audioBuffer = Buffer.concat(chunks);
 
       // Verificar tamaño (WhatsApp tiene límite de ~16MB para audio)
       const sizeMB = audioBuffer.length / (1024 * 1024);

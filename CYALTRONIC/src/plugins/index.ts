@@ -36,6 +36,11 @@ import { menuPlugin } from './menu.js';
 // Importar plugins de media
 import { playPlugin } from './media-play.js';
 
+// Importar plugins de stickers
+import { stickerPlugin } from './sticker-sticker.js';
+import { toImagePlugin } from './sticker-toimg.js';
+import { toVideoPlugin, toGifPlugin } from './sticker-tovideo.js';
+
 /**
  * Lista de plugins RPG básicos
  */
@@ -170,6 +175,15 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('media-play', playPlugin);
   console.log('      ✅ play (musica, music, song, cancion)');
 
+  // Cargar plugins de stickers
+  console.log('');
+  console.log('   🎨 Stickers:');
+  handler.registerPlugin('sticker-sticker', stickerPlugin);
+  handler.registerPlugin('sticker-toimg', toImagePlugin);
+  handler.registerPlugin('sticker-tovideo', toVideoPlugin);
+  handler.registerPlugin('sticker-togif', toGifPlugin);
+  console.log('      ✅ s, sticker, toimg, tovideo, togif');
+
   // Cargar plugins de utilidad
   console.log('');
   console.log('   📋 Utilidades:');
@@ -192,6 +206,7 @@ export function loadPlugins(handler: MessageHandler): void {
     3 +                            // group-pin (3)
     1 +                            // notify (1)
     1 +                            // play (1)
+    4 +                            // stickers (4)
     1;                             // menu (1)
 
   console.log('');

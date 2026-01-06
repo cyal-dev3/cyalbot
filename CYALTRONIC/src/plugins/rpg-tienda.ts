@@ -116,27 +116,29 @@ const tiendaPlugin: PluginHandler = {
       }
 
     } else {
-      // Mostrar todas las categorías (resumido)
-      const categories = ['armas', 'armaduras', 'accesorios', 'consumibles'];
+      // Mostrar todas las categorías con todos los items
+      const categories = ['armas', 'armaduras', 'accesorios', 'consumibles', 'materiales'];
       const categoryEmojis: Record<string, string> = {
         armas: '⚔️',
         armaduras: '🛡️',
         accesorios: '💍',
-        consumibles: '🧪'
+        consumibles: '🧪',
+        materiales: '📦'
       };
 
       for (const cat of categories) {
         response += `${categoryEmojis[cat]} *${cat.charAt(0).toUpperCase() + cat.slice(1)}:*\n`;
 
-        const itemIds = SHOP_ITEMS[cat].slice(0, 3); // Solo mostrar 3 por categoría
+        const itemIds = SHOP_ITEMS[cat];
         for (const itemId of itemIds) {
           const item = ITEMS[itemId];
           if (item) {
             const rarity = RARITY_COLORS[item.rarity];
-            response += `   ${rarity} ${item.emoji} ${item.name} - ${formatNumber(item.price)}💰\n`;
+            const canBuy = user.money >= item.price ? '✓' : '✗';
+            response += `   ${rarity} ${item.emoji} ${item.name} - ${formatNumber(item.price)}💰 ${canBuy}\n`;
           }
         }
-        response += `   _... y más_\n\n`;
+        response += '\n';
       }
     }
 
