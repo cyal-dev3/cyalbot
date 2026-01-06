@@ -44,6 +44,23 @@
         "_antiviewonce": {
             "texto1": "*- En este grupo, no se permite ocultar nada.*"
         },
+        "_antispam": {
+            "header": "_*< ANTI-SPAM />*_",
+            "warning": "Advertencia",
+            "detected": "Detectado",
+            "reasons": "Razones",
+            "remaining": "Te quedan %s advertencias antes de ser expulsado",
+            "kick": "ha sido expulsado por spam",
+            "nobotadmin": "No soy administrador, no puedo tomar acciones.",
+            "flood": "Estás enviando mensajes muy rápido",
+            "emojis": "Demasiados emojis en el mensaje",
+            "mentions": "Demasiadas menciones en el mensaje",
+            "repeated": "Caracteres repetidos detectados",
+            "caps": "Demasiado texto en MAYÚSCULAS",
+            "links": "Demasiados enlaces en el mensaje",
+            "linebreaks": "Demasiados saltos de línea",
+            "pattern": "Contenido sospechoso/spam detectado"
+        },
         "_autosticker": {
             "texto1": "_*< FUNCIONES - AUTOSTICKER />*_\n\n*[ â„¹ï¸ ] La duraciÃ³n del vÃ­deo no puede superar los 7 segundos.*\n\n*[ ðŸ’¡ ] Para desactivar la funciÃ³n de* _autosticker_ *envie el siguiente comando:* _/ðšðš’ðšœðšŠðš‹ðš•ðšŽ ðšŠðšžðšðš˜ðšœðšðš’ðšŒðš”ðšŽðš›_"
         },

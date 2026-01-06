@@ -614,6 +614,7 @@ export async function handler(chatUpdate) {
           antiviewonce: false,
           antiToxic: false,
           antiTraba: false,
+          antispam: false,
           antiArab: false,
           antiArab2: false,
           antiporno: false,

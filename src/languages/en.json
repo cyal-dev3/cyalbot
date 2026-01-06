@@ -44,6 +44,23 @@
         "_antiviewonce": {
             "texto1": "*- In this group, you do not have permission to hide anything.*"
         },
+        "_antispam": {
+            "header": "_*< ANTI-SPAM />*_",
+            "warning": "Warning",
+            "detected": "Detected",
+            "reasons": "Reasons",
+            "remaining": "You have %s warnings left before being kicked",
+            "kick": "has been kicked for spamming",
+            "nobotadmin": "I'm not an admin, I cannot take action.",
+            "flood": "You are sending messages too fast",
+            "emojis": "Too many emojis in the message",
+            "mentions": "Too many mentions in the message",
+            "repeated": "Repeated characters detected",
+            "caps": "Too much text in CAPS",
+            "links": "Too many links in the message",
+            "linebreaks": "Too many line breaks",
+            "pattern": "Suspicious/spam content detected"
+        },
         "_autosticker": {
             "texto1": "_*< FUNCTIONS - AUTOSTICKER />*_\n\n*[ â„¹ï¸ ] The duration of the video cannot exceed 7 seconds.*\n\n*[ ðŸ’¡ ] To disable the* _autosticker_ *function, send the following command:* _/"
         },

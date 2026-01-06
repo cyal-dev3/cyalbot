@@ -112,8 +112,15 @@ ${tradutor.texto16[3]}
 
 ${tradutor.texto17[0]} | ANTITRABAS
 ${tradutor.texto17[1]}  ${usedPrefix + command} antitraba
-${tradutor.texto17[2]} 
-${tradutor.texto17[3]} 
+${tradutor.texto17[2]}
+${tradutor.texto17[3]}
+
+--------------------------------
+
+${tradutor.texto17_antispam ? tradutor.texto17_antispam[0] : '📵 | ANTISPAM MEJORADO'}
+${tradutor.texto17_antispam ? tradutor.texto17_antispam[1] : '📌 USO:'}  ${usedPrefix + command} antispam
+${tradutor.texto17_antispam ? tradutor.texto17_antispam[2] : '⚡ Detecta: flood, emojis excesivos, menciones masivas, mayúsculas, patrones de spam'}
+${tradutor.texto17_antispam ? tradutor.texto17_antispam[3] : '🔒 Sistema de advertencias con expulsión automática'}
 
 --------------------------------
 
@@ -442,6 +449,15 @@ break;
         }
       }
       chat.antiTraba = isEnable;
+      break;
+    case 'antispam':
+      if (m.isGroup) {
+        if (!(isAdmin || isROwner || isOwner)) {
+          global.dfail('admin', m, conn);
+          throw false;
+        }
+      }
+      chat.antispam = isEnable;
       break;
     case 'antiarabes':
       if (m.isGroup) {
