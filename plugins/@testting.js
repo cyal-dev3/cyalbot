@@ -120,8 +120,8 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
 
         if (isAudio) {
             const [audioBuffer, thumbnailBuffer] = await Promise.all([
-                fetch(mediaUrl).then(res => res.buffer()),
-                fetch(video.thumbnail).then(res => res.buffer())
+                fetch(mediaUrl).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab)),
+                fetch(video.thumbnail).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab))
             ]);
 
             let lyricsData = await Genius.searchLyrics(video.title).catch(() => null);
@@ -274,8 +274,8 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
             // Manejo de video (sin cambios)
             try {
                 const [videoBuffer, thumbnailBuffer] = await Promise.all([
-                    fetch(mediaUrl).then(res => res.buffer()),
-                    fetch(video.thumbnail).then(res => res.buffer())
+                    fetch(mediaUrl).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab)),
+                    fetch(video.thumbnail).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab))
                 ]);
                 
                 const videoSize = videoBuffer.length;
