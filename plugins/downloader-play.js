@@ -8,9 +8,18 @@ async function downloadAndValidate(url) {
   const response = await fetch(url, { timeout: 30000 });
   const buffer = Buffer.from(await response.arrayBuffer());
 
-  // Verificar que el buffer tenga tamaño mínimo (10KB)
-  if (buffer.length < 10000) {
-    throw new Error(`Audio muy pequeño: ${buffer.length} bytes`);
+  // Un audio de al menos 1 minuto en MP3 128kbps = ~960KB mínimo
+  // Usamos 500KB como mínimo para ser seguros
+  if (buffer.length < 500000) {
+    throw new Error(`Audio muy pequeño: ${(buffer.length / 1024).toFixed(1)}KB (mínimo 500KB)`);
+  }
+
+  // Verificar que sea un MP3 válido (ID3 tag o frame sync)
+  const isValidMp3 = (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) || // ID3
+                    (buffer[0] === 0xFF && (buffer[1] & 0xE0) === 0xE0); // Frame sync
+
+  if (!isValidMp3) {
+    throw new Error('El archivo descargado no es un MP3 válido');
   }
 
   return buffer;
@@ -134,7 +143,7 @@ let handler = async (m, { conn, args, text, usedPrefix, command }) => {
     }
 
     // Enviar audio si se obtuvo correctamente
-    if (audioBuffer && audioBuffer.length > 10000) {
+    if (audioBuffer && audioBuffer.length > 500000) {
       await conn.sendMessage(
         m.chat,
         { audio: audioBuffer, mimetype: "audio/mpeg" },
