@@ -3,6 +3,19 @@ import fetch from 'node-fetch'
 import yts from 'yt-search'
 import ytmp33 from '../src/libraries/ytmp33.js'
 
+// Función para descargar audio como buffer y validar
+async function downloadAndValidate(url) {
+  const response = await fetch(url, { timeout: 30000 });
+  const buffer = Buffer.from(await response.arrayBuffer());
+
+  // Verificar que el buffer tenga tamaño mínimo (10KB)
+  if (buffer.length < 10000) {
+    throw new Error(`Audio muy pequeño: ${buffer.length} bytes`);
+  }
+
+  return buffer;
+}
+
 let handler = async (m, { conn, args, text, usedPrefix, command }) => {
   const datas = global;
   const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`));
@@ -22,55 +35,114 @@ let handler = async (m, { conn, args, text, usedPrefix, command }) => {
   conn.sendMessage(m.chat, { image: { url: result.thumbnail }, caption: body }, { quoted: m });
 
   if (command === 'play') {
+    const videoUrl = regex + result.videoId;
+    let audioBuffer = null;
+    let errorMessages = [];
+
+    // Intento 1: ytmp33 (notube.net)
     try {
-      // Usar ytmp33 (notube.net)
-      const audiodlp = await ytmp33(regex + result.videoId);
+      console.log('🎵 Intentando ytmp33 (notube.net)...');
+      const audiodlp = await ytmp33(videoUrl);
       if (audiodlp?.status && audiodlp?.resultados?.descargar) {
-        const downloader = audiodlp.resultados.descargar;
-        await conn.sendMessage(m.chat, { audio: { url: downloader }, mimetype: "audio/mpeg" }, { quoted: m });
+        audioBuffer = await downloadAndValidate(audiodlp.resultados.descargar);
+        console.log('✅ ytmp33 exitoso, tamaño:', audioBuffer.length);
       } else {
         throw new Error('ytmp33 no devolvió resultado válido');
       }
     } catch (error) {
-      console.log('❌ Error en ytmp33, intentando Ruby-core fallback...', error);
+      errorMessages.push(`ytmp33: ${error.message}`);
+      console.log('❌ Error en ytmp33:', error.message);
+    }
+
+    // Intento 2: Ruby-core
+    if (!audioBuffer) {
       try {
+        console.log('🎵 Intentando Ruby-core...');
         const ruby = await (
           await fetch(
-            `https://ruby-core.vercel.app/api/download/youtube/mp3?url=${encodeURIComponent(regex + result.videoId)}`
+            `https://ruby-core.vercel.app/api/download/youtube/mp3?url=${encodeURIComponent(videoUrl)}`,
+            { timeout: 30000 }
           )
         ).json();
         if (ruby?.status && ruby?.download?.url) {
-          const audioLink = ruby.download.url;
-          await conn.sendMessage(
-            m.chat,
-            { audio: { url: audioLink }, mimetype: "audio/mpeg" },
-            { quoted: m }
-          );
+          audioBuffer = await downloadAndValidate(ruby.download.url);
+          console.log('✅ Ruby-core exitoso, tamaño:', audioBuffer.length);
         } else {
           throw new Error('Ruby-core no devolvió resultado válido');
         }
       } catch (err2) {
-        console.log('❌ Falla en Ruby-core, intentando API Delirius...', err2);
-        try {
-          const delirius = await (
-            await fetch(
-              `${global.BASE_API_DELIRIUS}/api/download/ytmp3?url=${encodeURIComponent(regex + result.videoId)}`
-            )
-          ).json();
-          if (delirius?.status && delirius?.data?.download?.url) {
-            await conn.sendMessage(
-              m.chat,
-              { audio: { url: delirius.data.download.url }, mimetype: "audio/mpeg" },
-              { quoted: m }
-            );
-          } else {
-            conn.reply(m.chat, tradutor.texto6, m);
-          }
-        } catch (err3) {
-          console.log('❌ Falla en API Delirius mp3:', err3);
-          conn.reply(m.chat, tradutor.texto6, m);
-        }
+        errorMessages.push(`Ruby-core: ${err2.message}`);
+        console.log('❌ Error en Ruby-core:', err2.message);
       }
+    }
+
+    // Intento 3: API Delirius
+    if (!audioBuffer) {
+      try {
+        console.log('🎵 Intentando API Delirius...');
+        const delirius = await (
+          await fetch(
+            `${global.BASE_API_DELIRIUS}/api/download/ytmp3?url=${encodeURIComponent(videoUrl)}`,
+            { timeout: 30000 }
+          )
+        ).json();
+        if (delirius?.status && delirius?.data?.download?.url) {
+          audioBuffer = await downloadAndValidate(delirius.data.download.url);
+          console.log('✅ Delirius exitoso, tamaño:', audioBuffer.length);
+        } else {
+          throw new Error('Delirius no devolvió resultado válido');
+        }
+      } catch (err3) {
+        errorMessages.push(`Delirius: ${err3.message}`);
+        console.log('❌ Error en Delirius:', err3.message);
+      }
+    }
+
+    // Intento 4: cobalt.tools API (nuevo fallback)
+    if (!audioBuffer) {
+      try {
+        console.log('🎵 Intentando cobalt.tools...');
+        const cobaltResponse = await fetch('https://api.cobalt.tools/api/json', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            url: videoUrl,
+            vCodec: 'h264',
+            vQuality: '720',
+            aFormat: 'mp3',
+            isAudioOnly: true
+          }),
+          timeout: 30000
+        });
+        const cobalt = await cobaltResponse.json();
+        if (cobalt?.status === 'stream' && cobalt?.url) {
+          audioBuffer = await downloadAndValidate(cobalt.url);
+          console.log('✅ cobalt.tools exitoso, tamaño:', audioBuffer.length);
+        } else if (cobalt?.status === 'redirect' && cobalt?.url) {
+          audioBuffer = await downloadAndValidate(cobalt.url);
+          console.log('✅ cobalt.tools redirect exitoso, tamaño:', audioBuffer.length);
+        } else {
+          throw new Error('cobalt.tools no devolvió resultado válido');
+        }
+      } catch (err4) {
+        errorMessages.push(`cobalt: ${err4.message}`);
+        console.log('❌ Error en cobalt.tools:', err4.message);
+      }
+    }
+
+    // Enviar audio si se obtuvo correctamente
+    if (audioBuffer && audioBuffer.length > 10000) {
+      await conn.sendMessage(
+        m.chat,
+        { audio: audioBuffer, mimetype: "audio/mpeg" },
+        { quoted: m }
+      );
+    } else {
+      console.log('❌ Todos los servicios fallaron:', errorMessages.join(' | '));
+      conn.reply(m.chat, `${tradutor.texto6}\n\n_Errores: ${errorMessages.join(', ')}_`, m);
     }
   }
 
