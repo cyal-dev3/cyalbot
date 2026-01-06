@@ -43,32 +43,57 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
         let mediaUrl = null;
 
         if (isAudio) {
-            // Intentar múltiples APIs para audio
-            // 1. Intentar ssvid.net primero
-            try {
-                const downloadResult = await yt.download(video.url, format);
-                if (downloadResult?.dlink) {
-                    mediaUrl = downloadResult.dlink;
+            // Función helper para descargar y validar audio
+            const downloadAndValidateAudio = async (url) => {
+                const response = await fetch(url);
+                const buffer = Buffer.from(await response.arrayBuffer());
+                if (buffer.length < 10000) {
+                    throw new Error(`Audio muy pequeño: ${buffer.length} bytes`);
                 }
-            } catch (e) {
-                console.log('❌ ssvid.net falló:', e.message);
+                return buffer;
+            };
+
+            let audioBuffer = null;
+            let errorMessages = [];
+
+            // 1. Intentar ssvid.net primero
+            if (!audioBuffer) {
+                try {
+                    console.log('🎵 Intentando ssvid.net...');
+                    const downloadResult = await yt.download(video.url, format);
+                    if (downloadResult?.dlink) {
+                        audioBuffer = await downloadAndValidateAudio(downloadResult.dlink);
+                        console.log('✅ ssvid.net exitoso, tamaño:', audioBuffer.length);
+                    } else {
+                        throw new Error('No se obtuvo enlace de descarga');
+                    }
+                } catch (e) {
+                    errorMessages.push(`ssvid: ${e.message}`);
+                    console.log('❌ ssvid.net falló:', e.message);
+                }
             }
 
             // 2. Fallback: ytmp33 (notube.net)
-            if (!mediaUrl) {
+            if (!audioBuffer) {
                 try {
+                    console.log('🎵 Intentando ytmp33 (notube.net)...');
                     const result = await ytmp33(video.url);
                     if (result?.status && result?.resultados?.descargar) {
-                        mediaUrl = result.resultados.descargar;
+                        audioBuffer = await downloadAndValidateAudio(result.resultados.descargar);
+                        console.log('✅ ytmp33 exitoso, tamaño:', audioBuffer.length);
+                    } else {
+                        throw new Error('No se obtuvo resultado válido');
                     }
                 } catch (e) {
+                    errorMessages.push(`ytmp33: ${e.message}`);
                     console.log('❌ ytmp33 falló:', e.message);
                 }
             }
 
             // 3. Fallback: cobalt.tools API
-            if (!mediaUrl) {
+            if (!audioBuffer) {
                 try {
+                    console.log('🎵 Intentando cobalt.tools...');
                     const cobaltRes = await fetch('https://api.cobalt.tools/api/json', {
                         method: 'POST',
                         headers: {
@@ -85,40 +110,42 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
                     });
                     const cobaltData = await cobaltRes.json();
                     if (cobaltData?.url) {
-                        mediaUrl = cobaltData.url;
+                        audioBuffer = await downloadAndValidateAudio(cobaltData.url);
+                        console.log('✅ cobalt.tools exitoso, tamaño:', audioBuffer.length);
+                    } else {
+                        throw new Error('No se obtuvo URL de descarga');
                     }
                 } catch (e) {
+                    errorMessages.push(`cobalt: ${e.message}`);
                     console.log('❌ cobalt.tools falló:', e.message);
                 }
             }
 
             // 4. Fallback: API Delirius
-            if (!mediaUrl && global.BASE_API_DELIRIUS) {
+            if (!audioBuffer && global.BASE_API_DELIRIUS) {
                 try {
+                    console.log('🎵 Intentando API Delirius...');
                     const delirius = await (
                         await fetch(`${global.BASE_API_DELIRIUS}/api/download/ytmp3?url=${encodeURIComponent(video.url)}`)
                     ).json();
                     if (delirius?.status && delirius?.data?.download?.url) {
-                        mediaUrl = delirius.data.download.url;
+                        audioBuffer = await downloadAndValidateAudio(delirius.data.download.url);
+                        console.log('✅ API Delirius exitoso, tamaño:', audioBuffer.length);
+                    } else {
+                        throw new Error('No se obtuvo resultado válido');
                     }
                 } catch (e) {
+                    errorMessages.push(`Delirius: ${e.message}`);
                     console.log('❌ API Delirius falló:', e.message);
                 }
             }
 
-            if (!mediaUrl) throw new Error('No se pudo obtener el audio de ninguna API disponible');
-        } else {
-            // Para video, usar ssvid.net
-            const downloadResult = await yt.download(video.url, format);
-            if (!downloadResult || !downloadResult.dlink) throw new Error('No se pudo obtener el enlace de descarga');
-            mediaUrl = downloadResult.dlink;
-        }
+            if (!audioBuffer) {
+                throw new Error(`No se pudo obtener el audio de ninguna API. Errores: ${errorMessages.join(', ')}`);
+            }
 
-        if (isAudio) {
-            const [audioBuffer, thumbnailBuffer] = await Promise.all([
-                fetch(mediaUrl).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab)),
-                fetch(video.thumbnail).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab))
-            ]);
+            // Ya tenemos audioBuffer validado, ahora descargamos el thumbnail
+            const thumbnailBuffer = await fetch(video.thumbnail).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab));
 
             const fileName = `${sanitizeFileName(video.title.substring(0, 64))}.mp3`;
 
@@ -228,7 +255,11 @@ let handler = async (m, { conn, args, usedPrefix, command }) => {
             }
 
         } else {
-            // Manejo de video (sin cambios)
+            // Manejo de video - obtener URL primero
+            const downloadResult = await yt.download(video.url, format);
+            if (!downloadResult || !downloadResult.dlink) throw new Error('No se pudo obtener el enlace de descarga de video');
+            const mediaUrl = downloadResult.dlink;
+
             try {
                 const [videoBuffer, thumbnailBuffer] = await Promise.all([
                     fetch(mediaUrl).then(res => res.arrayBuffer()).then(ab => Buffer.from(ab)),
