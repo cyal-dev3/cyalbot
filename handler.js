@@ -704,11 +704,15 @@ export async function handler(chatUpdate) {
     // Invalidar caché de grupo si es un evento de cambio de admin (promote/demote)
     // Esto asegura que isBotAdmin se calcule correctamente después de ser promovido
     if (m.isGroup && m.messageStubType) {
-      const isAdminChangeEvent = m.messageStubType === 29 || m.messageStubType === 30 ||
-                                  m.messageStubType === 'GROUP_PARTICIPANT_PROMOTE' ||
-                                  m.messageStubType === 'GROUP_PARTICIPANT_DEMOTE';
-      if (isAdminChangeEvent && conn.chats && conn.chats[m.chat]) {
-        delete conn.chats[m.chat].metadata;
+      const stubType = m.messageStubType;
+      const isAdminChangeEvent = stubType === 29 || stubType === 30 ||
+                                  stubType === 'GROUP_PARTICIPANT_PROMOTE' ||
+                                  stubType === 'GROUP_PARTICIPANT_DEMOTE';
+      if (isAdminChangeEvent) {
+        console.log('[HANDLER] Evento de cambio de admin detectado, invalidando caché del grupo');
+        if (conn.chats && conn.chats[m.chat]) {
+          delete conn.chats[m.chat].metadata;
+        }
       }
     }
 
