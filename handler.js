@@ -656,8 +656,7 @@ export async function handler(chatUpdate) {
       console.error(e);
     }
 
-    const idioma = global.db.data.users[m.sender]?.language || global.defaultLenguaje; // is null? np the operator ?? fix that (i hope)
-    const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+    const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
     const tradutor = _translate.handler.handler
 
     if (opts['nyimak']) {
@@ -1227,8 +1226,7 @@ ${tradutor.texto1[1]} ${messageNumber}/3
  * @param {import("baileys").BaileysEventMap<unknown>['group-participants.update']} groupsUpdate
  */
 export async function participantsUpdate({ id, participants, action }) {
-  const idioma = global?.db?.data?.chats[id]?.language || global.defaultLenguaje;
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.handler.participantsUpdate
 
   const m = mconn
@@ -1322,8 +1320,7 @@ export async function participantsUpdate({ id, participants, action }) {
  */
 
 export async function groupsUpdate(groupsUpdate) {
-  const idioma = global.db.data.chats[groupsUpdate[0].id]?.language || global.defaultLenguaje;
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.handler.participantsUpdate
 
   if (opts['self']) {
@@ -1365,9 +1362,8 @@ export async function callUpdate(callUpdate) {
 
 export async function deleteUpdate(message) {
   const datas = global
-  const id = message?.participant 
-  const idioma = datas.db.data.users[id]?.language || global.defaultLenguaje;
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const id = message?.participant
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.handler.deleteUpdate
 
   let d = new Date(new Date + 3600000)
@@ -1396,8 +1392,7 @@ ${tradutor.texto1[5]}`.trim();
 
 global.dfail = (type, m, conn) => {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje;
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.handler.dfail
 
   const msg = {

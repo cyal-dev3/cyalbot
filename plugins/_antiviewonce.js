@@ -44,10 +44,8 @@ export async function before(m, { isAdmin, isBotAdmin }) {
     // Obtener traductor de forma segura
     let tradutor = defaultTexts;
     try {
-      const datas = global;
-      const idioma = datas.db?.data?.users?.[m.sender]?.language || global.defaultLenguaje || 'es';
-      const translatePath = `./src/languages/${idioma}.json`;
-      
+      const translatePath = `./src/languages/es.json`;
+
       if (existsSync(translatePath)) {
         const _translate = JSON.parse(readFileSync(translatePath));
         tradutor = _translate.plugins?._antiviewonce || defaultTexts;

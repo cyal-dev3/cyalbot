@@ -2,8 +2,7 @@ import fetch from 'node-fetch'
 
 const handler = async (m, {conn, text, args}) => {   
    const datas = global
-   const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-   const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+   const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
    const tradutor = _translate.plugins.herramientas_ssweb
 
 if (!args[0]) return conn.reply(m.chat, tradutor.texto1, m);  

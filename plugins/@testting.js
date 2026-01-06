@@ -16,8 +16,7 @@ const VIDEO_SIZE_LIMIT = 100 * 1024 * 1024;
 const TMP_DIR = join(process.cwd(), './src/tmp');
 
 let handler = async (m, { conn, args, usedPrefix, command }) => {
-    const idioma = global?.db?.data?.users[m.sender]?.language || global.defaultLenguaje;
-    const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}/${m.plugin}.json`));
+    const _translate = JSON.parse(fs.readFileSync(`./src/languages/es/${m.plugin}.json`));
     const tradutor = _translate._testting;
     
     try {

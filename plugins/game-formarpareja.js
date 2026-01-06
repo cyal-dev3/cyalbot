@@ -1,8 +1,7 @@
 const toM = (a) => '@' + a.split('@')[0];
 function handler(m, {groupMetadata}) {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.fun_formarpareja
 
   const ps = groupMetadata.participants.map((v) => v.id);

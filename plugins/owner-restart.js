@@ -2,8 +2,7 @@
 
 const handler = async (m, { conn, isROwner, text }) => {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.owner_restart
 
   if (!process.send) throw tradutor.texto1;

@@ -11,8 +11,7 @@ import * as fs from 'fs';
 
 export async function before(m, { conn, isAdmin, isBotAdmin, usedPrefix }) {
   const datas = global
-    const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-    const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+    const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
     const tradutor = _translate.plugins._antitrabas
 
   if (m.isBaileys && m.fromMe) {

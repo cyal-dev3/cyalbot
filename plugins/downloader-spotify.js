@@ -3,8 +3,7 @@ import fs from 'fs';
 
 let handler = async (m, { conn, text, usedPrefix, command }) => {
   const datas = global;
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje;
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`));
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`));
   const tradutor = _translate.plugins.descargas_spotify;
 
   if (!text) return m.reply(`${tradutor.texto1} _${usedPrefix + command} Good Feeling - Flo Rida_`);

@@ -2,8 +2,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 
 const handler = async (m, { conn, usedPrefix, __dirname, isPrems }) => {
-        const idioma = global.db.data.users[m.sender]?.language || global.defaultLenguaje || 'es';
-        const _translate = JSON.parse(await fs.readFile(`./src/languages/${idioma}/${m.plugin}.json`));
+        const _translate = JSON.parse(await fs.readFile(`./src/languages/es/${m.plugin}.json`));
         const tradutor = _translate.plugins.menu;
 
     try {
@@ -11,17 +10,11 @@ const handler = async (m, { conn, usedPrefix, __dirname, isPrems }) => {
         if (usedPrefix == 'a' || usedPrefix == 'A') return;
 
         const more = String.fromCharCode(8206);
-        const readMore = more.repeat(4001); 
-            
+        const readMore = more.repeat(4001);
+
         const d = new Date(new Date().getTime() + 3600000);
-        
-        const localeMap = {
-            'es': 'es-ES',
-            'en': 'en-US',
-            'ar': 'ar-SA'
-        };
-        
-        const locale = localeMap[idioma.toLowerCase()] || 'es-ES';
+
+        const locale = 'es-ES';
         
         let week, date;
         try {

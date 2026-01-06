@@ -4,17 +4,8 @@
 const handler = (m) => m;
 handler.before = async function (m, { conn, isAdmin, isBotAdmin, isOwner, isROwner }) {
   const datas = global
-  let idioma = datas.db.data.users[m.sender].language 
-  // todo: sometimes this trows undefined.json ill fix
-  if (idioma === undefined || idioma === null) {
-    idioma = 'es'
-  }
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
-
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins._antiarab
-  // Para configurar o idioma, na raiz do projeto altere o arquivo config.json
-  // Para configurar el idioma, en la raíz del proyecto, modifique el archivo config.json.
-  // To set the language, in the root of the project, modify the config.json file.
 
   /* if (m.message) {
     console.log(m.message)

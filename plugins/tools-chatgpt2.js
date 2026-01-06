@@ -4,8 +4,7 @@ import fs from 'fs';
 let handler = async (m, { conn, text, command }) => {
 
     const datas = global;
-    const idioma = datas.db.data.users[m.sender]?.language || global.defaultLenguaje;
-    const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`));
+    const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`));
     const tradutor = _translate.plugins.herramientas_chatgpt;  
   
   try {  

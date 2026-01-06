@@ -1,7 +1,6 @@
 const handler = async (m, {conn, usedPrefix, text}) => {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.gc_demote
 
   if (isNaN(text) && !text.match(/@/g)) {

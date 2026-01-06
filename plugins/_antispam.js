@@ -239,13 +239,11 @@ function getWarningMessage(issues, traductor) {
 }
 
 export async function before(m, { conn, isAdmin, isBotAdmin }) {
-  // Cargar idioma
   const datas = global;
-  const idioma = datas.db.data.users[m.sender]?.language || global.defaultLenguaje || 'es';
 
   let traductor = {};
   try {
-    const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`));
+    const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`));
     traductor = _translate.plugins._antispam || {};
   } catch {
     traductor = {};

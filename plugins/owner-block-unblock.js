@@ -1,8 +1,7 @@
 
 const handler = async (m, {text, conn, usedPrefix, command}) => {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.owner_block_unblock
 
   const why = `${tradutor.texto1} ${usedPrefix + command} @${m.sender.split('@')[0]}*`;

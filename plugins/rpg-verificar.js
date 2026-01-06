@@ -3,8 +3,7 @@ const Reg = /\|?(.*)([.|] *?)([0-9]*)$/i;
 
 const handler = async function(m, {conn, text, usedPrefix, command}) {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.rpg_verificar
 
   const user = global.db.data.users[m.sender];

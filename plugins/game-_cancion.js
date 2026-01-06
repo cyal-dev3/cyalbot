@@ -6,8 +6,7 @@ const handler = {
   
   async before(m) {
     const datas = global
-    const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-    const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+    const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
     const tradutor = _translate.plugins.game__cancion
 
     const id = m.chat;

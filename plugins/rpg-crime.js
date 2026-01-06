@@ -5,8 +5,7 @@ let crime = 500
 let diamante = 10
 const handler = async (m, { conn, usedPrefix, command, groupMetadata, participants, isPrems }) => {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.rpg_crime
 
   global.robar = tradutor.texto4;

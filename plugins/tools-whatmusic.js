@@ -8,8 +8,7 @@ import CryptoJS from 'crypto-js';
 const shazam = new Shazam();
 
 const handler = async (m, { conn }) => {
-  const idioma = global.db.data.users[m.sender].language || global.defaultLenguaje;
-  const traductor = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`)).plugins.herramientas_whatmusic;
+  const traductor = JSON.parse(fs.readFileSync(`./src/languages/es.json`)).plugins.herramientas_whatmusic;
 
   const q = m.quoted || m;
   const mime = (q.msg || q).mimetype || '';

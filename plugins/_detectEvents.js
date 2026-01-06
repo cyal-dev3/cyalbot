@@ -91,8 +91,7 @@ export async function before(m, { conn, participants }) {
     // Resolver el sender usando el sistema LID mejorado
     const realSender = await resolveLidFromCache(m?.sender, m?.chat, conn);
 
-    const idioma = global.db?.data?.users[realSender]?.language || global.defaultLenguaje;
-    const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}/_detectEvents.js.json`));
+    const _translate = JSON.parse(fs.readFileSync(`./src/languages/es/_detectEvents.js.json`));
     const tradutor = _translate._detectevents;
 
     let groupName = "el grupo";

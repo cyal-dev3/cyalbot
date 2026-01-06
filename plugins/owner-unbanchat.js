@@ -1,8 +1,7 @@
 
 const handler = async (m) => {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.owner_unbanchat
 
   global.db.data.chats[m.chat].isBanned = false;

@@ -4,8 +4,7 @@ import path from 'path';
 const user = (a) => '@' + a.split('@s.whatsapp.net')[0];
 function handler(m, { groupMetadata, command, conn, text, usedPrefix }) {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.fun_top
 
   if (!text) throw `${tradutor.texto1}`;

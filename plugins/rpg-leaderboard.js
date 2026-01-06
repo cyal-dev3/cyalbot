@@ -1,6 +1,5 @@
 const handler = async (m, { conn, args, participants }) => {
- const idioma = global.db.data.users[m.sender]?.language || global.defaultLenguaje;
- const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`));
+ const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`));
  const tradutor = _translate.plugins.rpg_leaderboard;
 
  const users = Object.entries(global.db.data.users)

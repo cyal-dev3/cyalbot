@@ -4,8 +4,7 @@ import FormData from 'form-data';
 
 const handler = async (m, {conn, text, args, usedPrefix, command}) => {
   const datas = global;
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje;
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`));
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`));
   const tradutor = _translate.plugins.convertidor_toanime;
 
   const q = m.quoted ? m.quoted : m;

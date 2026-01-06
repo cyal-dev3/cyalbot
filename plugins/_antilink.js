@@ -8,8 +8,7 @@ export async function before(m, {conn, isAdmin, isBotAdmin}) {
   if (!m?.isGroup) return;
   const chat = global.db.data.chats[m.chat];
   if (!chat?.antiLink) return;
-  const idioma = global.db.data.users[m.sender].language || global.defaultLenguaje 
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins._antilink
   const delet = m.key.participant;
   const bang = m.key.id;

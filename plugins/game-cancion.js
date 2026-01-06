@@ -5,8 +5,7 @@ const timeout = 60000;
 const poin = Math.floor(Math.random() * (2000 - 500 + 1)) + 500;
 const handler = async (m, {conn, usedPrefix}) => {
   const datas = global
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
   const tradutor = _translate.plugins.game_cancion
 
   conn.tebaklagu = conn.tebaklagu ? conn.tebaklagu : {};

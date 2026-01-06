@@ -4,8 +4,7 @@ import fetch from 'node-fetch';
 
 const handler = async (m, {conn, usedPrefix, participants, isPrems}) => {
  const datas = global
- const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
- const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+ const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
  const tradutor = _translate.plugins.rpg_perfil
  let texto = await m.mentionedJid
  let who = texto.length > 0 ? texto[0] : (m.quoted ? await m.quoted.sender : m.sender)

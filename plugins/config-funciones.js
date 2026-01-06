@@ -1,7 +1,6 @@
 const handler = async (m, {conn, usedPrefix, command, args, isOwner, isAdmin, isROwner}) => {
 const datas = global
-const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje
-const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`))
+const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`))
 const tradutor = _translate.plugins.config_funciones
 
 const optionsFull = `_*${tradutor.texto1[0]}*_\n 

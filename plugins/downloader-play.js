@@ -5,8 +5,7 @@ import ytmp33 from '../src/libraries/ytmp33.js'
 
 let handler = async (m, { conn, args, text, usedPrefix, command }) => {
   const datas = global;
-  const idioma = datas.db.data.users[m.sender].language || global.defaultLenguaje;
-  const _translate = JSON.parse(fs.readFileSync(`./src/languages/${idioma}.json`));
+  const _translate = JSON.parse(fs.readFileSync(`./src/languages/es.json`));
   const tradutor = _translate.plugins.descargas_play
 
   if (!text) throw `${tradutor.texto1[0]} ${usedPrefix + command} ${tradutor.texto1[1]}`;
