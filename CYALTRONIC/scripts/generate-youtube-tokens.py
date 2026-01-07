@@ -3,77 +3,87 @@
 YouTube Token Generator para CYALTRONIC
 Genera PO Token y Visitor Data para yt-dlp
 
+Opciones de instalacion:
+
+OPCION A - Docker (mas simple):
+  docker run --name bgutil-provider -d -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider
+
+OPCION B - Node.js nativo:
+  git clone --single-branch --branch 1.2.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
+  cd bgutil-ytdlp-pot-provider/server/
+  npm install
+  npx tsc
+  node build/main.js
+
 Uso:
   python3 generate-youtube-tokens.py
-
-Instalar dependencias:
-  pip3 install --break-system-packages requests
-
-Para auto-generacion con BgUtils:
-  pip3 install --break-system-packages bgutil
 """
 
 import json
 import os
 import sys
-import subprocess
+import time
 from pathlib import Path
 
+try:
+    import requests
+except ImportError:
+    print("Instalando requests...")
+    os.system("pip3 install --break-system-packages requests")
+    import requests
+
 TOKENS_FILE = Path(__file__).parent.parent / "youtube-tokens.json"
+BGUTIL_SERVER_URL = os.environ.get("BGUTIL_SERVER_URL", "http://127.0.0.1:4416")
 
-def generate_with_bgutil():
-    """Intenta generar tokens usando bgutil"""
+def generate_from_bgutil_server():
+    """Obtiene tokens del servidor HTTP de bgutil-ytdlp-pot-provider"""
     try:
-        from bgutil import BgUtils
-        print("🔄 Generando tokens con BgUtils...")
-        bg = BgUtils()
-        po_token = bg.get_po_token()
-        visitor_data = bg.get_visitor_data()
+        print(f"🔄 Conectando a servidor bgutil en {BGUTIL_SERVER_URL}...")
 
-        if po_token:
-            return {
-                "poToken": po_token,
-                "visitorData": visitor_data or "",
-                "method": "bgutil"
-            }
-    except ImportError:
-        print("⚠️ bgutil no está instalado")
-        print("   Instalar: pip3 install --break-system-packages bgutil")
-    except Exception as e:
-        print(f"❌ Error con bgutil: {e}")
+        # El endpoint correcto es /token
+        resp = requests.post(
+            f'{BGUTIL_SERVER_URL}/token',
+            json={},
+            timeout=60,
+            headers={'Content-Type': 'application/json'}
+        )
 
-    return None
+        if resp.status_code != 200:
+            print(f"❌ Error HTTP {resp.status_code}: {resp.text}")
+            return None
 
-def generate_with_bgutil_server():
-    """Intenta obtener tokens del servidor HTTP de bgutil"""
-    try:
-        import requests
-        print("🔄 Intentando servidor HTTP de bgutil (puerto 4416)...")
-        resp = requests.get('http://127.0.0.1:4416/generate', timeout=30)
         data = resp.json()
 
-        if data.get('potoken'):
+        # La respuesta tiene formato: {"poToken": "...", "visitorData": "..."}
+        if data.get('poToken') or data.get('po_token'):
+            po_token = data.get('poToken') or data.get('po_token', '')
+            visitor_data = data.get('visitorData') or data.get('visitor_data', '')
+
+            print(f"✅ PO Token obtenido: {po_token[:30]}...")
+            print(f"✅ Visitor Data: {visitor_data[:30]}...")
+
             return {
-                "poToken": data['potoken'],
-                "visitorData": data.get('visitor_data', ''),
+                "poToken": po_token,
+                "visitorData": visitor_data,
                 "method": "bgutil-server"
             }
+        else:
+            print(f"❌ Respuesta sin tokens: {data}")
+            return None
+
+    except requests.exceptions.ConnectionError:
+        print(f"❌ No se pudo conectar a {BGUTIL_SERVER_URL}")
+        print("\n📋 Para iniciar el servidor bgutil:")
+        print("\n   OPCION A - Docker (recomendado):")
+        print("   docker run --name bgutil-provider -d -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider")
+        print("\n   OPCION B - Node.js:")
+        print("   git clone --single-branch --branch 1.2.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git")
+        print("   cd bgutil-ytdlp-pot-provider/server/")
+        print("   npm install && npx tsc && node build/main.js")
+        return None
     except Exception as e:
-        print(f"⚠️ Servidor bgutil no disponible: {e}")
-
-    return None
-
-def generate_with_nodejs():
-    """Intenta generar tokens usando el script de Node.js"""
-    try:
-        print("🔄 Intentando con Node.js...")
-        # Este método requiere que tengas un script de Node.js configurado
-        # Por ahora solo retornamos None
-        pass
-    except Exception as e:
-        print(f"❌ Error con Node.js: {e}")
-
-    return None
+        print(f"❌ Error: {e}")
+        return None
 
 def prompt_manual_input():
     """Pide al usuario ingresar los tokens manualmente"""
@@ -84,14 +94,20 @@ def prompt_manual_input():
 Para obtener los tokens manualmente:
 
 1. Abre YouTube (https://www.youtube.com) en Chrome/Firefox
-2. Abre DevTools (F12) → pestaña Network
-3. Filtra por 'v1/player'
-4. Reproduce cualquier video
-5. En el request 'player', ve a Response
-6. Busca 'serviceIntegrityDimensions' → copia 'poToken'
-7. Para visitorData: en Console ejecuta: ytcfg.get('VISITOR_DATA')
+   IMPORTANTE: NO inicies sesion (modo incognito recomendado)
 
-IMPORTANTE: Hazlo SIN iniciar sesión para mejor resultado
+2. Abre DevTools (F12) → pestaña Network
+
+3. Filtra por 'v1/player'
+
+4. Reproduce cualquier video
+
+5. En el request 'player', ve a la respuesta (Response)
+
+6. Busca 'serviceIntegrityDimensions' → copia 'poToken'
+
+7. Para visitorData, en la Console ejecuta:
+   ytcfg.get('VISITOR_DATA')
 """)
 
     po_token = input("🔐 Ingresa el PO Token (o Enter para omitir): ").strip()
@@ -108,8 +124,6 @@ IMPORTANTE: Hazlo SIN iniciar sesión para mejor resultado
 
 def save_tokens(tokens):
     """Guarda los tokens en el archivo JSON"""
-    import time
-
     data = {
         "poToken": tokens.get("poToken", ""),
         "visitorData": tokens.get("visitorData", ""),
@@ -122,28 +136,53 @@ def save_tokens(tokens):
         json.dump(data, f, indent=2)
 
     print(f"\n✅ Tokens guardados en: {TOKENS_FILE}")
-    print(f"   PO Token: {'✓ Presente' if data['poToken'] else '✗ No disponible'}")
+    print(f"   PO Token: {'✓ Presente (' + str(len(data['poToken'])) + ' chars)' if data['poToken'] else '✗ No disponible'}")
     print(f"   Visitor Data: {'✓ Presente' if data['visitorData'] else '✗ No disponible'}")
-    print(f"   Método: {data['method']}")
+    print(f"   Metodo: {data['method']}")
+
+def check_existing_tokens():
+    """Verifica si ya existen tokens validos"""
+    try:
+        if TOKENS_FILE.exists():
+            with open(TOKENS_FILE, 'r') as f:
+                data = json.load(f)
+
+            age_hours = (time.time() * 1000 - data.get('generatedAt', 0)) / (1000 * 60 * 60)
+            fail_count = data.get('failCount', 0)
+
+            if data.get('poToken') and age_hours < 12 and fail_count < 3:
+                print(f"📋 Tokens existentes encontrados:")
+                print(f"   Edad: {age_hours:.1f} horas")
+                print(f"   Fallos: {fail_count}")
+                print(f"   PO Token: {data['poToken'][:30]}...")
+
+                choice = input("\n¿Deseas regenerar los tokens? (s/n): ").strip().lower()
+                if choice != 's':
+                    print("✅ Usando tokens existentes")
+                    return True
+    except Exception as e:
+        print(f"Error leyendo tokens existentes: {e}")
+
+    return False
 
 def main():
     print("="*60)
     print("🎵 YOUTUBE TOKEN GENERATOR - CYALTRONIC")
     print("="*60)
+    print()
 
-    # Intentar métodos automáticos primero
+    # Verificar tokens existentes
+    if check_existing_tokens():
+        return
+
     tokens = None
 
-    # Método 1: bgutil directo
-    tokens = generate_with_bgutil()
+    # Intentar servidor bgutil
+    tokens = generate_from_bgutil_server()
 
-    # Método 2: servidor bgutil
+    # Si no hay servidor, ofrecer entrada manual
     if not tokens:
-        tokens = generate_with_bgutil_server()
-
-    # Método 3: entrada manual
-    if not tokens:
-        print("\n⚠️ No se pudieron generar tokens automáticamente")
+        print("\n⚠️ Servidor bgutil no disponible")
         choice = input("\n¿Deseas ingresar los tokens manualmente? (s/n): ").strip().lower()
         if choice == 's':
             tokens = prompt_manual_input()
@@ -151,15 +190,23 @@ def main():
     # Guardar tokens si se obtuvieron
     if tokens and (tokens.get("poToken") or tokens.get("visitorData")):
         save_tokens(tokens)
-        print("\n🎉 ¡Configuración completada!")
+        print("\n🎉 ¡Configuracion completada!")
         print("   Reinicia el bot para usar los nuevos tokens")
     else:
         print("\n❌ No se configuraron tokens")
-        print("   El bot intentará funcionar sin ellos (puede fallar)")
-        print("\nOpciones:")
-        print("  1. Instalar bgutil: pip3 install --break-system-packages bgutil")
-        print("  2. Correr bgutil server: bgutil-server")
-        print("  3. Ingresar tokens manualmente corriendo este script de nuevo")
+        print("\n📋 Opciones para obtener tokens:")
+        print()
+        print("   1. DOCKER (mas simple):")
+        print("      docker run --name bgutil-provider -d -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider")
+        print("      python3 generate-youtube-tokens.py")
+        print()
+        print("   2. NODE.JS:")
+        print("      git clone --single-branch --branch 1.2.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git")
+        print("      cd bgutil-ytdlp-pot-provider/server/ && npm install && npx tsc")
+        print("      node build/main.js &")
+        print("      python3 generate-youtube-tokens.py")
+        print()
+        print("   3. MANUAL: Corre este script de nuevo y elige la opcion manual")
 
 if __name__ == "__main__":
     main()

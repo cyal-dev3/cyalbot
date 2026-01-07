@@ -1,18 +1,22 @@
 /**
  * YouTube Token Manager
  * Gestiona PO Tokens y Visitor Data para yt-dlp
- * Genera automáticamente tokens usando BgUtils y los renueva si fallan
+ * Genera automáticamente tokens usando bgutil-ytdlp-pot-provider
+ *
+ * Para generar tokens, necesitas correr el servidor bgutil:
+ * - Docker: docker run -d -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider
+ * - Node.js: git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
+ *            cd bgutil-ytdlp-pot-provider/server && npm install && npx tsc && node build/main.js
  */
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-const execAsync = promisify(exec);
-
 // Archivo donde se guardan los tokens
 const TOKENS_FILE = join(process.cwd(), 'youtube-tokens.json');
+
+// URL del servidor bgutil (puede configurarse via env)
+const BGUTIL_SERVER_URL = process.env.BGUTIL_SERVER_URL || 'http://127.0.0.1:4416';
 
 interface YouTubeTokens {
   poToken: string;
@@ -22,62 +26,6 @@ interface YouTubeTokens {
 }
 
 let cachedTokens: YouTubeTokens | null = null;
-
-/**
- * Script de Python para generar tokens usando BgUtils
- */
-const PYTHON_GENERATE_SCRIPT = `
-import json
-import sys
-
-try:
-    from bgutil import BgUtils
-    bg = BgUtils()
-    result = {
-        "poToken": bg.get_po_token(),
-        "visitorData": bg.get_visitor_data(),
-        "success": True
-    }
-    print(json.dumps(result))
-except ImportError:
-    # Si bgutil no está instalado, intentar con el método HTTP
-    try:
-        import requests
-        import time
-
-        # Usar el servidor de BgUtils si está corriendo
-        try:
-            resp = requests.get('http://127.0.0.1:4416/generate', timeout=30)
-            data = resp.json()
-            result = {
-                "poToken": data.get("potoken", ""),
-                "visitorData": data.get("visitor_data", ""),
-                "success": True
-            }
-            print(json.dumps(result))
-        except:
-            # Generar visitorData básico sin poToken
-            import base64
-            import random
-            import string
-
-            # Generar un visitor ID aleatorio
-            visitor_id = ''.join(random.choices(string.ascii_letters + string.digits, k=11))
-
-            result = {
-                "poToken": "",
-                "visitorData": visitor_id,
-                "success": False,
-                "error": "bgutil not available, using basic visitor data"
-            }
-            print(json.dumps(result))
-    except Exception as e:
-        result = {"success": False, "error": str(e), "poToken": "", "visitorData": ""}
-        print(json.dumps(result))
-except Exception as e:
-    result = {"success": False, "error": str(e), "poToken": "", "visitorData": ""}
-    print(json.dumps(result))
-`;
 
 /**
  * Carga los tokens desde el archivo
@@ -107,74 +55,71 @@ function saveTokens(tokens: YouTubeTokens): void {
 }
 
 /**
- * Genera nuevos tokens usando Python/BgUtils
+ * Genera nuevos tokens usando el servidor bgutil-ytdlp-pot-provider
  */
 async function generateNewTokens(): Promise<YouTubeTokens | null> {
   console.log('🔄 Generando nuevos tokens de YouTube...');
+  console.log(`📡 Conectando a servidor bgutil en ${BGUTIL_SERVER_URL}...`);
 
   try {
-    // Intentar con Python y bgutil
-    const { stdout, stderr } = await execAsync(`python3 -c '${PYTHON_GENERATE_SCRIPT.replace(/'/g, "\\'")}'`, {
-      timeout: 60000
+    // Usar el servidor HTTP de bgutil-ytdlp-pot-provider
+    const response = await fetch(`${BGUTIL_SERVER_URL}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(60000)
     });
 
-    const result = JSON.parse(stdout.trim());
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
 
-    if (result.success && result.poToken) {
+    const data = await response.json() as {
+      poToken?: string;
+      po_token?: string;
+      visitorData?: string;
+      visitor_data?: string;
+    };
+
+    const poToken = data.poToken || data.po_token || '';
+    const visitorData = data.visitorData || data.visitor_data || '';
+
+    if (poToken) {
       const tokens: YouTubeTokens = {
-        poToken: result.poToken,
-        visitorData: result.visitorData,
+        poToken,
+        visitorData,
         generatedAt: Date.now(),
         failCount: 0
       };
 
-      console.log('✅ Tokens generados exitosamente');
-      saveTokens(tokens);
-      cachedTokens = tokens;
-      return tokens;
-    } else if (result.visitorData) {
-      // Solo tenemos visitorData, sin poToken
-      console.log('⚠️ Solo se obtuvo visitorData, sin poToken');
-      const tokens: YouTubeTokens = {
-        poToken: '',
-        visitorData: result.visitorData,
-        generatedAt: Date.now(),
-        failCount: 0
-      };
+      console.log(`✅ Tokens generados exitosamente`);
+      console.log(`   PO Token: ${poToken.substring(0, 30)}...`);
+      console.log(`   Visitor Data: ${visitorData.substring(0, 30)}...`);
       saveTokens(tokens);
       cachedTokens = tokens;
       return tokens;
     }
 
-    console.error('❌ No se pudieron generar tokens:', result.error);
+    console.error('❌ Respuesta sin tokens:', data);
     return null;
 
   } catch (err) {
-    console.error('❌ Error ejecutando script de generación:', err);
+    const error = err as Error;
 
-    // Intentar método alternativo: servidor HTTP de bgutil
-    try {
-      console.log('🔄 Intentando servidor HTTP de bgutil...');
-      const response = await fetch('http://127.0.0.1:4416/generate', {
-        signal: AbortSignal.timeout(30000)
-      });
-      const data = await response.json() as { potoken?: string; visitor_data?: string };
-
-      if (data.potoken) {
-        const tokens: YouTubeTokens = {
-          poToken: data.potoken,
-          visitorData: data.visitor_data || '',
-          generatedAt: Date.now(),
-          failCount: 0
-        };
-
-        console.log('✅ Tokens obtenidos del servidor bgutil');
-        saveTokens(tokens);
-        cachedTokens = tokens;
-        return tokens;
-      }
-    } catch {
-      console.log('⚠️ Servidor bgutil no disponible');
+    if (error.name === 'TypeError' || error.message.includes('fetch')) {
+      console.error('❌ No se pudo conectar al servidor bgutil');
+      console.log('');
+      console.log('📋 Para generar tokens, inicia el servidor bgutil:');
+      console.log('');
+      console.log('   DOCKER (recomendado):');
+      console.log('   docker run -d -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider');
+      console.log('');
+      console.log('   NODE.JS:');
+      console.log('   git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git');
+      console.log('   cd bgutil-ytdlp-pot-provider/server && npm install && npx tsc');
+      console.log('   node build/main.js');
+    } else {
+      console.error('❌ Error generando tokens:', error.message);
     }
 
     return null;
@@ -274,10 +219,10 @@ export async function initializeTokens(): Promise<void> {
     console.log('✅ Sistema de tokens listo (con PO Token)');
   } else if (tokens?.visitorData) {
     console.log('⚠️ Sistema de tokens listo (solo Visitor Data, sin PO Token)');
-    console.log('💡 Para mejor funcionamiento, instala: pip3 install bgutil');
+    console.log('💡 Para mejor funcionamiento, inicia el servidor bgutil');
   } else {
     console.log('❌ No se pudieron obtener tokens. yt-dlp puede fallar.');
-    console.log('💡 Instala bgutil: pip3 install --break-system-packages bgutil');
+    console.log('💡 Inicia el servidor bgutil: docker run -d -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider');
   }
 }
 
