@@ -7,6 +7,7 @@ import type { PluginHandler, MessageContext } from '../types/message.js';
 import { EMOJI, formatNumber, msToTime, pickRandom } from '../lib/utils.js';
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
+import { getRankBenefits, getRoleByLevel } from '../types/user.js';
 
 export const dailyPlugin: PluginHandler = {
   command: /^(daily|claim|reclamar|regalo|diario)$/i,
@@ -24,29 +25,50 @@ export const dailyPlugin: PluginHandler = {
       return m.reply(CONFIG.messages.notRegistered);
     }
 
-    // Verificar cooldown
+    // Obtener beneficios de rango
+    const rankBenefits = getRankBenefits(user.level);
+    const userRank = getRoleByLevel(user.level);
+
+    // Verificar cooldown (con reducción por rango)
     const now = Date.now();
-    const cooldown = CONFIG.cooldowns.daily;
+    const baseCooldown = CONFIG.cooldowns.daily;
+    const cooldownReduction = rankBenefits.cooldownReduction / 100;
+    const cooldown = Math.floor(baseCooldown * (1 - cooldownReduction));
     const timeSinceLastClaim = now - user.lastclaim;
 
     if (timeSinceLastClaim < cooldown) {
       const remaining = cooldown - timeSinceLastClaim;
-      return m.reply(
-        `${EMOJI.time} *¡Recompensa no disponible!*\n\n` +
+      let cooldownMsg = `${EMOJI.time} *¡Recompensa no disponible!*\n\n` +
         `${EMOJI.warning} Ya reclamaste tu regalo.\n` +
         `${EMOJI.info} Vuelve en: *${msToTime(remaining)}*\n\n` +
         `${EMOJI.star} Mientras tanto puedes usar:\n` +
         `• *${usedPrefix}work* - Trabajar por XP\n` +
-        `• *${usedPrefix}perfil* - Ver tu progreso`
-      );
+        `• *${usedPrefix}perfil* - Ver tu progreso`;
+
+      if (rankBenefits.cooldownReduction > 0) {
+        cooldownMsg += `\n\n🎖️ _Tu rango reduce cooldowns -${rankBenefits.cooldownReduction}%_`;
+      }
+
+      return m.reply(cooldownMsg);
     }
 
-    // Generar recompensas aleatorias
+    // Generar recompensas aleatorias base
     const rewards = CONFIG.rpg.dailyRewards;
-    const expReward = pickRandom(rewards.exp);
-    const moneyReward = pickRandom(rewards.money);
-    const potionReward = pickRandom(rewards.potion);
-    const diamondReward = pickRandom(rewards.diamonds);
+    const baseExpReward = pickRandom(rewards.exp);
+    const baseMoneyReward = pickRandom(rewards.money);
+    const basePotionReward = pickRandom(rewards.potion);
+    const baseDiamondReward = pickRandom(rewards.diamonds);
+
+    // Aplicar bonus de rango a las recompensas
+    const dailyMultiplier = 1 + (rankBenefits.dailyBonus / 100);
+    const expReward = Math.floor(baseExpReward * dailyMultiplier);
+    const moneyReward = Math.floor(baseMoneyReward * dailyMultiplier);
+    const potionReward = Math.floor(basePotionReward * (1 + rankBenefits.dailyBonus / 200)); // Pociones +50% del bonus
+    const diamondReward = Math.floor(baseDiamondReward * (1 + rankBenefits.dailyBonus / 150)); // Diamantes +66% del bonus
+
+    // Calcular bonus de rango
+    const rankExpBonus = expReward - baseExpReward;
+    const rankMoneyBonus = moneyReward - baseMoneyReward;
 
     // Calcular streak (días consecutivos) - Feature bonus
     const lastClaimDate = new Date(user.lastclaim).toDateString();
@@ -75,19 +97,30 @@ export const dailyPlugin: PluginHandler = {
       lastclaim: now
     });
 
+    // Mensaje de bonus de rango
+    let rankBonusMsg = '';
+    if (rankBenefits.dailyBonus > 0) {
+      rankBonusMsg = `\n│  🎖️ Bonus rango (+${rankBenefits.dailyBonus}%):\n` +
+        `│     +${formatNumber(rankExpBonus)} XP | +${formatNumber(rankMoneyBonus)} 💰`;
+    }
+
+    // Calcular horas del próximo daily
+    const nextDailyHours = Math.floor(cooldown / 3600000);
+
     // Mensaje de recompensa
     await m.reply(
       `${EMOJI.gift}${EMOJI.sparkles} *¡RECOMPENSA DIARIA!* ${EMOJI.sparkles}${EMOJI.gift}\n\n` +
-      `${EMOJI.success} *¡Has reclamado tu regalo, ${user.name}!*\n\n` +
+      `${EMOJI.success} *¡Has reclamado tu regalo, ${user.name}!*\n` +
+      `🎖️ Rango: ${userRank}\n\n` +
       `╭═══════════════════════════╮\n` +
       `│  ${EMOJI.star} *RECOMPENSAS*\n` +
       `├───────────────────────────\n` +
       `│  +${formatNumber(expReward)} ${EMOJI.exp} Experiencia\n` +
       `│  +${formatNumber(moneyReward)} ${EMOJI.coin} Monedas\n` +
       `│  +${potionReward} ${EMOJI.potion} Pociones\n` +
-      `│  +${diamondReward} 💎 Diamantes\n` +
+      `│  +${diamondReward} 💎 Diamantes${rankBonusMsg}\n` +
       `╰═══════════════════════════╯${streakMessage}\n\n` +
-      `${EMOJI.time} Próximo regalo en: *24 horas*\n\n` +
+      `${EMOJI.time} Próximo regalo en: *${nextDailyHours} horas*\n\n` +
       `${EMOJI.info} *Tu nuevo balance:*\n` +
       `├ ${EMOJI.exp} EXP Total: *${formatNumber(user.exp + totalExp)}*\n` +
       `├ ${EMOJI.coin} Monedas: *${formatNumber(user.money + moneyReward)}*\n` +

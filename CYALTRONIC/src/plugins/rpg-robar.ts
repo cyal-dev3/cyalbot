@@ -8,6 +8,7 @@ import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
 import { updateQuestProgress } from './rpg-misiones.js';
+import { getRankBenefits, getRoleByLevel } from '../types/user.js';
 
 /**
  * Tipos de recursos que se pueden robar
@@ -70,16 +71,20 @@ function calculateRobAttempt(
   victimLevel: number,
   victimMoney: number,
   victimExp: number,
-  victimMana: number
+  victimMana: number,
+  robSuccessBonus: number = 0,
+  robAmountBonus: number = 0
 ): RobResult {
   // Probabilidad base: 40%
   // +2% por cada nivel del ladrón
   // -3% por cada nivel de la víctima
+  // +bonus por rango del ladrón
   const levelDiff = thiefLevel - victimLevel;
   const baseChance = 40;
   const thiefBonus = thiefLevel * 2;
   const victimDefense = victimLevel * 3;
-  const successChance = Math.min(75, Math.max(15, baseChance + thiefBonus - victimDefense + (levelDiff * 2)));
+  const rankBonus = robSuccessBonus; // Bonus de rango
+  const successChance = Math.min(85, Math.max(15, baseChance + thiefBonus - victimDefense + (levelDiff * 2) + rankBonus));
 
   const roll = randomInt(1, 100);
   const success = roll <= successChance;
@@ -102,26 +107,29 @@ function calculateRobAttempt(
   let maxSteal: number;
   let minSteal: number;
 
+  // Multiplicador por bonus de rango
+  const amountMultiplier = 1 + (robAmountBonus / 100);
+
   if (resourceRoll <= 70 && victimMoney > 100) {
     resource = 'money';
-    // Robar entre 15% y 35% del dinero de la víctima (AUMENTADO)
-    minSteal = Math.floor(victimMoney * 0.15);
-    maxSteal = Math.floor(victimMoney * 0.35);
+    // Robar entre 15% y 35% del dinero de la víctima (AUMENTADO + bonus rango)
+    minSteal = Math.floor(victimMoney * 0.15 * amountMultiplier);
+    maxSteal = Math.floor(victimMoney * 0.35 * amountMultiplier);
   } else if (resourceRoll <= 90 && victimExp > 500) {
     resource = 'exp';
-    // Robar entre 5% y 15% de la experiencia (AUMENTADO)
-    minSteal = Math.floor(victimExp * 0.05);
-    maxSteal = Math.floor(victimExp * 0.15);
+    // Robar entre 5% y 15% de la experiencia (AUMENTADO + bonus rango)
+    minSteal = Math.floor(victimExp * 0.05 * amountMultiplier);
+    maxSteal = Math.floor(victimExp * 0.15 * amountMultiplier);
   } else if (victimMana > 10) {
     resource = 'mana';
-    // Robar entre 10 y 40 de maná (AUMENTADO)
-    minSteal = 10;
-    maxSteal = Math.min(40, victimMana - 5);
+    // Robar entre 10 y 40 de maná (AUMENTADO + bonus rango)
+    minSteal = Math.floor(10 * amountMultiplier);
+    maxSteal = Math.min(Math.floor(40 * amountMultiplier), victimMana - 5);
   } else {
     // Fallback a dinero
     resource = 'money';
-    minSteal = Math.floor(victimMoney * 0.10);
-    maxSteal = Math.floor(victimMoney * 0.25);
+    minSteal = Math.floor(victimMoney * 0.10 * amountMultiplier);
+    maxSteal = Math.floor(victimMoney * 0.25 * amountMultiplier);
   }
 
   // Asegurar mínimos más altos
@@ -175,17 +183,27 @@ export const robarPlugin: PluginHandler = {
     const db = getDatabase();
     const thief = db.getUser(m.sender);
 
-    // Verificar cooldown
+    // Obtener beneficios de rango del ladrón
+    const thiefRankBenefits = getRankBenefits(thief.level);
+    const thiefRank = getRoleByLevel(thief.level);
+
+    // Verificar cooldown (con reducción por rango)
     const now = Date.now();
-    const cooldown = CONFIG.cooldowns.rob;
+    const baseCooldown = CONFIG.cooldowns.rob;
+    const cooldownReduction = thiefRankBenefits.cooldownReduction / 100;
+    const cooldown = Math.floor(baseCooldown * (1 - cooldownReduction));
     const lastRob = thief.lastrob || 0;
 
     if (now - lastRob < cooldown) {
       const remaining = cooldown - (now - lastRob);
-      await m.reply(
-        `${EMOJI.time} ¡Los guardias te están buscando!\n\n` +
-        `⏳ Espera *${msToTime(remaining)}* antes de volver a robar.`
-      );
+      let cooldownMsg = `${EMOJI.time} ¡Los guardias te están buscando!\n\n` +
+        `⏳ Espera *${msToTime(remaining)}* antes de volver a robar.`;
+
+      if (thiefRankBenefits.cooldownReduction > 0) {
+        cooldownMsg += `\n\n🎖️ _Tu rango reduce cooldowns -${thiefRankBenefits.cooldownReduction}%_`;
+      }
+
+      await m.reply(cooldownMsg);
       return;
     }
 
@@ -235,7 +253,7 @@ export const robarPlugin: PluginHandler = {
       return;
     }
 
-    // Realizar el intento de robo
+    // Realizar el intento de robo con bonus de rango
     await m.react('🦹');
 
     const result = calculateRobAttempt(
@@ -243,11 +261,16 @@ export const robarPlugin: PluginHandler = {
       victim.level,
       victim.money,
       victim.exp,
-      victim.mana
+      victim.mana,
+      thiefRankBenefits.robSuccessBonus,
+      thiefRankBenefits.robAmountBonus
     );
 
     // Aplicar el cooldown
     db.updateUser(m.sender, { lastrob: now });
+
+    // Calcular tiempo del próximo robo
+    const nextRobMinutes = Math.floor(cooldown / 60000);
 
     if (result.success) {
       // Éxito - transferir recursos
@@ -278,11 +301,19 @@ export const robarPlugin: PluginHandler = {
         mana: EMOJI.mana
       };
 
+      // Mensaje de bonus de rango
+      let rankBonusMsg = '';
+      if (thiefRankBenefits.robSuccessBonus > 0 || thiefRankBenefits.robAmountBonus > 0) {
+        rankBonusMsg = `\n🎖️ *Rango:* ${thiefRank}\n` +
+          `   +${thiefRankBenefits.robSuccessBonus}% éxito | +${thiefRankBenefits.robAmountBonus}% cantidad\n`;
+      }
+
       await m.reply(
         `🦹 *¡ROBO EXITOSO!*\n\n` +
         `${message}\n\n` +
-        `${resourceEmoji[result.resource]} *+${formatNumber(result.amount)}* ${result.resource === 'money' ? 'monedas' : result.resource === 'exp' ? 'XP' : 'maná'}\n\n` +
-        `⏰ Próximo robo: *1 hora*`
+        `${resourceEmoji[result.resource]} *+${formatNumber(result.amount)}* ${result.resource === 'money' ? 'monedas' : result.resource === 'exp' ? 'XP' : 'maná'}` +
+        `${rankBonusMsg}\n` +
+        `⏰ Próximo robo: *${nextRobMinutes} minutos*`
       );
 
       await m.react('💰');
@@ -300,8 +331,9 @@ export const robarPlugin: PluginHandler = {
         `🚨 *¡ROBO FALLIDO!*\n\n` +
         `${message}\n\n` +
         `${EMOJI.coin} *-${formatNumber(penalty)}* monedas\n\n` +
-        `💡 _Tip: Tu éxito depende de la diferencia de niveles._\n` +
-        `⏰ Próximo intento: *1 hora*`
+        `🎖️ Tu rango: ${thiefRank}\n` +
+        `💡 _Tip: Tu éxito depende de la diferencia de niveles y tu rango._\n` +
+        `⏰ Próximo intento: *${nextRobMinutes} minutos*`
       );
 
       await m.react('💀');
@@ -309,6 +341,11 @@ export const robarPlugin: PluginHandler = {
 
     // Actualizar progreso de misiones de robo
     updateQuestProgress(db, m.sender, 'rob', 1);
+
+    // Actualizar misión de ganar monedas si el robo fue exitoso y se robó dinero
+    if (result.success && result.resource === 'money') {
+      updateQuestProgress(db, m.sender, 'earn', result.amount);
+    }
   }
 };
 

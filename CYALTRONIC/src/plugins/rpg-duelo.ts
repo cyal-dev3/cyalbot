@@ -1,58 +1,86 @@
 /**
- * ⚔️ Plugin de Duelos PvP Interactivo - RPG
- * Comando: duelo - Desafía a otro jugador a un combate interactivo por turnos
+ * ⚔️ Plugin de Duelos PvP - RPG
+ * Sistema de combate en tiempo real - El más rápido ataca
+ * Sin turnos - Quien responde primero, golpea primero
  */
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, msToTime, formatNumber, randomInt, pickRandom, matchesIgnoreAccents } from '../lib/utils.js';
+import { EMOJI, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
 import { ITEMS, CLASSES, SKILLS, type Skill } from '../types/rpg.js';
-import { calculateTotalStats, type UserRPG } from '../types/user.js';
+import { calculateTotalStats, getRankBenefits, getRoleByLevel, type UserRPG } from '../types/user.js';
 
 /**
- * Estructura de un duelo activo
+ * Estructura de un duelo activo - SIN TURNOS
  */
 interface ActiveDuel {
   challengerJid: string;
   targetJid: string;
   challengerName: string;
   targetName: string;
+  // Vida durante el duelo
   challengerHealth: number;
   targetHealth: number;
   challengerMaxHealth: number;
   targetMaxHealth: number;
+  // Recursos
   challengerMana: number;
   targetMana: number;
   challengerStamina: number;
   targetStamina: number;
+  // Stats calculados (incluyendo equipamiento)
   challengerStats: ReturnType<typeof calculateTotalStats>;
   targetStats: ReturnType<typeof calculateTotalStats>;
+  // Clases y equipamiento
   challengerClass: string | null;
   targetClass: string | null;
-  currentTurn: 'challenger' | 'target';
+  challengerWeapon: string | null;
+  targetWeapon: string | null;
+  challengerArmor: string | null;
+  targetArmor: string | null;
+  // Beneficios de rango
+  challengerRankBenefits: ReturnType<typeof getRankBenefits>;
+  targetRankBenefits: ReturnType<typeof getRankBenefits>;
+  challengerRank: string;
+  targetRank: string;
+  // Sistema de racha - quien golpea 3 veces seguidas y mata, gana
+  lastAttacker: 'challenger' | 'target' | null;
+  consecutiveHits: number;
+  // Apuesta y grupo
   bet: number;
-  turnStartTime: number;
   groupJid: string;
+  startTime: number;
   log: string[];
+  // Cooldown por jugador para evitar spam
+  challengerLastAttack: number;
+  targetLastAttack: number;
+  // Cooldown de habilidades usadas (para evitar spam de la misma habilidad)
+  challengerSkillCooldowns: Map<string, number>;
+  targetSkillCooldowns: Map<string, number>;
 }
 
 /**
- * Pendientes de duelo: Map<retador_jid, { target: string, timestamp: number }>
+ * Pendientes de duelo
  */
 const pendingDuels = new Map<string, { target: string; timestamp: number; bet: number }>();
 
 /**
- * Duelos activos: Map<groupJid, ActiveDuel>
+ * Duelos activos
  */
 const activeDuels = new Map<string, ActiveDuel>();
 
 /**
- * Tiempo máximo por turno: 30 segundos
+ * Cooldown mínimo entre ataques del mismo jugador (ms)
  */
-const TURN_TIMEOUT = 30 * 1000;
+const ATTACK_COOLDOWN = 1500;
 
 /**
- * Mensajes de victoria en duelo
+ * Tiempo máximo de duelo (2 minutos)
+ */
+const DUEL_TIMEOUT = 2 * 60 * 1000;
+
+/**
+ * Mensajes de victoria
  */
 const VICTORY_MESSAGES = [
   '🏆 *{winner}* derrotó a *{loser}* en un combate épico!',
@@ -76,205 +104,98 @@ function getTargetUser(ctx: MessageContext): string | null {
 }
 
 /**
- * Calcula el daño en duelo
+ * Obtiene el arma equipada de una clase
  */
-function calculateDuelDamage(
-  attacker: { attack: number; critChance: number; playerClass: string | null },
-  defender: { defense: number },
-  skill?: Skill
-): { damage: number; isCrit: boolean; skillUsed?: string } {
-  let baseDamage = attacker.attack;
-  let skillUsed: string | undefined;
+function getClassWeapon(user: UserRPG): { id: string; name: string; emoji: string; attack: number } | null {
+  const weaponId = user.equipment.weapon;
+  if (!weaponId) return null;
 
-  // Aplicar multiplicador de habilidad si se usa
-  if (skill) {
-    baseDamage = Math.floor(baseDamage * (skill.effect.damageMultiplier || 1));
-    skillUsed = skill.name;
-  }
-
-  // Calcular daño final
-  const reduction = defender.defense * 0.4;
-  let damage = Math.max(1, Math.floor(baseDamage - reduction));
-
-  // Varianza
-  const variance = randomInt(-15, 15) / 100;
-  damage = Math.floor(damage * (1 + variance));
-
-  // Crítico
-  const isCrit = randomInt(1, 100) <= attacker.critChance;
-  if (isCrit) {
-    damage = Math.floor(damage * 1.75);
-  }
-
-  return { damage: Math.max(1, damage), isCrit, skillUsed };
-}
-
-/**
- * Simula un turno de duelo
- */
-function simulateDuelTurn(
-  attackerStats: { attack: number; defense: number; critChance: number; mana: number; stamina: number; playerClass: string | null },
-  defenderStats: { defense: number },
-  attackerClass: string | null
-): { damage: number; isCrit: boolean; skillUsed?: string; manaCost: number; staminaCost: number } {
-  let skill: Skill | undefined;
-  let manaCost = 0;
-  let staminaCost = 5;
-
-  // 30% de chance de usar una habilidad si tiene clase y recursos
-  if (attackerClass && Math.random() < 0.3) {
-    const classInfo = CLASSES[attackerClass as keyof typeof CLASSES];
-    if (classInfo) {
-      const availableSkills = classInfo.skills
-        .map(id => SKILLS[id])
-        .filter(s => s && attackerStats.mana >= s.manaCost && attackerStats.stamina >= s.staminaCost);
-
-      if (availableSkills.length > 0) {
-        skill = pickRandom(availableSkills);
-        manaCost = skill.manaCost;
-        staminaCost = skill.staminaCost;
-      }
-    }
-  }
-
-  const result = calculateDuelDamage(
-    { attack: attackerStats.attack, critChance: attackerStats.critChance, playerClass: attackerClass },
-    defenderStats,
-    skill
-  );
+  const weapon = ITEMS[weaponId];
+  if (!weapon || weapon.type !== 'weapon') return null;
 
   return {
-    ...result,
-    manaCost,
-    staminaCost
+    id: weaponId,
+    name: weapon.name,
+    emoji: weapon.emoji,
+    attack: weapon.stats?.attack || 0
   };
 }
 
 /**
- * Simula el duelo completo
+ * Obtiene la armadura equipada
  */
-function simulateDuel(
-  player1: { name: string; stats: ReturnType<typeof calculateTotalStats>; health: number; mana: number; stamina: number; class: string | null },
-  player2: { name: string; stats: ReturnType<typeof calculateTotalStats>; health: number; mana: number; stamina: number; class: string | null }
-): {
-  winner: 1 | 2;
-  log: string[];
-  p1FinalHealth: number;
-  p2FinalHealth: number;
-  p1DamageDealt: number;
-  p2DamageDealt: number;
-} {
-  let p1Health = player1.health;
-  let p2Health = player2.health;
-  let p1Mana = player1.mana;
-  let p2Mana = player2.mana;
-  let p1Stamina = player1.stamina;
-  let p2Stamina = player2.stamina;
-  let p1TotalDamage = 0;
-  let p2TotalDamage = 0;
+function getClassArmor(user: UserRPG): { id: string; name: string; emoji: string; defense: number } | null {
+  const armorId = user.equipment.armor;
+  if (!armorId) return null;
 
-  const log: string[] = [];
-  let turn = 0;
-  let currentAttacker = Math.random() < 0.5 ? 1 : 2; // Quien empieza es aleatorio
-
-  log.push(`🎲 *${currentAttacker === 1 ? player1.name : player2.name}* tiene la iniciativa!\n`);
-
-  while (p1Health > 0 && p2Health > 0 && turn < 15) {
-    turn++;
-
-    if (currentAttacker === 1) {
-      const result = simulateDuelTurn(
-        { ...player1.stats, mana: p1Mana, stamina: p1Stamina, playerClass: player1.class },
-        { defense: player2.stats.defense },
-        player1.class
-      );
-
-      p2Health -= result.damage;
-      p1Mana -= result.manaCost;
-      p1Stamina -= result.staminaCost;
-      p1TotalDamage += result.damage;
-
-      let turnLog = `⚔️ *${player1.name}*`;
-      if (result.skillUsed) {
-        turnLog += ` usa *${result.skillUsed}*`;
-      }
-      if (result.isCrit) {
-        turnLog += ` 💥CRÍTICO!`;
-      }
-      turnLog += ` → ${result.damage} daño`;
-      log.push(turnLog);
-
-    } else {
-      const result = simulateDuelTurn(
-        { ...player2.stats, mana: p2Mana, stamina: p2Stamina, playerClass: player2.class },
-        { defense: player1.stats.defense },
-        player2.class
-      );
-
-      p1Health -= result.damage;
-      p2Mana -= result.manaCost;
-      p2Stamina -= result.staminaCost;
-      p2TotalDamage += result.damage;
-
-      let turnLog = `⚔️ *${player2.name}*`;
-      if (result.skillUsed) {
-        turnLog += ` usa *${result.skillUsed}*`;
-      }
-      if (result.isCrit) {
-        turnLog += ` 💥CRÍTICO!`;
-      }
-      turnLog += ` → ${result.damage} daño`;
-      log.push(turnLog);
-    }
-
-    currentAttacker = currentAttacker === 1 ? 2 : 1;
-  }
-
-  const winner = p1Health > p2Health ? 1 : 2;
+  const armor = ITEMS[armorId];
+  if (!armor || armor.type !== 'armor') return null;
 
   return {
-    winner,
-    log: log.slice(-8),
-    p1FinalHealth: Math.max(0, p1Health),
-    p2FinalHealth: Math.max(0, p2Health),
-    p1DamageDealt: p1TotalDamage,
-    p2DamageDealt: p2TotalDamage
+    id: armorId,
+    name: armor.name,
+    emoji: armor.emoji,
+    defense: armor.stats?.defense || 0
   };
 }
 
 /**
- * Calcula el daño de un ataque en duelo interactivo
+ * Calcula el daño real basado en equipamiento y stats
  */
-function calculateInteractiveDamage(
+function calculateRealDamage(
   attackerStats: { attack: number; critChance: number },
   defenderStats: { defense: number },
-  skill?: Skill,
-  isFirstAttack: boolean = false
-): { damage: number; isCrit: boolean; skillUsed?: string } {
-  let baseDamage = attackerStats.attack;
-  let skillUsed: string | undefined;
+  attackerWeapon: { attack: number } | null,
+  defenderArmor: { defense: number } | null,
+  skill: Skill | null,
+  isConsecutiveHit: boolean,
+  attackerPvpBonus: number,
+  defenderPvpDefense: number,
+  attackerCritBonus: number
+): { damage: number; isCrit: boolean; skillUsed: string | null } {
 
-  // Aplicar multiplicador de habilidad si se usa
-  if (skill) {
-    baseDamage = Math.floor(baseDamage * (skill.effect.damageMultiplier || 1));
+  // Daño base = ataque del jugador + daño del arma
+  let baseDamage = attackerStats.attack;
+  if (attackerWeapon) {
+    baseDamage += attackerWeapon.attack;
+  }
+
+  // Aplicar multiplicador de habilidad
+  let skillUsed: string | null = null;
+  if (skill && skill.effect.damageMultiplier) {
+    baseDamage = Math.floor(baseDamage * skill.effect.damageMultiplier);
     skillUsed = skill.name;
   }
 
-  // Bonus por atacar primero (15% más daño)
-  if (isFirstAttack) {
-    baseDamage = Math.floor(baseDamage * 1.15);
+  // Bonus por golpes consecutivos (10% extra por cada golpe en racha)
+  if (isConsecutiveHit) {
+    baseDamage = Math.floor(baseDamage * 1.1);
   }
 
-  // Calcular daño final
-  const reduction = defenderStats.defense * 0.4;
+  // Aplicar bonus PvP del atacante
+  const pvpMultiplier = 1 + (attackerPvpBonus / 100);
+  baseDamage = Math.floor(baseDamage * pvpMultiplier);
+
+  // Calcular defensa total = defensa del jugador + defensa de armadura
+  let totalDefense = defenderStats.defense;
+  if (defenderArmor) {
+    totalDefense += defenderArmor.defense;
+  }
+
+  // Aplicar bonus de defensa PvP del defensor
+  totalDefense = Math.floor(totalDefense * (1 + defenderPvpDefense / 100));
+
+  // Reducción de daño (40% de la defensa)
+  const reduction = totalDefense * 0.4;
   let damage = Math.max(1, Math.floor(baseDamage - reduction));
 
-  // Varianza
+  // Varianza pequeña (±10%)
   const variance = randomInt(-10, 10) / 100;
   damage = Math.floor(damage * (1 + variance));
 
   // Crítico
-  const isCrit = randomInt(1, 100) <= attackerStats.critChance;
+  const totalCritChance = attackerStats.critChance + attackerCritBonus;
+  const isCrit = randomInt(1, 100) <= totalCritChance;
   if (isCrit) {
     damage = Math.floor(damage * 1.75);
   }
@@ -283,9 +204,9 @@ function calculateInteractiveDamage(
 }
 
 /**
- * Obtiene las habilidades disponibles para un jugador
+ * Obtiene las habilidades disponibles para la clase del jugador
  */
-function getAvailableSkills(playerClass: string | null, mana: number, stamina: number): Skill[] {
+function getClassSkills(playerClass: string | null, mana: number, stamina: number): Skill[] {
   if (!playerClass) return [];
 
   const classInfo = CLASSES[playerClass as keyof typeof CLASSES];
@@ -300,57 +221,73 @@ function getAvailableSkills(playerClass: string | null, mana: number, stamina: n
  * Genera el mensaje del estado del duelo
  */
 function generateDuelStatusMessage(duel: ActiveDuel): string {
-  const currentPlayer = duel.currentTurn === 'challenger' ? duel.challengerName : duel.targetName;
-  const currentJid = duel.currentTurn === 'challenger' ? duel.challengerJid : duel.targetJid;
+  const challengerWeapon = duel.challengerWeapon ? ITEMS[duel.challengerWeapon] : null;
+  const targetWeapon = duel.targetWeapon ? ITEMS[duel.targetWeapon] : null;
+  const challengerArmor = duel.challengerArmor ? ITEMS[duel.challengerArmor] : null;
+  const targetArmor = duel.targetArmor ? ITEMS[duel.targetArmor] : null;
 
-  let msg = `⚔️ *DUELO EN CURSO*\n`;
+  let msg = `⚔️ *DUELO EN TIEMPO REAL*\n`;
   msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  // Estado de los jugadores
+  // Jugador 1
   msg += `🗡️ *${duel.challengerName}*\n`;
+  msg += `   🎖️ ${duel.challengerRank}\n`;
   msg += `   ❤️ ${duel.challengerHealth}/${duel.challengerMaxHealth}\n`;
+  if (challengerWeapon) {
+    msg += `   ${challengerWeapon.emoji} ${challengerWeapon.name} (+${challengerWeapon.stats?.attack || 0} ATK)\n`;
+  }
+  if (challengerArmor) {
+    msg += `   ${challengerArmor.emoji} ${challengerArmor.name} (+${challengerArmor.stats?.defense || 0} DEF)\n`;
+  }
   msg += `   💙 ${duel.challengerMana} | ⚡ ${duel.challengerStamina}\n\n`;
 
+  // Jugador 2
   msg += `🛡️ *${duel.targetName}*\n`;
+  msg += `   🎖️ ${duel.targetRank}\n`;
   msg += `   ❤️ ${duel.targetHealth}/${duel.targetMaxHealth}\n`;
+  if (targetWeapon) {
+    msg += `   ${targetWeapon.emoji} ${targetWeapon.name} (+${targetWeapon.stats?.attack || 0} ATK)\n`;
+  }
+  if (targetArmor) {
+    msg += `   ${targetArmor.emoji} ${targetArmor.name} (+${targetArmor.stats?.defense || 0} DEF)\n`;
+  }
   msg += `   💙 ${duel.targetMana} | ⚡ ${duel.targetStamina}\n\n`;
 
-  // Log de combate (últimos 3)
+  // Racha actual
+  if (duel.consecutiveHits > 0 && duel.lastAttacker) {
+    const streakPlayer = duel.lastAttacker === 'challenger' ? duel.challengerName : duel.targetName;
+    msg += `🔥 *Racha:* ${streakPlayer} x${duel.consecutiveHits}\n\n`;
+  }
+
+  // Log de combate
   if (duel.log.length > 0) {
     msg += `📜 *Últimas acciones:*\n`;
-    for (const line of duel.log.slice(-3)) {
+    for (const line of duel.log.slice(-4)) {
       msg += `   ${line}\n`;
     }
     msg += '\n';
   }
 
-  // Turno actual
   msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `🎯 *Turno de: ${currentPlayer}*\n\n`;
-  msg += `*Comandos disponibles:*\n`;
-  msg += `• */atacar* - Ataque básico\n`;
-
-  // Mostrar habilidades disponibles
-  const currentMana = duel.currentTurn === 'challenger' ? duel.challengerMana : duel.targetMana;
-  const currentStamina = duel.currentTurn === 'challenger' ? duel.challengerStamina : duel.targetStamina;
-  const currentClass = duel.currentTurn === 'challenger' ? duel.challengerClass : duel.targetClass;
-
-  const availableSkills = getAvailableSkills(currentClass, currentMana, currentStamina);
-  if (availableSkills.length > 0) {
-    msg += `• */habilidad [nombre]* - Usar habilidad\n`;
-    msg += `  Disponibles: ${availableSkills.map(s => `${s.emoji}${s.name}`).join(', ')}\n`;
-  }
-
-  msg += `• */rendirse* - Abandonar el duelo\n\n`;
-  msg += `⏰ _Tienes 30 segundos para actuar_`;
+  msg += `⚡ *¡SIN TURNOS! El más rápido ataca*\n\n`;
+  msg += `*Comandos:*\n`;
+  msg += `• */atacar* - Ataque con tu arma\n`;
+  msg += `• */poder [nombre]* - Usar habilidad de clase\n`;
+  msg += `• */rendirse* - Abandonar\n\n`;
+  msg += `💡 _3 golpes seguidos = daño extra!_`;
 
   return msg;
 }
 
 /**
- * Finaliza un duelo y reparte recompensas
+ * Finaliza un duelo y guarda la vida real
  */
-async function finishDuel(duel: ActiveDuel, winnerJid: string, ctx: MessageContext, reason: 'victory' | 'surrender' | 'timeout'): Promise<void> {
+async function finishDuel(
+  duel: ActiveDuel,
+  winnerJid: string,
+  ctx: MessageContext,
+  reason: 'victory' | 'surrender' | 'timeout'
+): Promise<void> {
   const db = getDatabase();
   const loserJid = winnerJid === duel.challengerJid ? duel.targetJid : duel.challengerJid;
 
@@ -360,6 +297,10 @@ async function finishDuel(duel: ActiveDuel, winnerJid: string, ctx: MessageConte
   const winnerName = winnerJid === duel.challengerJid ? duel.challengerName : duel.targetName;
   const loserName = winnerJid === duel.challengerJid ? duel.targetName : duel.challengerName;
 
+  // Obtener vida final de cada jugador
+  const challengerFinalHealth = Math.max(0, duel.challengerHealth);
+  const targetFinalHealth = Math.max(0, duel.targetHealth);
+
   // Calcular recompensas
   const baseExpReward = 300 + Math.floor(loser.level * 15);
   const expReward = baseExpReward + randomInt(0, 150);
@@ -368,9 +309,13 @@ async function finishDuel(duel: ActiveDuel, winnerJid: string, ctx: MessageConte
   const winnerStats = { ...winner.combatStats };
   winnerStats.pvpWins++;
 
+  // GUARDAR VIDA REAL DEL GANADOR
+  const winnerFinalHealth = winnerJid === duel.challengerJid ? challengerFinalHealth : targetFinalHealth;
+
   db.updateUser(winnerJid, {
     exp: winner.exp + expReward,
     money: winner.money + duel.bet,
+    health: winnerFinalHealth, // ← VIDA REAL GUARDADA
     combatStats: winnerStats
   });
 
@@ -378,8 +323,12 @@ async function finishDuel(duel: ActiveDuel, winnerJid: string, ctx: MessageConte
   const loserStats = { ...loser.combatStats };
   loserStats.pvpLosses++;
 
+  // GUARDAR VIDA REAL DEL PERDEDOR (0 o lo que quedó)
+  const loserFinalHealth = loserJid === duel.challengerJid ? challengerFinalHealth : targetFinalHealth;
+
   db.updateUser(loserJid, {
     money: Math.max(0, loser.money - duel.bet),
+    health: Math.max(1, loserFinalHealth), // Mínimo 1 de vida para no quedar muerto
     combatStats: loserStats
   });
 
@@ -398,7 +347,7 @@ async function finishDuel(duel: ActiveDuel, winnerJid: string, ctx: MessageConte
       reasonText = `🏳️ *${loserName}* se rindió ante *${winnerName}*!`;
       break;
     case 'timeout':
-      reasonText = `⏰ *${loserName}* no respondió a tiempo. *${winnerName}* gana!`;
+      reasonText = `⏰ El duelo expiró. *${winnerName}* gana por más vida restante!`;
       break;
   }
 
@@ -421,9 +370,10 @@ async function finishDuel(duel: ActiveDuel, winnerJid: string, ctx: MessageConte
     resultMsg += `   ${EMOJI.coin} +${formatNumber(duel.bet)} monedas\n`;
   }
 
-  resultMsg += `\n❤️ Salud final:\n`;
-  resultMsg += `   ${duel.challengerName}: *${duel.challengerHealth}* HP\n`;
-  resultMsg += `   ${duel.targetName}: *${duel.targetHealth}* HP`;
+  resultMsg += `\n❤️ *Salud final (GUARDADA):*\n`;
+  resultMsg += `   ${duel.challengerName}: *${challengerFinalHealth}* HP\n`;
+  resultMsg += `   ${duel.targetName}: *${targetFinalHealth}* HP\n\n`;
+  resultMsg += `💡 _Usa pociones para recuperar vida_`;
 
   await ctx.m.reply(resultMsg);
 }
@@ -436,9 +386,9 @@ export const dueloPlugin: PluginHandler = {
   tags: ['rpg'],
   help: [
     'duelo @usuario [apuesta] - Desafía a un jugador',
-    'El retado debe aceptar con /aceptar',
-    'El ganador obtiene XP, fama y la apuesta',
-    '¡Sin cooldown! Pelea cuando quieras'
+    'Sistema en TIEMPO REAL - ¡El más rápido ataca!',
+    'Sin turnos - Golpea cuando puedas',
+    '3 golpes consecutivos = daño extra'
   ],
   register: true,
   group: true,
@@ -449,7 +399,7 @@ export const dueloPlugin: PluginHandler = {
     const challenger = db.getUser(m.sender);
     const groupJid = m.chat;
 
-    // Verificar si ya hay un duelo activo en el grupo
+    // Verificar si ya hay un duelo activo
     if (activeDuels.has(groupJid)) {
       await m.reply(
         `${EMOJI.error} Ya hay un duelo en curso en este grupo.\n` +
@@ -497,7 +447,7 @@ export const dueloPlugin: PluginHandler = {
       return;
     }
 
-    // Parsear apuesta (límite aumentado)
+    // Parsear apuesta
     let bet = 0;
     const betArg = args.find(a => /^\d+$/.test(a));
     if (betArg) {
@@ -508,7 +458,7 @@ export const dueloPlugin: PluginHandler = {
         return;
       }
       if (target.money < bet) {
-        await m.reply(`${EMOJI.error} *${target.name}* no tiene suficiente dinero para esa apuesta.`);
+        await m.reply(`${EMOJI.error} *${target.name}* no tiene suficiente dinero.`);
         return;
       }
     }
@@ -522,7 +472,7 @@ export const dueloPlugin: PluginHandler = {
       bet
     });
 
-    // Limpiar desafíos antiguos (más de 2 minutos)
+    // Limpiar desafíos antiguos
     setTimeout(() => {
       const pending = pendingDuels.get(m.sender);
       if (pending && now === pending.timestamp) {
@@ -530,19 +480,42 @@ export const dueloPlugin: PluginHandler = {
       }
     }, 2 * 60 * 1000);
 
+    // Obtener equipamiento para mostrar
+    const challengerWeapon = getClassWeapon(challenger);
+    const challengerArmor = getClassArmor(challenger);
+    const targetWeapon = getClassWeapon(target);
+    const targetArmor = getClassArmor(target);
+
     const targetName = targetJid.split('@')[0];
-    let challengeMsg = `⚔️ *¡DESAFÍO DE DUELO INTERACTIVO!*\n`;
+    let challengeMsg = `⚔️ *¡DESAFÍO DE DUELO!*\n`;
     challengeMsg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
     challengeMsg += `🗡️ *${challenger.name}* (Nv.${challenger.level})\n`;
-    challengeMsg += `   ❤️ ${challenger.health}/${challenger.maxHealth} | 💙 ${challenger.mana} | ⚡ ${challenger.stamina}\n`;
+    challengeMsg += `   ❤️ ${challenger.health}/${challenger.maxHealth}\n`;
     if (challenger.playerClass) {
-      challengeMsg += `   Clase: ${CLASSES[challenger.playerClass as keyof typeof CLASSES]?.emoji} ${CLASSES[challenger.playerClass as keyof typeof CLASSES]?.name}\n`;
+      const classInfo = CLASSES[challenger.playerClass as keyof typeof CLASSES];
+      challengeMsg += `   ${classInfo?.emoji} ${classInfo?.name}\n`;
     }
-    challengeMsg += `\n   vs\n\n`;
+    if (challengerWeapon) {
+      challengeMsg += `   ${challengerWeapon.emoji} ${challengerWeapon.name}\n`;
+    }
+    if (challengerArmor) {
+      challengeMsg += `   ${challengerArmor.emoji} ${challengerArmor.name}\n`;
+    }
+
+    challengeMsg += `\n   ⚡ VS ⚡\n\n`;
+
     challengeMsg += `🛡️ *${target.name}* (Nv.${target.level})\n`;
-    challengeMsg += `   ❤️ ${target.health}/${target.maxHealth} | 💙 ${target.mana} | ⚡ ${target.stamina}\n`;
+    challengeMsg += `   ❤️ ${target.health}/${target.maxHealth}\n`;
     if (target.playerClass) {
-      challengeMsg += `   Clase: ${CLASSES[target.playerClass as keyof typeof CLASSES]?.emoji} ${CLASSES[target.playerClass as keyof typeof CLASSES]?.name}\n`;
+      const classInfo = CLASSES[target.playerClass as keyof typeof CLASSES];
+      challengeMsg += `   ${classInfo?.emoji} ${classInfo?.name}\n`;
+    }
+    if (targetWeapon) {
+      challengeMsg += `   ${targetWeapon.emoji} ${targetWeapon.name}\n`;
+    }
+    if (targetArmor) {
+      challengeMsg += `   ${targetArmor.emoji} ${targetArmor.name}\n`;
     }
 
     challengeMsg += '\n';
@@ -550,10 +523,11 @@ export const dueloPlugin: PluginHandler = {
       challengeMsg += `💰 *Apuesta:* ${formatNumber(bet)} monedas\n\n`;
     }
 
-    challengeMsg += `🎮 *¡Duelo Interactivo!*\n`;
-    challengeMsg += `   • Cada jugador ataca en su turno\n`;
-    challengeMsg += `   • Usa tus habilidades y poderes\n`;
-    challengeMsg += `   • ¡El primero en escribir tiene ventaja!\n\n`;
+    challengeMsg += `⚡ *¡COMBATE EN TIEMPO REAL!*\n`;
+    challengeMsg += `   • Sin turnos - El más rápido ataca\n`;
+    challengeMsg += `   • Usa tu arma y habilidades de clase\n`;
+    challengeMsg += `   • 3 golpes seguidos = daño extra\n`;
+    challengeMsg += `   • ¡La vida se guarda al final!\n\n`;
 
     challengeMsg += `@${targetName}, escribe */aceptar* para pelear\n`;
     challengeMsg += `o */rechazar* para declinar.\n\n`;
@@ -565,12 +539,12 @@ export const dueloPlugin: PluginHandler = {
 };
 
 /**
- * Plugin: Aceptar - Acepta un duelo e inicia el combate interactivo
+ * Plugin: Aceptar - Acepta un duelo
  */
 export const aceptarPlugin: PluginHandler = {
   command: ['aceptar', 'accept', 'si'],
   tags: ['rpg'],
-  help: ['aceptar - Acepta un desafío de duelo pendiente'],
+  help: ['aceptar - Acepta un desafío de duelo'],
   register: true,
   group: true,
 
@@ -580,13 +554,12 @@ export const aceptarPlugin: PluginHandler = {
     const accepter = db.getUser(m.sender);
     const groupJid = m.chat;
 
-    // Verificar si ya hay un duelo activo
     if (activeDuels.has(groupJid)) {
-      await m.reply(`${EMOJI.error} Ya hay un duelo en curso en este grupo.`);
+      await m.reply(`${EMOJI.error} Ya hay un duelo en curso.`);
       return;
     }
 
-    // Buscar desafío pendiente para este jugador
+    // Buscar desafío pendiente
     let challengerJid: string | null = null;
     let duelInfo: { target: string; timestamp: number; bet: number } | null = null;
 
@@ -599,15 +572,15 @@ export const aceptarPlugin: PluginHandler = {
     }
 
     if (!challengerJid || !duelInfo) {
-      await m.reply(`${EMOJI.error} No tienes ningún desafío de duelo pendiente.`);
+      await m.reply(`${EMOJI.error} No tienes ningún desafío pendiente.`);
       return;
     }
 
     const challenger = db.getUser(challengerJid);
 
-    // Verificar que ambos tengan salud suficiente
+    // Verificaciones
     if (accepter.health < 30) {
-      await m.reply(`${EMOJI.error} Estás muy herido para pelear. Cúrate primero.`);
+      await m.reply(`${EMOJI.error} Estás muy herido. Cúrate primero.`);
       return;
     }
 
@@ -617,23 +590,34 @@ export const aceptarPlugin: PluginHandler = {
       return;
     }
 
-    // Verificar apuesta
     if (duelInfo.bet > 0) {
       if (accepter.money < duelInfo.bet || challenger.money < duelInfo.bet) {
-        await m.reply(`${EMOJI.error} Uno de los jugadores ya no tiene suficiente dinero para la apuesta.`);
+        await m.reply(`${EMOJI.error} Fondos insuficientes para la apuesta.`);
         pendingDuels.delete(challengerJid);
         return;
       }
     }
 
-    // Eliminar desafío pendiente
     pendingDuels.delete(challengerJid);
-
     await m.react('⚔️');
 
     // Calcular stats
     const challengerStats = calculateTotalStats(challenger, ITEMS);
     const accepterStats = calculateTotalStats(accepter, ITEMS);
+
+    // Obtener beneficios de rango
+    const challengerRankBenefits = getRankBenefits(challenger.level);
+    const targetRankBenefits = getRankBenefits(accepter.level);
+    const challengerRank = getRoleByLevel(challenger.level);
+    const targetRank = getRoleByLevel(accepter.level);
+
+    // Obtener equipamiento
+    const challengerWeapon = getClassWeapon(challenger);
+    const challengerArmor = getClassArmor(challenger);
+    const targetWeapon = getClassWeapon(accepter);
+    const targetArmor = getClassArmor(accepter);
+
+    const now = Date.now();
 
     // Crear duelo activo
     const newDuel: ActiveDuel = {
@@ -653,49 +637,64 @@ export const aceptarPlugin: PluginHandler = {
       targetStats: accepterStats,
       challengerClass: challenger.playerClass,
       targetClass: accepter.playerClass,
-      currentTurn: 'challenger', // El retador empieza
+      challengerWeapon: challengerWeapon?.id || null,
+      targetWeapon: targetWeapon?.id || null,
+      challengerArmor: challengerArmor?.id || null,
+      targetArmor: targetArmor?.id || null,
+      challengerRankBenefits,
+      targetRankBenefits,
+      challengerRank,
+      targetRank,
+      lastAttacker: null,
+      consecutiveHits: 0,
       bet: duelInfo.bet,
-      turnStartTime: Date.now(),
       groupJid,
-      log: []
+      startTime: now,
+      log: [],
+      challengerLastAttack: 0,
+      targetLastAttack: 0,
+      challengerSkillCooldowns: new Map(),
+      targetSkillCooldowns: new Map()
     };
 
     activeDuels.set(groupJid, newDuel);
 
-    // Mensaje de inicio del duelo
+    // Mensaje de inicio
     let startMsg = `⚔️ *¡DUELO INICIADO!*\n`;
     startMsg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
     startMsg += `🗡️ *${challenger.name}* VS 🛡️ *${accepter.name}*\n\n`;
-    startMsg += `¡El combate interactivo ha comenzado!\n`;
-    startMsg += `Cada jugador atacará en su turno.\n`;
-    startMsg += `¡El primero en atacar tiene ventaja de daño!\n\n`;
+    startMsg += `⚡ *¡COMBATE EN TIEMPO REAL!*\n`;
+    startMsg += `   • ¡El más rápido ataca primero!\n`;
+    startMsg += `   • Usa */atacar* o */poder [habilidad]*\n`;
+    startMsg += `   • ¡3 golpes seguidos dan daño extra!\n\n`;
 
     await m.reply(startMsg);
 
-    // Enviar estado del duelo
+    // Enviar estado
     const statusMsg = generateDuelStatusMessage(newDuel);
     await m.reply(statusMsg);
 
-    // Configurar timeout para el turno
+    // Timeout del duelo
     setTimeout(async () => {
       const duel = activeDuels.get(groupJid);
-      if (duel && duel.turnStartTime === newDuel.turnStartTime) {
-        // El jugador no respondió a tiempo
-        const loserJid = duel.currentTurn === 'challenger' ? duel.challengerJid : duel.targetJid;
-        const winnerJid = duel.currentTurn === 'challenger' ? duel.targetJid : duel.challengerJid;
+      if (duel && duel.startTime === now) {
+        // El que tenga más vida gana
+        const winnerJid = duel.challengerHealth >= duel.targetHealth
+          ? duel.challengerJid
+          : duel.targetJid;
         await finishDuel(duel, winnerJid, ctx, 'timeout');
       }
-    }, TURN_TIMEOUT);
+    }, DUEL_TIMEOUT);
   }
 };
 
 /**
- * Plugin: Atacar en duelo - Ataque básico durante un duelo
+ * Plugin: Atacar en duelo - Ataque con arma equipada
  */
 export const atacarDueloPlugin: PluginHandler = {
   command: ['atacar', 'attack', 'golpear'],
   tags: ['rpg'],
-  help: ['atacar - Realiza un ataque básico en un duelo activo'],
+  help: ['atacar - Ataca con tu arma en un duelo activo'],
   register: true,
   group: true,
 
@@ -703,50 +702,73 @@ export const atacarDueloPlugin: PluginHandler = {
     const { m } = ctx;
     const groupJid = m.chat;
 
-    // Verificar si hay un duelo activo
     const duel = activeDuels.get(groupJid);
-    if (!duel) {
-      // Si no hay duelo, puede ser el comando de cazar monstruos
-      // Lo dejamos pasar para el otro plugin
-      return;
-    }
+    if (!duel) return; // Puede ser otro comando, no responder
 
-    // Verificar si es el turno del jugador
     const isChallenger = m.sender === duel.challengerJid;
     const isTarget = m.sender === duel.targetJid;
 
     if (!isChallenger && !isTarget) {
-      await m.reply(`${EMOJI.error} No estás participando en este duelo.`);
+      await m.reply(`${EMOJI.error} No estás en este duelo.`);
       return;
     }
 
-    const expectedTurn = duel.currentTurn === 'challenger' ? duel.challengerJid : duel.targetJid;
-    const isFirstAttack = duel.log.length === 0;
+    const now = Date.now();
+    const lastAttack = isChallenger ? duel.challengerLastAttack : duel.targetLastAttack;
 
-    // Bonus de velocidad: el primero en escribir ataca con ventaja
-    if (m.sender !== expectedTurn && isFirstAttack) {
-      // El otro jugador fue más rápido, cambiamos el turno
-      duel.currentTurn = isChallenger ? 'challenger' : 'target';
-      duel.log.push(`⚡ *${isChallenger ? duel.challengerName : duel.targetName}* fue más rápido!`);
-    } else if (m.sender !== expectedTurn) {
-      await m.reply(`${EMOJI.error} No es tu turno. Espera a que tu oponente ataque.`);
+    // Cooldown anti-spam
+    if (now - lastAttack < ATTACK_COOLDOWN) {
+      const remaining = Math.ceil((ATTACK_COOLDOWN - (now - lastAttack)) / 1000);
+      await m.reply(`⏳ Espera ${remaining}s para atacar de nuevo.`);
       return;
     }
 
-    // Ejecutar ataque
+    // Verificar stamina
+    const currentStamina = isChallenger ? duel.challengerStamina : duel.targetStamina;
+    if (currentStamina < 5) {
+      await m.reply(`${EMOJI.error} ¡Sin energía! Necesitas 5 ⚡ para atacar.`);
+      return;
+    }
+
+    // Actualizar tiempo de ataque
+    if (isChallenger) {
+      duel.challengerLastAttack = now;
+    } else {
+      duel.targetLastAttack = now;
+    }
+
+    // Obtener stats y equipamiento
     const attackerStats = isChallenger ? duel.challengerStats : duel.targetStats;
     const defenderStats = isChallenger ? duel.targetStats : duel.challengerStats;
     const attackerName = isChallenger ? duel.challengerName : duel.targetName;
-    const defenderName = isChallenger ? duel.targetName : duel.challengerName;
 
-    const result = calculateInteractiveDamage(
+    const attackerWeaponId = isChallenger ? duel.challengerWeapon : duel.targetWeapon;
+    const defenderArmorId = isChallenger ? duel.targetArmor : duel.challengerArmor;
+
+    const attackerWeapon = attackerWeaponId ? { attack: ITEMS[attackerWeaponId]?.stats?.attack || 0 } : null;
+    const defenderArmor = defenderArmorId ? { defense: ITEMS[defenderArmorId]?.stats?.defense || 0 } : null;
+
+    const attackerRankBenefits = isChallenger ? duel.challengerRankBenefits : duel.targetRankBenefits;
+    const defenderRankBenefits = isChallenger ? duel.targetRankBenefits : duel.challengerRankBenefits;
+
+    // Verificar racha
+    const currentAttacker = isChallenger ? 'challenger' : 'target';
+    const isConsecutive = duel.lastAttacker === currentAttacker;
+
+    // Calcular daño real
+    const result = calculateRealDamage(
       { attack: attackerStats.attack, critChance: attackerStats.critChance },
       { defense: defenderStats.defense },
-      undefined,
-      isFirstAttack
+      attackerWeapon,
+      defenderArmor,
+      null,
+      isConsecutive && duel.consecutiveHits >= 2,
+      attackerRankBenefits.pvpDamageBonus,
+      defenderRankBenefits.pvpDefenseBonus,
+      attackerRankBenefits.critBonus
     );
 
-    // Aplicar daño
+    // Aplicar daño y consumir stamina
     if (isChallenger) {
       duel.targetHealth = Math.max(0, duel.targetHealth - result.damage);
       duel.challengerStamina = Math.max(0, duel.challengerStamina - 5);
@@ -755,18 +777,30 @@ export const atacarDueloPlugin: PluginHandler = {
       duel.targetStamina = Math.max(0, duel.targetStamina - 5);
     }
 
+    // Actualizar racha
+    if (duel.lastAttacker === currentAttacker) {
+      duel.consecutiveHits++;
+    } else {
+      duel.lastAttacker = currentAttacker;
+      duel.consecutiveHits = 1;
+    }
+
+    // Obtener nombre del arma para el log
+    const weaponName = attackerWeaponId ? ITEMS[attackerWeaponId]?.name : 'puños';
+    const weaponEmoji = attackerWeaponId ? ITEMS[attackerWeaponId]?.emoji : '👊';
+
     // Agregar al log
-    let logEntry = `⚔️ *${attackerName}* ataca`;
+    let logEntry = `${weaponEmoji} *${attackerName}* ataca con *${weaponName}*`;
     if (result.isCrit) {
       logEntry += ` 💥CRÍTICO!`;
     }
-    if (isFirstAttack) {
-      logEntry += ` ⚡RÁPIDO!`;
+    if (duel.consecutiveHits >= 3) {
+      logEntry += ` 🔥x${duel.consecutiveHits}`;
     }
-    logEntry += ` → *${result.damage}* daño a *${defenderName}*`;
+    logEntry += ` → *${result.damage}* daño`;
     duel.log.push(logEntry);
 
-    // Verificar si alguien murió
+    // Verificar victoria
     if (duel.challengerHealth <= 0) {
       await finishDuel(duel, duel.targetJid, ctx, 'victory');
       return;
@@ -776,34 +810,19 @@ export const atacarDueloPlugin: PluginHandler = {
       return;
     }
 
-    // Cambiar turno
-    duel.currentTurn = isChallenger ? 'target' : 'challenger';
-    duel.turnStartTime = Date.now();
-
-    // Mostrar estado actualizado
+    // Mostrar estado
     const statusMsg = generateDuelStatusMessage(duel);
     await m.reply(statusMsg);
-
-    // Configurar nuevo timeout
-    const currentTurnTime = duel.turnStartTime;
-    setTimeout(async () => {
-      const currentDuel = activeDuels.get(groupJid);
-      if (currentDuel && currentDuel.turnStartTime === currentTurnTime) {
-        const loserJid = currentDuel.currentTurn === 'challenger' ? currentDuel.challengerJid : currentDuel.targetJid;
-        const winnerJid = currentDuel.currentTurn === 'challenger' ? currentDuel.targetJid : currentDuel.challengerJid;
-        await finishDuel(currentDuel, winnerJid, ctx, 'timeout');
-      }
-    }, TURN_TIMEOUT);
   }
 };
 
 /**
- * Plugin: Habilidad en duelo - Usar habilidad durante un duelo
+ * Plugin: Poder/Habilidad en duelo - Usar habilidad de clase
  */
-export const habilidadDueloPlugin: PluginHandler = {
-  command: ['habilidad', 'skill', 'poder', 'hab'],
+export const poderDueloPlugin: PluginHandler = {
+  command: ['poder', 'habilidad', 'skill', 'hab'],
   tags: ['rpg'],
-  help: ['habilidad [nombre] - Usa una habilidad en un duelo activo'],
+  help: ['poder [nombre] - Usa una habilidad de tu clase en el duelo'],
   register: true,
   group: true,
 
@@ -811,31 +830,27 @@ export const habilidadDueloPlugin: PluginHandler = {
     const { m, args } = ctx;
     const groupJid = m.chat;
 
-    // Verificar si hay un duelo activo
     const duel = activeDuels.get(groupJid);
     if (!duel) {
-      await m.reply(`${EMOJI.error} No hay ningún duelo activo en este grupo.`);
+      await m.reply(`${EMOJI.error} No hay duelo activo.`);
       return;
     }
 
-    // Verificar si es el turno del jugador
     const isChallenger = m.sender === duel.challengerJid;
     const isTarget = m.sender === duel.targetJid;
 
     if (!isChallenger && !isTarget) {
-      await m.reply(`${EMOJI.error} No estás participando en este duelo.`);
+      await m.reply(`${EMOJI.error} No estás en este duelo.`);
       return;
     }
 
-    const expectedTurn = duel.currentTurn === 'challenger' ? duel.challengerJid : duel.targetJid;
-    const isFirstAttack = duel.log.length === 0;
+    const now = Date.now();
+    const lastAttack = isChallenger ? duel.challengerLastAttack : duel.targetLastAttack;
 
-    // Bonus de velocidad
-    if (m.sender !== expectedTurn && isFirstAttack) {
-      duel.currentTurn = isChallenger ? 'challenger' : 'target';
-      duel.log.push(`⚡ *${isChallenger ? duel.challengerName : duel.targetName}* fue más rápido!`);
-    } else if (m.sender !== expectedTurn) {
-      await m.reply(`${EMOJI.error} No es tu turno. Espera a que tu oponente ataque.`);
+    // Cooldown
+    if (now - lastAttack < ATTACK_COOLDOWN) {
+      const remaining = Math.ceil((ATTACK_COOLDOWN - (now - lastAttack)) / 1000);
+      await m.reply(`⏳ Espera ${remaining}s.`);
       return;
     }
 
@@ -845,54 +860,108 @@ export const habilidadDueloPlugin: PluginHandler = {
     const playerStamina = isChallenger ? duel.challengerStamina : duel.targetStamina;
 
     if (!playerClass) {
-      await m.reply(`${EMOJI.error} No tienes una clase. Usa */clase* para elegir una.`);
+      await m.reply(`${EMOJI.error} No tienes clase. Usa */clase* para elegir una.`);
       return;
     }
 
-    const availableSkills = getAvailableSkills(playerClass, playerMana, playerStamina);
+    const availableSkills = getClassSkills(playerClass, playerMana, playerStamina);
+
     if (availableSkills.length === 0) {
-      await m.reply(`${EMOJI.error} No tienes suficiente maná o energía para usar habilidades.`);
+      await m.reply(`${EMOJI.error} Sin maná/energía para habilidades.`);
       return;
     }
 
-    // Buscar la habilidad por nombre (sin importar tildes)
+    // Buscar habilidad
     const skillName = args.join(' ').toLowerCase();
     let skill: Skill | undefined;
 
     if (skillName) {
       skill = availableSkills.find(s =>
-        matchesIgnoreAccents(s.name, skillName) ||
+        s.name.toLowerCase().includes(skillName) ||
         s.id.toLowerCase().includes(skillName)
       );
     }
 
     if (!skill) {
-      // Mostrar habilidades disponibles
-      let skillList = `${EMOJI.info} *Habilidades disponibles:*\n\n`;
+      // Mostrar habilidades disponibles de la clase con cooldowns
+      const classInfo = CLASSES[playerClass as keyof typeof CLASSES];
+      const skillCooldowns = isChallenger ? duel.challengerSkillCooldowns : duel.targetSkillCooldowns;
+      let skillList = `${classInfo?.emoji} *Habilidades de ${classInfo?.name}:*\n\n`;
+
       for (const s of availableSkills) {
-        skillList += `${s.emoji} *${s.name}*\n`;
+        const cooldownEnd = skillCooldowns.get(s.id) || 0;
+        const isOnCooldown = now < cooldownEnd;
+        const cooldownRemaining = isOnCooldown ? Math.ceil((cooldownEnd - now) / 1000) : 0;
+
+        skillList += `${s.emoji} *${s.name}*`;
+        if (isOnCooldown) {
+          skillList += ` ⏳ ${cooldownRemaining}s\n`;
+        } else {
+          skillList += ` ✅\n`;
+        }
         skillList += `   ${s.description}\n`;
-        skillList += `   💙 ${s.manaCost} maná | ⚡ ${s.staminaCost} energía\n\n`;
+        skillList += `   💙 ${s.manaCost} | ⚡ ${s.staminaCost}\n\n`;
       }
-      skillList += `📝 Usa: */habilidad [nombre]*`;
+
+      skillList += `📝 Usa: */poder [nombre]*\n`;
+      skillList += `⚠️ _Cada habilidad tiene cooldown propio_`;
       await m.reply(skillList);
       return;
     }
 
-    // Ejecutar habilidad
+    // Verificar cooldown de la habilidad específica
+    const skillCooldowns = isChallenger ? duel.challengerSkillCooldowns : duel.targetSkillCooldowns;
+    const skillCooldownEnd = skillCooldowns.get(skill.id) || 0;
+
+    if (now < skillCooldownEnd) {
+      const remaining = Math.ceil((skillCooldownEnd - now) / 1000);
+      await m.reply(`⏳ *${skill.name}* en cooldown. Espera *${remaining}s* o usa otra habilidad.`);
+      return;
+    }
+
+    // Actualizar tiempo de ataque
+    if (isChallenger) {
+      duel.challengerLastAttack = now;
+    } else {
+      duel.targetLastAttack = now;
+    }
+
+    // Obtener stats
     const attackerStats = isChallenger ? duel.challengerStats : duel.targetStats;
     const defenderStats = isChallenger ? duel.targetStats : duel.challengerStats;
     const attackerName = isChallenger ? duel.challengerName : duel.targetName;
-    const defenderName = isChallenger ? duel.targetName : duel.challengerName;
 
-    const result = calculateInteractiveDamage(
+    const attackerWeaponId = isChallenger ? duel.challengerWeapon : duel.targetWeapon;
+    const defenderArmorId = isChallenger ? duel.targetArmor : duel.challengerArmor;
+
+    const attackerWeapon = attackerWeaponId ? { attack: ITEMS[attackerWeaponId]?.stats?.attack || 0 } : null;
+    const defenderArmor = defenderArmorId ? { defense: ITEMS[defenderArmorId]?.stats?.defense || 0 } : null;
+
+    const attackerRankBenefits = isChallenger ? duel.challengerRankBenefits : duel.targetRankBenefits;
+    const defenderRankBenefits = isChallenger ? duel.targetRankBenefits : duel.challengerRankBenefits;
+
+    // Verificar racha
+    const currentAttacker = isChallenger ? 'challenger' : 'target';
+    const isConsecutive = duel.lastAttacker === currentAttacker;
+
+    // Calcular daño con habilidad
+    const result = calculateRealDamage(
       { attack: attackerStats.attack, critChance: attackerStats.critChance },
       { defense: defenderStats.defense },
+      attackerWeapon,
+      defenderArmor,
       skill,
-      isFirstAttack
+      isConsecutive && duel.consecutiveHits >= 2,
+      attackerRankBenefits.pvpDamageBonus,
+      defenderRankBenefits.pvpDefenseBonus,
+      attackerRankBenefits.critBonus
     );
 
     // Aplicar daño y consumir recursos
+    // Cooldown de habilidad: skill.cooldown son "turnos", convertimos a segundos (3s por turno)
+    const skillCooldownTime = (skill.cooldown || 2) * 3000;
+    skillCooldowns.set(skill.id, now + skillCooldownTime);
+
     if (isChallenger) {
       duel.targetHealth = Math.max(0, duel.targetHealth - result.damage);
       duel.challengerMana -= skill.manaCost;
@@ -903,15 +972,42 @@ export const habilidadDueloPlugin: PluginHandler = {
       duel.targetStamina -= skill.staminaCost;
     }
 
+    // Aplicar efecto de curación si la habilidad lo tiene (robo vital)
+    if (skill.effect.heal && result.damage > 0) {
+      const healAmount = Math.floor(result.damage * (skill.effect.heal / 100));
+      if (isChallenger) {
+        duel.challengerHealth = Math.min(duel.challengerMaxHealth, duel.challengerHealth + healAmount);
+      } else {
+        duel.targetHealth = Math.min(duel.targetMaxHealth, duel.targetHealth + healAmount);
+      }
+    }
+
+    // Actualizar racha
+    if (duel.lastAttacker === currentAttacker) {
+      duel.consecutiveHits++;
+    } else {
+      duel.lastAttacker = currentAttacker;
+      duel.consecutiveHits = 1;
+    }
+
     // Agregar al log
     let logEntry = `${skill.emoji} *${attackerName}* usa *${skill.name}*`;
     if (result.isCrit) {
       logEntry += ` 💥CRÍTICO!`;
     }
+    if (duel.consecutiveHits >= 3) {
+      logEntry += ` 🔥x${duel.consecutiveHits}`;
+    }
     logEntry += ` → *${result.damage}* daño`;
+
+    if (skill.effect.heal && result.damage > 0) {
+      const healAmount = Math.floor(result.damage * (skill.effect.heal / 100));
+      logEntry += ` (+${healAmount}❤️)`;
+    }
+
     duel.log.push(logEntry);
 
-    // Verificar si alguien murió
+    // Verificar victoria
     if (duel.challengerHealth <= 0) {
       await finishDuel(duel, duel.targetJid, ctx, 'victory');
       return;
@@ -921,34 +1017,19 @@ export const habilidadDueloPlugin: PluginHandler = {
       return;
     }
 
-    // Cambiar turno
-    duel.currentTurn = isChallenger ? 'target' : 'challenger';
-    duel.turnStartTime = Date.now();
-
-    // Mostrar estado actualizado
+    // Mostrar estado
     const statusMsg = generateDuelStatusMessage(duel);
     await m.reply(statusMsg);
-
-    // Configurar nuevo timeout
-    const currentTurnTime = duel.turnStartTime;
-    setTimeout(async () => {
-      const currentDuel = activeDuels.get(groupJid);
-      if (currentDuel && currentDuel.turnStartTime === currentTurnTime) {
-        const loserJid = currentDuel.currentTurn === 'challenger' ? currentDuel.challengerJid : currentDuel.targetJid;
-        const winnerJid = currentDuel.currentTurn === 'challenger' ? currentDuel.targetJid : currentDuel.challengerJid;
-        await finishDuel(currentDuel, winnerJid, ctx, 'timeout');
-      }
-    }, TURN_TIMEOUT);
   }
 };
 
 /**
- * Plugin: Rendirse - Abandonar un duelo activo
+ * Plugin: Rendirse
  */
 export const rendirsePlugin: PluginHandler = {
   command: ['rendirse', 'surrender', 'abandonar', 'huir'],
   tags: ['rpg'],
-  help: ['rendirse - Abandona un duelo activo y pierde'],
+  help: ['rendirse - Abandona un duelo activo'],
   register: true,
   group: true,
 
@@ -958,7 +1039,7 @@ export const rendirsePlugin: PluginHandler = {
 
     const duel = activeDuels.get(groupJid);
     if (!duel) {
-      await m.reply(`${EMOJI.error} No hay ningún duelo activo en este grupo.`);
+      await m.reply(`${EMOJI.error} No hay duelo activo.`);
       return;
     }
 
@@ -966,7 +1047,7 @@ export const rendirsePlugin: PluginHandler = {
     const isTarget = m.sender === duel.targetJid;
 
     if (!isChallenger && !isTarget) {
-      await m.reply(`${EMOJI.error} No estás participando en este duelo.`);
+      await m.reply(`${EMOJI.error} No estás en este duelo.`);
       return;
     }
 
@@ -976,12 +1057,12 @@ export const rendirsePlugin: PluginHandler = {
 };
 
 /**
- * Plugin: Rechazar - Rechaza un duelo
+ * Plugin: Rechazar
  */
 export const rechazarPlugin: PluginHandler = {
   command: ['rechazar', 'decline', 'no', 'negar'],
   tags: ['rpg'],
-  help: ['rechazar - Rechaza un desafío de duelo pendiente'],
+  help: ['rechazar - Rechaza un desafío de duelo'],
   register: true,
   group: true,
 
@@ -990,7 +1071,6 @@ export const rechazarPlugin: PluginHandler = {
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
-    // Buscar desafío pendiente
     let challengerJid: string | null = null;
 
     for (const [cJid, info] of pendingDuels.entries()) {
@@ -1001,7 +1081,7 @@ export const rechazarPlugin: PluginHandler = {
     }
 
     if (!challengerJid) {
-      await m.reply(`${EMOJI.info} No tienes ningún desafío pendiente.`);
+      await m.reply(`${EMOJI.info} No tienes desafíos pendientes.`);
       return;
     }
 
@@ -1009,7 +1089,7 @@ export const rechazarPlugin: PluginHandler = {
     pendingDuels.delete(challengerJid);
 
     await m.reply(
-      `${EMOJI.error} *${user.name}* ha rechazado el duelo de *${challenger.name}*.\n\n` +
+      `${EMOJI.error} *${user.name}* rechazó el duelo de *${challenger.name}*.\n\n` +
       `💔 _Quizás otro día..._`
     );
     await m.react('❌');

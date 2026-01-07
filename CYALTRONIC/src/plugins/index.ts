@@ -16,7 +16,7 @@ import { robarPlugin } from './rpg-robar.js';
 
 // Importar plugins RPG avanzados
 import { atacarPlugin } from './rpg-atacar.js';
-import { dueloPlugin, aceptarPlugin, rechazarPlugin, atacarDueloPlugin, habilidadDueloPlugin, rendirsePlugin } from './rpg-duelo.js';
+import { dueloPlugin, aceptarPlugin, rechazarPlugin, atacarDueloPlugin, poderDueloPlugin, rendirsePlugin } from './rpg-duelo.js';
 import { registerInventoryPlugins } from './rpg-inventario.js';
 import { registerShopPlugins } from './rpg-tienda.js';
 import { clasePlugin, clasesPlugin, habilidadesPlugin } from './rpg-clase.js';
@@ -66,7 +66,7 @@ const rpgCombatPlugins = [
   { name: 'rpg-aceptar', plugin: aceptarPlugin },
   { name: 'rpg-rechazar', plugin: rechazarPlugin },
   { name: 'rpg-atacar-duelo', plugin: atacarDueloPlugin },
-  { name: 'rpg-habilidad-duelo', plugin: habilidadDueloPlugin },
+  { name: 'rpg-poder-duelo', plugin: poderDueloPlugin },
   { name: 'rpg-rendirse', plugin: rendirsePlugin }
 ];
 

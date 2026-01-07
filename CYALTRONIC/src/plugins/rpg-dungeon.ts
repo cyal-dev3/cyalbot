@@ -8,6 +8,7 @@ import { getDatabase } from '../lib/database.js';
 import { EMOJI, msToTime, formatNumber, randomInt, pickRandom, matchesIgnoreAccents } from '../lib/utils.js';
 import { DUNGEONS, MONSTERS, ITEMS, type Dungeon, type Monster } from '../types/rpg.js';
 import { calculateTotalStats } from '../types/user.js';
+import { updateQuestProgress } from './rpg-misiones.js';
 
 /**
  * Cooldown de dungeon: 30 minutos
@@ -448,7 +449,13 @@ export const dungeonPlugin: PluginHandler = {
 
     // Actualizar progreso de misiones
     if (result.completed) {
-      // Aquí se actualizaría el progreso de misiones de dungeon
+      // Actualizar misión de dungeon completado
+      updateQuestProgress(db, m.sender, 'dungeon', 1);
+    }
+
+    // Actualizar misión de ganar monedas (siempre que se gane algo)
+    if (result.moneyGained > 0) {
+      updateQuestProgress(db, m.sender, 'earn', result.moneyGained);
     }
   }
 };

@@ -202,28 +202,381 @@ export const DEFAULT_USER: UserRPG = {
 };
 
 /**
+ * Categorías de rango para beneficios
+ */
+export type RankCategory =
+  | 'guerrero'
+  | 'elite'
+  | 'maestro'
+  | 'gran_maestro'
+  | 'epico'
+  | 'leyenda'
+  | 'mitico'
+  | 'gloria_mitica'
+  | 'esmeralda'
+  | 'titan'
+  | 'dragon';
+
+/**
+ * Beneficios por categoría de rango
+ */
+export interface RankBenefits {
+  expMultiplier: number;      // Multiplicador de XP ganada
+  moneyMultiplier: number;    // Multiplicador de dinero ganado
+  robSuccessBonus: number;    // Bonus % a probabilidad de robo exitoso
+  robAmountBonus: number;     // Bonus % a cantidad robada
+  pvpDamageBonus: number;     // Bonus % a daño en PvP
+  pvpDefenseBonus: number;    // Bonus % a defensa en PvP
+  dailyBonus: number;         // Bonus % a recompensas diarias
+  cooldownReduction: number;  // Reducción % de cooldowns
+  critBonus: number;          // Bonus % a probabilidad de crítico
+  dungeonRewardBonus: number; // Bonus % a recompensas de dungeon
+}
+
+/**
+ * Tabla de beneficios por categoría de rango
+ */
+const RANK_BENEFITS: Record<RankCategory, RankBenefits> = {
+  guerrero: {
+    expMultiplier: 1.0,
+    moneyMultiplier: 1.0,
+    robSuccessBonus: 0,
+    robAmountBonus: 0,
+    pvpDamageBonus: 0,
+    pvpDefenseBonus: 0,
+    dailyBonus: 0,
+    cooldownReduction: 0,
+    critBonus: 0,
+    dungeonRewardBonus: 0
+  },
+  elite: {
+    expMultiplier: 1.10,      // +10% XP
+    moneyMultiplier: 1.10,    // +10% dinero
+    robSuccessBonus: 5,       // +5% éxito robo
+    robAmountBonus: 10,       // +10% cantidad robada
+    pvpDamageBonus: 5,        // +5% daño PvP
+    pvpDefenseBonus: 3,       // +3% defensa PvP
+    dailyBonus: 10,           // +10% daily
+    cooldownReduction: 5,     // -5% cooldowns
+    critBonus: 2,             // +2% crit
+    dungeonRewardBonus: 10    // +10% dungeon
+  },
+  maestro: {
+    expMultiplier: 1.20,
+    moneyMultiplier: 1.20,
+    robSuccessBonus: 10,
+    robAmountBonus: 15,
+    pvpDamageBonus: 10,
+    pvpDefenseBonus: 7,
+    dailyBonus: 20,
+    cooldownReduction: 10,
+    critBonus: 5,
+    dungeonRewardBonus: 20
+  },
+  gran_maestro: {
+    expMultiplier: 1.35,
+    moneyMultiplier: 1.35,
+    robSuccessBonus: 15,
+    robAmountBonus: 25,
+    pvpDamageBonus: 15,
+    pvpDefenseBonus: 12,
+    dailyBonus: 35,
+    cooldownReduction: 15,
+    critBonus: 8,
+    dungeonRewardBonus: 30
+  },
+  epico: {
+    expMultiplier: 1.50,
+    moneyMultiplier: 1.50,
+    robSuccessBonus: 20,
+    robAmountBonus: 35,
+    pvpDamageBonus: 20,
+    pvpDefenseBonus: 15,
+    dailyBonus: 50,
+    cooldownReduction: 20,
+    critBonus: 12,
+    dungeonRewardBonus: 45
+  },
+  leyenda: {
+    expMultiplier: 1.75,
+    moneyMultiplier: 1.75,
+    robSuccessBonus: 25,
+    robAmountBonus: 45,
+    pvpDamageBonus: 28,
+    pvpDefenseBonus: 20,
+    dailyBonus: 75,
+    cooldownReduction: 25,
+    critBonus: 15,
+    dungeonRewardBonus: 60
+  },
+  mitico: {
+    expMultiplier: 2.0,
+    moneyMultiplier: 2.0,
+    robSuccessBonus: 30,
+    robAmountBonus: 60,
+    pvpDamageBonus: 35,
+    pvpDefenseBonus: 25,
+    dailyBonus: 100,
+    cooldownReduction: 30,
+    critBonus: 20,
+    dungeonRewardBonus: 80
+  },
+  gloria_mitica: {
+    expMultiplier: 2.25,
+    moneyMultiplier: 2.25,
+    robSuccessBonus: 35,
+    robAmountBonus: 70,
+    pvpDamageBonus: 40,
+    pvpDefenseBonus: 30,
+    dailyBonus: 125,
+    cooldownReduction: 35,
+    critBonus: 25,
+    dungeonRewardBonus: 100
+  },
+  esmeralda: {
+    expMultiplier: 2.5,
+    moneyMultiplier: 2.5,
+    robSuccessBonus: 40,
+    robAmountBonus: 85,
+    pvpDamageBonus: 50,
+    pvpDefenseBonus: 35,
+    dailyBonus: 150,
+    cooldownReduction: 40,
+    critBonus: 30,
+    dungeonRewardBonus: 125
+  },
+  titan: {
+    expMultiplier: 3.0,
+    moneyMultiplier: 3.0,
+    robSuccessBonus: 50,
+    robAmountBonus: 100,
+    pvpDamageBonus: 65,
+    pvpDefenseBonus: 45,
+    dailyBonus: 200,
+    cooldownReduction: 45,
+    critBonus: 40,
+    dungeonRewardBonus: 150
+  },
+  dragon: {
+    expMultiplier: 4.0,
+    moneyMultiplier: 4.0,
+    robSuccessBonus: 60,
+    robAmountBonus: 150,
+    pvpDamageBonus: 100,
+    pvpDefenseBonus: 60,
+    dailyBonus: 300,
+    cooldownReduction: 50,
+    critBonus: 50,
+    dungeonRewardBonus: 200
+  }
+};
+
+/**
+ * Sistema de rangos por nivel
+ * Cada rango tiene: [nivelMinimo, nivelMaximo, nombreRango]
+ */
+const ROLE_TIERS: [number, number, string][] = [
+  // Guerrero (1-15)
+  [0, 2, '🌱 Guerrero V'],
+  [3, 5, '🌿 Guerrero IV'],
+  [6, 8, '☘️ Guerrero III'],
+  [9, 11, '🍀 Guerrero II'],
+  [12, 14, '⚔️ Guerrero I'],
+
+  // Elite (15-30)
+  [15, 17, '🔵 Elite V'],
+  [18, 20, '💠 Elite IV'],
+  [21, 23, '🔷 Elite III'],
+  [24, 26, '♦️ Elite II'],
+  [27, 29, '💎 Elite I'],
+
+  // Maestro (30-45)
+  [30, 32, '🟣 Maestro V'],
+  [33, 35, '🔮 Maestro IV'],
+  [36, 38, '☪️ Maestro III'],
+  [39, 41, '✨ Maestro II'],
+  [42, 44, '🌟 Maestro I'],
+
+  // Gran Maestro (45-60)
+  [45, 47, '🟡 Gran Maestro V'],
+  [48, 50, '⭐ Gran Maestro IV'],
+  [51, 53, '🌙 Gran Maestro III'],
+  [54, 56, '☀️ Gran Maestro II'],
+  [57, 59, '💫 Gran Maestro I'],
+
+  // Epico (60-74)
+  [60, 62, '🟠 Epico V'],
+  [63, 65, '🔶 Epico IV'],
+  [66, 68, '🧡 Epico III'],
+  [69, 70, '🏵️ Epico II'],
+  [71, 73, '🎖️ Epico I'],
+
+  // Leyenda (74-89)
+  [74, 76, '🔴 Leyenda V'],
+  [77, 79, '❤️ Leyenda IV'],
+  [80, 82, '♥️ Leyenda III'],
+  [83, 85, '❣️ Leyenda II'],
+  [86, 88, '💖 Leyenda I'],
+
+  // Mitico (89-105)
+  [89, 90, '🩷 Mitico V'],
+  [91, 93, '💗 Mitico IV'],
+  [94, 96, '💝 Mitico III'],
+  [97, 99, '💞 Mitico II'],
+  [100, 104, '💕 Mitico I'],
+
+  // Gloria Mitica (105-120)
+  [105, 119, '🏆 Gloria Mitica'],
+
+  // Esmeralda (120-200)
+  [120, 149, '💚 Esmeralda V'],
+  [150, 159, '🌲 Esmeralda IV'],
+  [160, 169, '🌴 Esmeralda III'],
+  [170, 184, '🌳 Esmeralda II'],
+  [185, 199, '🍃 Esmeralda I'],
+
+  // Titan (200-1000)
+  [200, 404, '🗿 Titan III'],
+  [405, 699, '🏛️ Titan II'],
+  [700, 999, '⚱️ Titan I'],
+
+  // Maximo rango
+  [1000, Infinity, '🐉👑 Dragon Rey Estrella']
+];
+
+/**
  * Obtiene el rol/título basado en el nivel del jugador
  * @param level - Nivel actual del jugador
  * @returns Título con emoji correspondiente
  */
 export function getRoleByLevel(level: number): string {
-  const roles: [number, string][] = [
-    [0, '🌱 Novato'],
-    [5, '⚔️ Aprendiz'],
-    [10, '🗺️ Explorador'],
-    [20, '🛡️ Guerrero'],
-    [35, '⭐ Veterano'],
-    [50, '💎 Élite'],
-    [75, '🔮 Maestro'],
-    [100, '👑 Leyenda'],
-    [150, '🌟 Mítico'],
-    [200, '🏆 Inmortal']
-  ];
-
-  for (let i = roles.length - 1; i >= 0; i--) {
-    if (level >= roles[i][0]) return roles[i][1];
+  for (const [minLevel, maxLevel, role] of ROLE_TIERS) {
+    if (level >= minLevel && level <= maxLevel) {
+      return role;
+    }
   }
-  return '🌱 Novato';
+  return '🌱 Guerrero V';
+}
+
+/**
+ * Obtiene información del progreso del rango actual
+ * @param level - Nivel actual del jugador
+ * @returns Información del rango y progreso
+ */
+export function getRankProgress(level: number): {
+  currentRank: string;
+  nextRank: string | null;
+  levelsToNext: number;
+  isMaxRank: boolean;
+} {
+  let currentIndex = 0;
+
+  for (let i = 0; i < ROLE_TIERS.length; i++) {
+    const [minLevel, maxLevel] = ROLE_TIERS[i];
+    if (level >= minLevel && level <= maxLevel) {
+      currentIndex = i;
+      break;
+    }
+  }
+
+  const currentRank = ROLE_TIERS[currentIndex][2];
+  const isMaxRank = currentIndex >= ROLE_TIERS.length - 1;
+  const nextRank = isMaxRank ? null : ROLE_TIERS[currentIndex + 1][2];
+  const levelsToNext = isMaxRank ? 0 : ROLE_TIERS[currentIndex + 1][0] - level;
+
+  return {
+    currentRank,
+    nextRank,
+    levelsToNext,
+    isMaxRank
+  };
+}
+
+/**
+ * Obtiene la categoría de rango basada en el nivel
+ * @param level - Nivel actual del jugador
+ * @returns Categoría de rango
+ */
+export function getRankCategory(level: number): RankCategory {
+  if (level >= 1000) return 'dragon';
+  if (level >= 200) return 'titan';
+  if (level >= 120) return 'esmeralda';
+  if (level >= 105) return 'gloria_mitica';
+  if (level >= 89) return 'mitico';
+  if (level >= 74) return 'leyenda';
+  if (level >= 60) return 'epico';
+  if (level >= 45) return 'gran_maestro';
+  if (level >= 30) return 'maestro';
+  if (level >= 15) return 'elite';
+  return 'guerrero';
+}
+
+/**
+ * Obtiene los beneficios del rango actual
+ * @param level - Nivel actual del jugador
+ * @returns Objeto con todos los beneficios
+ */
+export function getRankBenefits(level: number): RankBenefits {
+  const category = getRankCategory(level);
+  return RANK_BENEFITS[category];
+}
+
+/**
+ * Formatea los beneficios para mostrar al usuario
+ * @param level - Nivel actual del jugador
+ * @returns String con los beneficios formateados
+ */
+export function formatRankBenefits(level: number): string {
+  const benefits = getRankBenefits(level);
+  const category = getRankCategory(level);
+  const rank = getRoleByLevel(level);
+
+  let msg = `🎖️ *BENEFICIOS DE RANGO*\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `${rank}\n\n`;
+
+  if (category === 'guerrero') {
+    msg += `_Sube de nivel para desbloquear beneficios!_\n`;
+    msg += `_Próximo rango: 🔵 Elite (Nivel 15)_`;
+    return msg;
+  }
+
+  const bonuses: string[] = [];
+
+  if (benefits.expMultiplier > 1) {
+    bonuses.push(`⭐ +${Math.round((benefits.expMultiplier - 1) * 100)}% XP ganada`);
+  }
+  if (benefits.moneyMultiplier > 1) {
+    bonuses.push(`💰 +${Math.round((benefits.moneyMultiplier - 1) * 100)}% dinero ganado`);
+  }
+  if (benefits.dailyBonus > 0) {
+    bonuses.push(`🎁 +${benefits.dailyBonus}% recompensa diaria`);
+  }
+  if (benefits.pvpDamageBonus > 0) {
+    bonuses.push(`⚔️ +${benefits.pvpDamageBonus}% daño PvP`);
+  }
+  if (benefits.pvpDefenseBonus > 0) {
+    bonuses.push(`🛡️ +${benefits.pvpDefenseBonus}% defensa PvP`);
+  }
+  if (benefits.robSuccessBonus > 0) {
+    bonuses.push(`🦹 +${benefits.robSuccessBonus}% éxito robo`);
+  }
+  if (benefits.robAmountBonus > 0) {
+    bonuses.push(`💸 +${benefits.robAmountBonus}% cantidad robada`);
+  }
+  if (benefits.critBonus > 0) {
+    bonuses.push(`💥 +${benefits.critBonus}% probabilidad crítico`);
+  }
+  if (benefits.cooldownReduction > 0) {
+    bonuses.push(`⏰ -${benefits.cooldownReduction}% cooldowns`);
+  }
+  if (benefits.dungeonRewardBonus > 0) {
+    bonuses.push(`🏰 +${benefits.dungeonRewardBonus}% recompensas dungeon`);
+  }
+
+  msg += bonuses.join('\n');
+
+  return msg;
 }
 
 /**

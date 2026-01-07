@@ -9,6 +9,7 @@ import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 import { canLevelUp, MULTIPLIER } from '../lib/levelling.js';
 import { updateQuestProgress } from './rpg-misiones.js';
+import { getRankBenefits, getRoleByLevel } from '../types/user.js';
 
 // Lista de trabajos/aventuras
 const WORK_ACTIVITIES = [
@@ -65,37 +66,53 @@ export const workPlugin: PluginHandler = {
       return m.reply(CONFIG.messages.notRegistered);
     }
 
-    // Verificar cooldown
+    // Obtener beneficios de rango
+    const rankBenefits = getRankBenefits(user.level);
+    const userRank = getRoleByLevel(user.level);
+
+    // Verificar cooldown (con reducción por rango)
     const now = Date.now();
-    const cooldown = CONFIG.cooldowns.work;
+    const baseCooldown = CONFIG.cooldowns.work;
+    const cooldownReduction = rankBenefits.cooldownReduction / 100;
+    const cooldown = Math.floor(baseCooldown * (1 - cooldownReduction));
     const timeSinceLastWork = now - user.lastwork;
 
     if (timeSinceLastWork < cooldown) {
       const remaining = cooldown - timeSinceLastWork;
-      return m.reply(
-        `${EMOJI.time} *¡Estás descansando!*\n\n` +
+      let cooldownMsg = `${EMOJI.time} *¡Estás descansando!*\n\n` +
         `${EMOJI.warning} Necesitas recuperar energía.\n` +
         `${EMOJI.info} Podrás trabajar en: *${msToTime(remaining)}*\n\n` +
         `${EMOJI.star} Mientras tanto:\n` +
         `• *${usedPrefix}perfil* - Ver tu progreso\n` +
-        `• *${usedPrefix}nivel* - Subir de nivel`
-      );
+        `• *${usedPrefix}nivel* - Subir de nivel`;
+
+      if (rankBenefits.cooldownReduction > 0) {
+        cooldownMsg += `\n\n🎖️ _Tu rango reduce cooldowns -${rankBenefits.cooldownReduction}%_`;
+      }
+
+      return m.reply(cooldownMsg);
     }
 
     // Calcular recompensa basada en nivel
     const workConfig = CONFIG.rpg.workRewards;
     const baseExp = workConfig.baseExp + (user.level * workConfig.levelMultiplier);
     const randomMultiplier = 0.5 + Math.random(); // 0.5x a 1.5x
-    const expReward = Math.floor(baseExp * randomMultiplier);
 
-    // Probabilidad de bonus
+    // Aplicar multiplicador de rango a XP
+    const expBeforeBonus = Math.floor(baseExp * randomMultiplier);
+    const expReward = Math.floor(expBeforeBonus * rankBenefits.expMultiplier);
+    const rankExpBonus = expReward - expBeforeBonus;
+
+    // Probabilidad de bonus (aumentada por rango)
     let bonusMoney = 0;
     let bonusMessage = '';
-    const hasBonus = Math.random() < workConfig.bonusChance;
+    const bonusChance = workConfig.bonusChance + (rankBenefits.moneyMultiplier - 1) * 0.1;
+    const hasBonus = Math.random() < bonusChance;
 
     if (hasBonus) {
-      bonusMoney = randomInt(workConfig.bonusMoney.min, workConfig.bonusMoney.max);
-      bonusMessage = `\n${EMOJI.gift} *¡BONUS!* +${formatNumber(bonusMoney)} ${EMOJI.coin}`;
+      const baseMoney = randomInt(workConfig.bonusMoney.min, workConfig.bonusMoney.max);
+      bonusMoney = Math.floor(baseMoney * rankBenefits.moneyMultiplier);
+      bonusMessage = `\n│  +${formatNumber(bonusMoney)} ${EMOJI.coin} Monedas`;
     }
 
     // Seleccionar actividad aleatoria
@@ -117,6 +134,20 @@ export const workPlugin: PluginHandler = {
     // Actualizar progreso de misiones de trabajo
     updateQuestProgress(db, m.sender, 'work', 1);
 
+    // Actualizar misión de ganar monedas si hubo bonus
+    if (bonusMoney > 0) {
+      updateQuestProgress(db, m.sender, 'earn', bonusMoney);
+    }
+
+    // Mensaje de bonus de rango
+    let rankBonusMsg = '';
+    if (rankExpBonus > 0) {
+      rankBonusMsg = `\n│  🎖️ +${formatNumber(rankExpBonus)} XP (Bonus rango)`;
+    }
+
+    // Calcular tiempo del próximo trabajo
+    const nextWorkMinutes = Math.floor(cooldown / 60000);
+
     // Mensaje de trabajo completado
     await m.reply(
       `${EMOJI.work}${EMOJI.sparkles} *¡TRABAJO COMPLETADO!* ${EMOJI.sparkles}${EMOJI.work}\n\n` +
@@ -124,13 +155,14 @@ export const workPlugin: PluginHandler = {
       `╭═══════════════════════════╮\n` +
       `│  ${EMOJI.success} *RECOMPENSA*\n` +
       `├───────────────────────────\n` +
-      `│  +${formatNumber(expReward)} ${EMOJI.exp} Experiencia${bonusMessage}\n` +
+      `│  +${formatNumber(expReward)} ${EMOJI.exp} Experiencia${rankBonusMsg}${bonusMessage}\n` +
       `╰═══════════════════════════╯\n\n` +
+      `🎖️ *Rango:* ${userRank}\n\n` +
       `${EMOJI.info} *Tu progreso:*\n` +
       `├ ${EMOJI.exp} EXP Total: *${formatNumber(user.exp + expReward)}*\n` +
       `├ ${EMOJI.level} Nivel: *${user.level}*\n` +
       `╰ ${EMOJI.coin} Monedas: *${formatNumber(user.money + bonusMoney)}*\n\n` +
-      `${EMOJI.time} Próximo trabajo en: *10 minutos*${levelMessage}`
+      `${EMOJI.time} Próximo trabajo en: *${nextWorkMinutes} minutos*${levelMessage}`
     );
   }
 };

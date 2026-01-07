@@ -6,7 +6,7 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { EMOJI, formatNumber, createProgressBar } from '../lib/utils.js';
 import { canLevelUp, getLevelProgress, MULTIPLIER } from '../lib/levelling.js';
-import { getRoleByLevel } from '../types/user.js';
+import { getRoleByLevel, getRankProgress } from '../types/user.js';
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 
@@ -115,6 +115,19 @@ ${EMOJI.gift} *BONIFICACIONES OBTENIDAS*
 
 ${EMOJI.trophy} *¡NUEVO RANGO DESBLOQUEADO!*
 ${EMOJI.sparkles} Ahora eres: *${newRole}*`;
+    }
+
+    // Mostrar progreso hacia el siguiente rango
+    const rankProgress = getRankProgress(newLevel);
+    if (!rankProgress.isMaxRank && rankProgress.nextRank) {
+      message += `
+
+📊 *Siguiente rango:* ${rankProgress.nextRank}
+📈 Te faltan *${rankProgress.levelsToNext}* niveles`;
+    } else if (rankProgress.isMaxRank) {
+      message += `
+
+🐉👑 *¡Has alcanzado el rango maximo!*`;
     }
 
     message += `
