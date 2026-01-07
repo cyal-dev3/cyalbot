@@ -77,7 +77,8 @@ async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
       console.log('🔐 Usando PO Token');
     }
 
-    const command = `${YT_DLP_PATH} -x --audio-format mp3 --audio-quality 128K --no-playlist ${poTokenArgs} -o "${tempFile}" "${url}"`;
+    // --js-runtime node: usa Node.js para ejecutar JS de YouTube (requerido desde 2025)
+    const command = `${YT_DLP_PATH} --js-runtime node -x --audio-format mp3 --audio-quality 128K --no-playlist ${poTokenArgs} -o "${tempFile}" "${url}"`;
 
     await execAsync(command, { timeout: 120000 });
 
