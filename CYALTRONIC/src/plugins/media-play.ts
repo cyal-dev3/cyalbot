@@ -70,7 +70,8 @@ async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
     // El plugin bgutil-ytdlp-pot-provider maneja automáticamente los PO Tokens
     // conectándose al servidor Docker en puerto 4416
     // --js-runtimes node: necesario para que yt-dlp use Node.js para ejecutar JS de YouTube
-    const command = `${YT_DLP_PATH} --js-runtimes node -x --audio-format mp3 --audio-quality 128K --no-playlist -o "${tempFile}" "${url}"`;
+    const pluginDir = '/usr/local/lib/python3.12/dist-packages/yt_dlp_plugins';
+    const command = `${YT_DLP_PATH} --plugin-dirs "${pluginDir}" --js-runtimes node -x --audio-format mp3 --audio-quality 128K --no-playlist -o "${tempFile}" "${url}"`;
 
     // Asegurar que el proceso hijo tenga acceso al PATH de Python, Node y plugins
     await execAsync(command, {
