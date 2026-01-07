@@ -8,6 +8,12 @@ import type { MessageContext, SerializedMessage, PluginHandler, PluginRegistry, 
 import type { Database } from './lib/database.js';
 import { CONFIG } from './config.js';
 
+// Comandos de duelo que funcionan sin prefijo
+const DUEL_COMMANDS_NO_PREFIX = ['g', 'golpe', 'golpear', 'hit', 'rendirse', 'surrender', 'abandonar', 'huir'];
+
+// Patrones de habilidades de clase que funcionan sin prefijo en duelos
+const SKILL_PATTERNS_NO_PREFIX = /^(golpe.?brutal|escudo.?defensor|grito.?guerra|bola.?fuego|rayo.?arcano|escudo.?magico|ataque.?furtivo|evadir|robo.?vital|disparo.?preciso|lluvia.?flechas|trampa.?cazador|fuego|rayo|brutal|furtivo|flechas|trampa)$/i;
+
 /**
  * Clase principal para manejar mensajes
  */
@@ -306,14 +312,41 @@ export class MessageHandler {
     // Si no hay texto, no procesar comandos
     if (!m.text) return;
 
-    // Verificar si es un comando
+    // Verificar si es un comando con prefijo
     const prefixMatch = m.text.match(CONFIG.prefix);
-    if (!prefixMatch) return;
 
-    const usedPrefix = prefixMatch[0];
-    const fullCommand = m.text.slice(usedPrefix.length).trim();
-    const [command, ...args] = fullCommand.split(/\s+/);
-    const text = args.join(' ');
+    let usedPrefix = '';
+    let fullCommand = '';
+    let command = '';
+    let args: string[] = [];
+    let text = '';
+    let isNoPrefixDuelCommand = false;
+
+    if (prefixMatch) {
+      // Comando con prefijo normal
+      usedPrefix = prefixMatch[0];
+      fullCommand = m.text.slice(usedPrefix.length).trim();
+      [command, ...args] = fullCommand.split(/\s+/);
+      text = args.join(' ');
+    } else if (m.isGroup) {
+      // Verificar si es un comando de duelo sin prefijo
+      const textLower = m.text.toLowerCase().trim();
+      const firstWord = textLower.split(/\s+/)[0];
+
+      if (DUEL_COMMANDS_NO_PREFIX.includes(firstWord) || SKILL_PATTERNS_NO_PREFIX.test(textLower)) {
+        isNoPrefixDuelCommand = true;
+        usedPrefix = '';
+        fullCommand = m.text.trim();
+        [command, ...args] = fullCommand.split(/\s+/);
+        text = args.join(' ');
+      } else {
+        // No es comando con prefijo ni comando de duelo, ignorar
+        return;
+      }
+    } else {
+      // Chat privado sin prefijo, ignorar
+      return;
+    }
 
     if (!command) return;
 
@@ -328,7 +361,9 @@ export class MessageHandler {
       let matches = false;
 
       if (plugin.command instanceof RegExp) {
-        matches = plugin.command.test(command.toLowerCase());
+        // Para comandos de duelo sin prefijo, probar contra el texto completo (para habilidades multi-palabra)
+        const testString = isNoPrefixDuelCommand ? fullCommand.toLowerCase() : command.toLowerCase();
+        matches = plugin.command.test(testString);
       } else if (Array.isArray(plugin.command)) {
         matches = plugin.command.some(cmd =>
           cmd.toLowerCase() === command.toLowerCase()
@@ -384,7 +419,8 @@ export class MessageHandler {
 
         // Ejecutar plugin
         try {
-          console.log(`📨 Comando: ${usedPrefix}${command} | De: ${m.pushName || senderNumber}`);
+          const cmdLog = isNoPrefixDuelCommand ? `⚔️ Duelo: ${command}` : `📨 Comando: ${usedPrefix}${command}`;
+          console.log(`${cmdLog} | De: ${m.pushName || senderNumber}`);
           await plugin.handler(ctx);
         } catch (error) {
           console.error(`❌ Error en plugin ${name}:`, error);

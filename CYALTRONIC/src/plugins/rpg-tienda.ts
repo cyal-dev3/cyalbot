@@ -124,9 +124,8 @@ const tiendaPlugin: PluginHandler = {
         for (const { itemId, diamonds, description } of items) {
           const item = ITEMS[itemId];
           if (item) {
-            const canBuy = user.limit >= diamonds ? '✓' : '✗';
-            response += `   ${item.emoji} *${item.name}*\n`;
-            response += `      💎 ${formatNumber(diamonds)} ${canBuy} - ${description}\n`;
+            response += `   ${item.emoji} *${item.name}* - 💎 ${formatNumber(diamonds)}\n`;
+            response += `      _${description}_\n`;
           }
         }
         response += '\n';
@@ -181,24 +180,17 @@ const tiendaPlugin: PluginHandler = {
       for (const itemId of itemIds) {
         const item = ITEMS[itemId];
         if (item) {
-          const canBuy = user.money >= item.price;
           const rarity = RARITY_COLORS[item.rarity];
-          response += `${rarity} ${item.emoji} *${item.name}*\n`;
-          response += `   💰 ${formatNumber(item.price)} ${canBuy ? '✓' : '✗'}\n`;
+          const stats: string[] = [];
           if (item.stats) {
-            const stats: string[] = [];
             if (item.stats.attack) stats.push(`+${item.stats.attack} ATK`);
             if (item.stats.defense) stats.push(`+${item.stats.defense} DEF`);
             if (item.stats.health) stats.push(`+${item.stats.health} HP`);
             if (item.stats.mana) stats.push(`+${item.stats.mana} MP`);
-            if (stats.length > 0) {
-              response += `   📊 ${stats.join(', ')}\n`;
-            }
           }
-          if (item.requiredLevel) {
-            response += `   📈 Nv.${item.requiredLevel} requerido\n`;
-          }
-          response += '\n';
+          const statsStr = stats.length > 0 ? ` (${stats.join(', ')})` : '';
+          const levelStr = item.requiredLevel ? ` Nv.${item.requiredLevel}` : '';
+          response += `${rarity} ${item.emoji} *${item.name}* - ${formatNumber(item.price)}💰${statsStr}${levelStr}\n`;
         }
       }
 
@@ -221,8 +213,7 @@ const tiendaPlugin: PluginHandler = {
           const item = ITEMS[itemId];
           if (item) {
             const rarity = RARITY_COLORS[item.rarity];
-            const canBuy = user.money >= item.price ? '✓' : '✗';
-            response += `   ${rarity} ${item.emoji} ${item.name} - ${formatNumber(item.price)}💰 ${canBuy}\n`;
+            response += `   ${rarity} ${item.emoji} ${item.name} - ${formatNumber(item.price)}💰\n`;
           }
         }
         response += '\n';
@@ -520,12 +511,13 @@ const comprarDiamantesPlugin: PluginHandler = {
   tags: ['rpg'],
   help: [
     'comprard [item] - Compra un item con diamantes',
+    'comprard [item] [cantidad] - Comprar varios',
     'comprard ticket muteo - Comprar ticket de muteo'
   ],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, text, args } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
@@ -533,14 +525,22 @@ const comprarDiamantesPlugin: PluginHandler = {
       await m.reply(
         `${EMOJI.error} Especifica qué quieres comprar.\n\n` +
         `📝 *Uso:* /comprard ticket muteo\n` +
-        `📝 *Uso:* /comprard espada celestial\n\n` +
+        `📝 *Uso:* /comprard pocion resurrecion 3\n\n` +
         `💎 Tus diamantes: *${formatNumber(user.limit)}*\n` +
         `💡 Usa */tienda diamantes* para ver items disponibles.`
       );
       return;
     }
 
-    const searchTerm = text.toLowerCase().trim();
+    // Parsear cantidad (último argumento si es número)
+    let quantity = 1;
+    let searchTerm = text.toLowerCase().trim();
+
+    const lastArg = args[args.length - 1];
+    if (/^\d+$/.test(lastArg)) {
+      quantity = Math.min(99, Math.max(1, parseInt(lastArg)));
+      searchTerm = args.slice(0, -1).join(' ').toLowerCase().trim();
+    }
 
     // Buscar item en la tienda de diamantes (sin importar tildes)
     let foundItem: Item | null = null;
@@ -575,27 +575,30 @@ const comprarDiamantesPlugin: PluginHandler = {
       return;
     }
 
+    // Calcular costo total
+    const totalCost = foundDiamondCost * quantity;
+
     // Verificar diamantes
-    if (user.limit < foundDiamondCost) {
+    if (user.limit < totalCost) {
       await m.reply(
         `${EMOJI.error} No tienes suficientes diamantes.\n\n` +
-        `💎 Costo: *${formatNumber(foundDiamondCost)}* diamantes\n` +
+        `💎 Costo: *${formatNumber(totalCost)}* diamantes\n` +
         `💎 Tus diamantes: *${formatNumber(user.limit)}*\n` +
-        `❌ Te faltan: *${formatNumber(foundDiamondCost - user.limit)}* diamantes\n\n` +
+        `❌ Te faltan: *${formatNumber(totalCost - user.limit)}* diamantes\n\n` +
         `💡 Gana diamantes con */daily*, */misiones* y */ranking*`
       );
       return;
     }
 
     // Realizar compra
-    user.limit -= foundDiamondCost;
+    user.limit -= totalCost;
 
     // Agregar al inventario
     const existingItem = user.inventory.find(i => i.itemId === foundItem!.id);
     if (existingItem) {
-      existingItem.quantity += 1;
+      existingItem.quantity += quantity;
     } else {
-      user.inventory.push({ itemId: foundItem.id, quantity: 1 });
+      user.inventory.push({ itemId: foundItem.id, quantity });
     }
 
     db.updateUser(m.sender, {
@@ -604,8 +607,9 @@ const comprarDiamantesPlugin: PluginHandler = {
     });
 
     let response = `💎 ¡Compra con diamantes exitosa!\n\n`;
-    response += `🛒 Compraste: ${foundItem.emoji} *${foundItem.name}*\n`;
-    response += `💎 Pagaste: *${formatNumber(foundDiamondCost)}* diamantes\n`;
+    response += `🛒 Compraste: ${foundItem.emoji} *${foundItem.name}*`;
+    if (quantity > 1) response += ` x${quantity}`;
+    response += `\n💎 Pagaste: *${formatNumber(totalCost)}* diamantes\n`;
     response += `💎 Te quedan: *${formatNumber(user.limit)}* diamantes\n\n`;
 
     // Instrucciones de uso para items especiales
