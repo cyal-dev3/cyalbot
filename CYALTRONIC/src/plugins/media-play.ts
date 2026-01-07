@@ -12,7 +12,8 @@ import play from 'play-dl';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 
 // yt-dlp con el plugin bgutil-ytdlp-pot-provider se conecta automáticamente al servidor Docker
-const YT_DLP_PATH = 'yt-dlp';
+// Usar ruta absoluta para asegurar que el proceso hijo encuentre yt-dlp
+const YT_DLP_PATH = process.env.YT_DLP_PATH || '/usr/local/bin/yt-dlp';
 
 /**
  * Formatea duración de segundos a mm:ss
