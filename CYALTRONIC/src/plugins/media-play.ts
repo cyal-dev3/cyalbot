@@ -1,13 +1,17 @@
 /**
  * 🎵 Plugin de Música - CYALTRONIC
  * Descarga y envía música desde YouTube con múltiples APIs de respaldo
+ *
+ * Requiere:
+ * - yt-dlp: pip3 install yt-dlp
+ * - Plugin PO Token: pip3 install bgutil-ytdlp-pot-provider
+ * - Servidor bgutil: docker run -d -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider
  */
 
 import play from 'play-dl';
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { getPoToken, getVisitorData, markTokensFailed } from '../lib/youtube-token-manager.js';
 
-// yt-dlp debe estar instalado en el sistema (pip install yt-dlp o apt install yt-dlp)
+// yt-dlp con el plugin bgutil-ytdlp-pot-provider se conecta automáticamente al servidor Docker
 const YT_DLP_PATH = 'yt-dlp';
 
 /**
@@ -47,11 +51,12 @@ async function downloadBuffer(url: string, timeout = 30000): Promise<Buffer> {
 }
 
 /**
- * API 1: yt-dlp local con soporte de PO Token (más seguro que cookies)
+ * API 1: yt-dlp local con plugin bgutil-ytdlp-pot-provider
+ * El plugin se conecta automáticamente al servidor Docker en puerto 4416
  */
 async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
   try {
-    console.log('🎵 Intentando yt-dlp local...');
+    console.log('🎵 Intentando yt-dlp con plugin bgutil...');
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
@@ -61,27 +66,9 @@ async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
 
     const tempFile = path.join(os.tmpdir(), `cyaltronic_${Date.now()}.mp3`);
 
-    // Obtener tokens del manager
-    const poToken = await getPoToken();
-    const visitorData = await getVisitorData();
-
-    // Construir argumentos para YouTube
-    let ytArgs = '';
-    if (poToken && visitorData) {
-      // Usar cliente mweb con PO Token (recomendado por yt-dlp)
-      ytArgs = `--extractor-args "youtube:player_client=mweb;po_token=mweb.gvs+${poToken}" --extractor-args "youtube:visitor_data=${visitorData}"`;
-      console.log('🔐 Usando PO Token con cliente mweb');
-    } else if (poToken) {
-      ytArgs = `--extractor-args "youtube:player_client=mweb;po_token=mweb.gvs+${poToken}"`;
-      console.log('🔐 Usando PO Token');
-    } else {
-      // Sin PO Token: usar cliente tv que no requiere autenticación (por ahora)
-      ytArgs = '--extractor-args "youtube:player_client=tv"';
-      console.log('📺 Usando cliente tv (sin PO Token)');
-    }
-
-    // --js-runtime node: usa Node.js para ejecutar JS de YouTube (requerido desde 2025)
-    const command = `${YT_DLP_PATH} --js-runtime node -x --audio-format mp3 --audio-quality 128K --no-playlist ${ytArgs} -o "${tempFile}" "${url}"`;
+    // El plugin bgutil-ytdlp-pot-provider maneja automáticamente los PO Tokens
+    // conectándose al servidor Docker en puerto 4416
+    const command = `${YT_DLP_PATH} -x --audio-format mp3 --audio-quality 128K --no-playlist -o "${tempFile}" "${url}"`;
 
     await execAsync(command, { timeout: 120000 });
 
@@ -95,8 +82,6 @@ async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
     return null;
   } catch (err) {
     console.log('❌ yt-dlp falló:', (err as Error).message);
-    // Marcar tokens como fallidos para regenerar
-    await markTokensFailed();
     return null;
   }
 }
