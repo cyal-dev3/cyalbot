@@ -62,6 +62,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['trabajar', 'chambear', 'w'],
         description: 'Trabajar para ganar XP',
         usage: '/work'
+      },
+      {
+        cmd: 'minar',
+        aliases: ['mine', 'picar', 'excavar'],
+        description: 'Minar para ganar dinero y XP',
+        usage: '/minar'
       }
     ]
   },
