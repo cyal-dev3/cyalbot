@@ -12,8 +12,8 @@ import play from 'play-dl';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 
 // yt-dlp con el plugin bgutil-ytdlp-pot-provider se conecta automáticamente al servidor Docker
-// Usar ruta absoluta para asegurar que el proceso hijo encuentre yt-dlp
-const YT_DLP_PATH = process.env.YT_DLP_PATH || '/usr/local/bin/yt-dlp';
+// Usar wrapper script que configura el entorno correctamente
+const YT_DLP_PATH = process.env.YT_DLP_PATH || '/home/dev3/cyalbot/CYALTRONIC/scripts/yt-dlp-wrapper.sh';
 
 /**
  * Formatea duración de segundos a mm:ss
@@ -69,19 +69,10 @@ async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
 
     // El plugin bgutil-ytdlp-pot-provider maneja automáticamente los PO Tokens
     // conectándose al servidor Docker en puerto 4416
-    // --js-runtimes node: necesario para que yt-dlp use Node.js para ejecutar JS de YouTube
-    const pluginDir = '/usr/local/lib/python3.12/dist-packages/yt_dlp_plugins';
-    const command = `${YT_DLP_PATH} --plugin-dirs "${pluginDir}" --js-runtimes node -x --audio-format mp3 --audio-quality 128K --no-playlist -o "${tempFile}" "${url}"`;
+    // El wrapper script configura el entorno (PATH, PYTHONPATH, HOME)
+    const command = `${YT_DLP_PATH} --js-runtimes node -x --audio-format mp3 --audio-quality 128K --no-playlist -o "${tempFile}" "${url}"`;
 
-    // Asegurar que el proceso hijo tenga acceso al PATH de Python, Node y plugins
-    await execAsync(command, {
-      timeout: 120000,
-      env: {
-        ...process.env,
-        PATH: `/root/.nvm/versions/node/v20.19.6/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
-        PYTHONPATH: '/usr/local/lib/python3.12/dist-packages'
-      }
-    });
+    await execAsync(command, { timeout: 120000 });
 
     const buffer = await fs.readFile(tempFile);
     await fs.unlink(tempFile).catch(() => {});
