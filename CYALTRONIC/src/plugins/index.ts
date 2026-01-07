@@ -11,6 +11,7 @@ import { perfilPlugin } from './rpg-perfil.js';
 import { nivelPlugin } from './rpg-nivel.js';
 import { dailyPlugin } from './rpg-daily.js';
 import { workPlugin } from './rpg-work.js';
+import { minePlugin } from './rpg-minar.js';
 import { robarPlugin } from './rpg-robar.js';
 
 // Importar plugins RPG avanzados
@@ -50,6 +51,7 @@ const rpgBasicPlugins = [
   { name: 'rpg-nivel', plugin: nivelPlugin },
   { name: 'rpg-daily', plugin: dailyPlugin },
   { name: 'rpg-work', plugin: workPlugin },
+  { name: 'rpg-minar', plugin: minePlugin },
   { name: 'rpg-robar', plugin: robarPlugin }
 ];
 
@@ -102,7 +104,7 @@ export function loadPlugins(handler: MessageHandler): void {
   for (const { name, plugin } of rpgBasicPlugins) {
     handler.registerPlugin(name, plugin);
   }
-  console.log('      ✅ verificar, perfil, nivel, daily, work, robar');
+  console.log('      ✅ verificar, perfil, nivel, daily, work, minar, robar');
 
   // Cargar plugins RPG de combate
   console.log('');
