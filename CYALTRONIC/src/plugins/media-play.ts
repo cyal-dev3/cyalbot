@@ -9,6 +9,12 @@ import type { PluginHandler, MessageContext } from '../types/message.js';
 // yt-dlp debe estar instalado en el sistema (pip install yt-dlp o apt install yt-dlp)
 const YT_DLP_PATH = 'yt-dlp';
 
+// PO Token para evitar bloqueos de YouTube (más seguro que cookies)
+// Genera el token siguiendo: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+// O instala el plugin: pip install bgutil-ytdlp-pot-provider
+const PO_TOKEN = process.env.YT_PO_TOKEN || '';
+const VISITOR_DATA = process.env.YT_VISITOR_DATA || '';
+
 /**
  * Formatea duración de segundos a mm:ss
  */
@@ -22,7 +28,7 @@ function formatDuration(seconds: number): string {
  * Valida que el buffer sea un MP3 válido y tenga tamaño mínimo
  */
 function validateAudio(buffer: Buffer): boolean {
-  if (buffer.length < 100000) return false; // Mínimo 100KB
+  if (buffer.length < 50000) return false; // Mínimo 50KB
   // Verificar header MP3 (ID3 o Frame sync)
   const isId3 = buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33;
   const isFrameSync = buffer[0] === 0xFF && (buffer[1] & 0xE0) === 0xE0;
@@ -46,74 +52,158 @@ async function downloadBuffer(url: string, timeout = 30000): Promise<Buffer> {
 }
 
 /**
- * API 1: ogmp3 (apiapi.lat) - Más confiable
+ * API 1: yt-dlp local con soporte de PO Token (más seguro que cookies)
  */
-async function downloadWithOgmp3(videoId: string): Promise<Buffer | null> {
+async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
   try {
-    console.log('🎵 Intentando ogmp3 (apiapi.lat)...');
+    console.log('🎵 Intentando yt-dlp local...');
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const os = await import('os');
 
-    const hash = () => {
-      const array = new Uint8Array(16);
-      crypto.getRandomValues(array);
-      return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
-    };
+    const tempFile = path.join(os.tmpdir(), `cyaltronic_${Date.now()}.mp3`);
 
-    const encode = (str: string) => {
-      let result = '';
-      for (let i = 0; i < str.length; i++) {
-        result += String.fromCharCode(str.charCodeAt(i) ^ 1);
-      }
-      return result;
-    };
+    // Construir argumentos para PO Token si está configurado
+    let poTokenArgs = '';
+    if (PO_TOKEN && VISITOR_DATA) {
+      // Usar cliente mweb con PO Token (recomendado por yt-dlp)
+      poTokenArgs = `--extractor-args "youtube:player_client=mweb;po_token=mweb.gvs+${PO_TOKEN}" --extractor-args "youtubetab:skip=webpage" --extractor-args "youtube:visitor_data=${VISITOR_DATA}"`;
+      console.log('🔐 Usando PO Token con cliente mweb');
+    } else if (PO_TOKEN) {
+      poTokenArgs = `--extractor-args "youtube:player_client=mweb;po_token=mweb.gvs+${PO_TOKEN}"`;
+      console.log('🔐 Usando PO Token');
+    }
 
-    const url = `https://youtube.com/watch?v=${videoId}`;
-    const endpoints = ['https://api5.apiapi.lat', 'https://api.apiapi.lat', 'https://api3.apiapi.lat'];
-    const base = endpoints[Math.floor(Math.random() * endpoints.length)];
+    const command = `${YT_DLP_PATH} -x --audio-format mp3 --audio-quality 128K --no-playlist ${poTokenArgs} -o "${tempFile}" "${url}"`;
 
-    const encUrl = url.split('').map(c => c.charCodeAt(0)).reverse().join(',');
-    const c = hash(), d = hash();
+    await execAsync(command, { timeout: 120000 });
 
-    const response = await fetch(`${base}/${c}/init/${encUrl}/${d}/`, {
+    const buffer = await fs.readFile(tempFile);
+    await fs.unlink(tempFile).catch(() => {});
+
+    if (validateAudio(buffer)) {
+      console.log('✅ yt-dlp exitoso');
+      return buffer;
+    }
+    return null;
+  } catch (err) {
+    console.log('❌ yt-dlp falló:', (err as Error).message);
+    return null;
+  }
+}
+
+/**
+ * API 2: y2mate (muy confiable)
+ */
+async function downloadWithY2mate(videoId: string): Promise<Buffer | null> {
+  try {
+    console.log('🎵 Intentando y2mate...');
+
+    // Paso 1: Analizar video
+    const analyzeRes = await fetch('https://www.y2mate.com/mates/analyzeV2/ajax', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Origin': 'https://ogmp3.lat',
-        'Referer': 'https://ogmp3.lat/'
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://www.y2mate.com',
+        'Referer': 'https://www.y2mate.com/'
+      },
+      body: `k_query=https://www.youtube.com/watch?v=${videoId}&k_page=home&hl=en&q_auto=1`
+    });
+
+    const analyzeData = await analyzeRes.json() as Record<string, unknown>;
+
+    if (analyzeData.status !== 'ok') {
+      throw new Error('y2mate analyze failed');
+    }
+
+    // Obtener el ID de conversión para MP3 128kbps
+    const links = analyzeData.links as Record<string, Record<string, { k: string; size: string }>>;
+    const mp3Links = links?.mp3;
+
+    if (!mp3Links) throw new Error('No MP3 links found');
+
+    // Buscar 128kbps o el primero disponible
+    const mp3Key = mp3Links['mp3128']?.k || Object.values(mp3Links)[0]?.k;
+
+    if (!mp3Key) throw new Error('No MP3 key found');
+
+    // Paso 2: Convertir
+    const convertRes = await fetch('https://www.y2mate.com/mates/convertV2/index', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://www.y2mate.com',
+        'Referer': 'https://www.y2mate.com/'
+      },
+      body: `vid=${videoId}&k=${encodeURIComponent(mp3Key)}`
+    });
+
+    const convertData = await convertRes.json() as Record<string, unknown>;
+
+    if (convertData.status !== 'ok' || !convertData.dlink) {
+      throw new Error('y2mate convert failed');
+    }
+
+    const buffer = await downloadBuffer(convertData.dlink as string);
+
+    if (validateAudio(buffer)) {
+      console.log('✅ y2mate exitoso');
+      return buffer;
+    }
+
+    return null;
+  } catch (err) {
+    console.log('❌ y2mate falló:', (err as Error).message);
+    return null;
+  }
+}
+
+/**
+ * API 3: ssyoutube (mp3download.to)
+ */
+async function downloadWithSsyoutube(videoId: string): Promise<Buffer | null> {
+  try {
+    console.log('🎵 Intentando ssyoutube...');
+
+    const response = await fetch(`https://api.mp3download.to/v1/convert`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        data: encode(url),
-        format: '0',
-        mp3Quality: '320',
-        userTimeZone: new Date().getTimezoneOffset().toString()
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        format: 'mp3',
+        quality: '128'
       })
     });
 
     const data = await response.json() as Record<string, unknown>;
 
-    if (data.s === 'C' && data.i) {
-      const downloadUrl = `https://api3.apiapi.lat/${hash()}/download/${encode(data.i as string)}/${hash()}/`;
-      const buffer = await downloadBuffer(downloadUrl);
+    if (data.error) throw new Error(data.error as string);
+
+    // Si devuelve URL directa
+    if (data.url) {
+      const buffer = await downloadBuffer(data.url as string);
       if (validateAudio(buffer)) {
-        console.log('✅ ogmp3 exitoso');
+        console.log('✅ ssyoutube exitoso');
         return buffer;
       }
     }
 
-    // Si está procesando, esperar
-    if (data.i && data.s === 'P') {
+    // Si necesita polling
+    if (data.id) {
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await fetch(`${base}/${hash()}/status/${encode(data.i as string)}/${hash()}/`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: data.i })
-        });
-        const status = await statusRes.json() as Record<string, unknown>;
-        if (status.s === 'C') {
-          const downloadUrl = `https://api3.apiapi.lat/${hash()}/download/${encode(status.i as string)}/${hash()}/`;
-          const buffer = await downloadBuffer(downloadUrl);
+        const statusRes = await fetch(`https://api.mp3download.to/v1/status/${data.id}`);
+        const statusData = await statusRes.json() as Record<string, unknown>;
+
+        if (statusData.status === 'completed' && statusData.url) {
+          const buffer = await downloadBuffer(statusData.url as string);
           if (validateAudio(buffer)) {
-            console.log('✅ ogmp3 exitoso');
+            console.log('✅ ssyoutube exitoso');
             return buffer;
           }
         }
@@ -122,27 +212,37 @@ async function downloadWithOgmp3(videoId: string): Promise<Buffer | null> {
 
     return null;
   } catch (err) {
-    console.log('❌ ogmp3 falló:', (err as Error).message);
+    console.log('❌ ssyoutube falló:', (err as Error).message);
     return null;
   }
 }
 
 /**
- * API 2: Cobalt API
+ * API 4: Cobalt API (instancias públicas)
  */
 async function downloadWithCobalt(url: string): Promise<Buffer | null> {
   const instances = [
-    'https://api.cobalt.tools',
-    'https://co.wuk.sh'
+    { url: 'https://api.cobalt.tools', apiKey: null },
+    { url: 'https://cobalt.canine.tools', apiKey: null },
+    { url: 'https://dwnld.nichol.as', apiKey: null }
   ];
 
   for (const instance of instances) {
     try {
-      console.log(`🎵 Intentando Cobalt ${instance}...`);
+      console.log(`🎵 Intentando Cobalt ${instance.url}...`);
 
-      const response = await fetch(`${instance}/`, {
+      const headers: Record<string, string> = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      };
+
+      if (instance.apiKey) {
+        headers['Authorization'] = `Api-Key ${instance.apiKey}`;
+      }
+
+      const response = await fetch(`${instance.url}/`, {
         method: 'POST',
-        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           url: url,
           downloadMode: 'audio',
@@ -172,7 +272,7 @@ async function downloadWithCobalt(url: string): Promise<Buffer | null> {
         }
       }
     } catch (err) {
-      console.log(`❌ Cobalt ${instance} falló:`, (err as Error).message);
+      console.log(`❌ Cobalt ${instance.url} falló:`, (err as Error).message);
     }
   }
 
@@ -180,39 +280,60 @@ async function downloadWithCobalt(url: string): Promise<Buffer | null> {
 }
 
 /**
- * API 3: APIs alternativas
+ * API 5: APIs de respaldo adicionales
  */
-async function downloadWithAlternatives(videoUrl: string): Promise<Buffer | null> {
+async function downloadWithBackupApis(videoUrl: string, videoId: string): Promise<Buffer | null> {
   const apis = [
     {
-      name: 'vreden',
-      url: `https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(videoUrl)}`,
-      extract: (data: Record<string, unknown>) => (data.result as Record<string, unknown>)?.download as Record<string, unknown> | undefined
+      name: 'tomp3',
+      fetch: async () => {
+        const res = await fetch(`https://tomp3.cc/api/ajax/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `query=${encodeURIComponent(videoUrl)}&vt=mp3`
+        });
+        const data = await res.json() as Record<string, unknown>;
+        if (data.status === 'ok' && data.url) {
+          return downloadBuffer(data.url as string);
+        }
+        return null;
+      }
     },
     {
-      name: 'nyxs',
-      url: `https://api.nyxs.pw/dl/yt-direct?url=${encodeURIComponent(videoUrl)}`,
-      extract: (data: Record<string, unknown>) => ({ url: (data.result as Record<string, unknown>)?.audioUrl })
+      name: 'savefrom',
+      fetch: async () => {
+        const res = await fetch(`https://worker.sf-tools.com/savefrom.php?url=${encodeURIComponent(videoUrl)}`, {
+          headers: { 'Origin': 'https://savefrom.net' }
+        });
+        const data = await res.json() as Record<string, unknown>[];
+        const audio = data?.find((d: Record<string, unknown>) => d.type === 'audio');
+        if (audio?.url) {
+          return downloadBuffer(audio.url as string);
+        }
+        return null;
+      }
+    },
+    {
+      name: 'ytmp3-api',
+      fetch: async () => {
+        const res = await fetch(`https://api.vevioz.com/api/button/mp3/${videoId}`);
+        const html = await res.text();
+        const match = html.match(/href="(https:\/\/[^"]+\.mp3[^"]*)"/);
+        if (match?.[1]) {
+          return downloadBuffer(match[1]);
+        }
+        return null;
+      }
     }
   ];
 
   for (const api of apis) {
     try {
       console.log(`🎵 Intentando ${api.name}...`);
-      const response = await fetch(api.url, { signal: AbortSignal.timeout(30000) });
-      const data = await response.json() as Record<string, unknown>;
-
-      if (!data.status) continue;
-
-      const result = api.extract(data);
-      const downloadUrl = (result?.url || result) as string | undefined;
-
-      if (downloadUrl && typeof downloadUrl === 'string') {
-        const buffer = await downloadBuffer(downloadUrl);
-        if (validateAudio(buffer)) {
-          console.log(`✅ ${api.name} exitoso`);
-          return buffer;
-        }
+      const buffer = await api.fetch();
+      if (buffer && validateAudio(buffer)) {
+        console.log(`✅ ${api.name} exitoso`);
+        return buffer;
       }
     } catch (err) {
       console.log(`❌ ${api.name} falló:`, (err as Error).message);
@@ -220,40 +341,6 @@ async function downloadWithAlternatives(videoUrl: string): Promise<Buffer | null
   }
 
   return null;
-}
-
-/**
- * API 4: yt-dlp local (más estable)
- */
-async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
-  try {
-    console.log('🎵 Intentando yt-dlp local...');
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-    const fs = await import('fs/promises');
-    const path = await import('path');
-    const os = await import('os');
-
-    const tempFile = path.join(os.tmpdir(), `cyaltronic_${Date.now()}.mp3`);
-
-    await execAsync(
-      `"${YT_DLP_PATH}" -x --audio-format mp3 --audio-quality 128K --no-playlist -o "${tempFile}" "${url}"`,
-      { timeout: 120000 }
-    );
-
-    const buffer = await fs.readFile(tempFile);
-    await fs.unlink(tempFile).catch(() => {});
-
-    if (validateAudio(buffer)) {
-      console.log('✅ yt-dlp exitoso');
-      return buffer;
-    }
-    return null;
-  } catch (err) {
-    console.log('❌ yt-dlp falló:', (err as Error).message);
-    return null;
-  }
 }
 
 export const playPlugin: PluginHandler = {
@@ -321,40 +408,54 @@ export const playPlugin: PluginHandler = {
         `⏱️ Duración: ${duration}`
       );
 
-      // Extraer videoId para ogmp3
+      // Extraer videoId
       const videoIdMatch = videoUrl.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
       const videoId = videoIdMatch ? videoIdMatch[1] : null;
+
+      if (!videoId) {
+        await m.react('❌');
+        return m.reply('❌ No se pudo extraer el ID del video.');
+      }
 
       let audioBuffer: Buffer | null = null;
       const errors: string[] = [];
 
-      // Intento 1: yt-dlp local (más estable)
+      // Intento 1: yt-dlp local (con cookies si existen)
       audioBuffer = await downloadWithYtDlp(videoUrl);
       if (!audioBuffer) errors.push('yt-dlp');
 
-      // Intento 2: ogmp3 (apiapi.lat)
-      if (!audioBuffer && videoId) {
-        audioBuffer = await downloadWithOgmp3(videoId);
-        if (!audioBuffer) errors.push('ogmp3');
+      // Intento 2: y2mate
+      if (!audioBuffer) {
+        audioBuffer = await downloadWithY2mate(videoId);
+        if (!audioBuffer) errors.push('y2mate');
       }
 
-      // Intento 3: Cobalt API
+      // Intento 3: ssyoutube
+      if (!audioBuffer) {
+        audioBuffer = await downloadWithSsyoutube(videoId);
+        if (!audioBuffer) errors.push('ssyoutube');
+      }
+
+      // Intento 4: Cobalt API
       if (!audioBuffer) {
         audioBuffer = await downloadWithCobalt(videoUrl);
         if (!audioBuffer) errors.push('cobalt');
       }
 
-      // Intento 4: APIs alternativas
+      // Intento 5: APIs de respaldo
       if (!audioBuffer) {
-        audioBuffer = await downloadWithAlternatives(videoUrl);
-        if (!audioBuffer) errors.push('alternativas');
+        audioBuffer = await downloadWithBackupApis(videoUrl, videoId);
+        if (!audioBuffer) errors.push('backup-apis');
       }
 
       // Si ninguna API funcionó
       if (!audioBuffer) {
         await m.react('❌');
         console.log('❌ Todas las APIs fallaron:', errors.join(', '));
-        return m.reply('❌ No se pudo descargar. Todas las APIs fallaron. Intenta con otra canción.');
+        return m.reply(
+          '❌ No se pudo descargar la canción.\n\n' +
+          '_Tip: Si el problema persiste, configura cookies de YouTube._'
+        );
       }
 
       const sizeMB = audioBuffer.length / (1024 * 1024);
