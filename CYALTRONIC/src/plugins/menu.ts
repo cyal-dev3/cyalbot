@@ -286,6 +286,37 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['n', 'todos'],
         description: 'Mencionar a todos',
         usage: '/notify [mensaje]'
+      },
+      {
+        cmd: 'close',
+        aliases: ['cerrar', 'cerrargrupo'],
+        description: 'Cerrar grupo (solo admins escriben)',
+        usage: '/close'
+      },
+      {
+        cmd: 'open',
+        aliases: ['abrir', 'abrirgrupo'],
+        description: 'Abrir grupo (todos escriben)',
+        usage: '/open'
+      }
+    ]
+  },
+  {
+    emoji: '🔧',
+    name: 'Owner',
+    description: 'Comandos exclusivos del dueño',
+    commands: [
+      {
+        cmd: 'restart',
+        aliases: ['reiniciar', 'reboot'],
+        description: 'Reiniciar el bot',
+        usage: '/restart'
+      },
+      {
+        cmd: 'gitpull',
+        aliases: ['pull', 'update', 'actualizar'],
+        description: 'Actualizar desde GitHub',
+        usage: '/gitpull'
       }
     ]
   },
@@ -354,6 +385,7 @@ function generateMainMenu(isOwner: boolean, isAdmin: boolean): string {
   for (const category of MENU_CATEGORIES) {
     // Filtrar categorías según permisos
     if (category.name === 'Admin' && !isAdmin && !isOwner) continue;
+    if (category.name === 'Owner' && !isOwner) continue;
 
     menuContent += `\n${category.emoji} *${category.name}*\n`;
 
