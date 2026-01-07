@@ -118,7 +118,43 @@ export const RARITY_COLORS: Record<ItemRarity, string> = {
 
 // Items del juego
 export const ITEMS: Record<string, Item> = {
-  // === ARMAS ===
+  // === ARMAS NIVEL BAJO (1-10) ===
+  palo_madera: {
+    id: 'palo_madera',
+    name: 'Palo de Madera',
+    emoji: '🪵',
+    type: 'weapon',
+    rarity: 'comun',
+    description: 'Un simple palo. Mejor que nada.',
+    price: 50,
+    sellPrice: 25,
+    stats: { attack: 3 },
+    requiredLevel: 1
+  },
+  daga_oxidada: {
+    id: 'daga_oxidada',
+    name: 'Daga Oxidada',
+    emoji: '🔪',
+    type: 'weapon',
+    rarity: 'comun',
+    description: 'Una daga vieja pero funcional.',
+    price: 150,
+    sellPrice: 75,
+    stats: { attack: 5, critChance: 2 },
+    requiredLevel: 1
+  },
+  espada_madera: {
+    id: 'espada_madera',
+    name: 'Espada de Madera',
+    emoji: '🪓',
+    type: 'weapon',
+    rarity: 'comun',
+    description: 'Una espada de entrenamiento.',
+    price: 250,
+    sellPrice: 125,
+    stats: { attack: 7 },
+    requiredLevel: 3
+  },
   espada_hierro: {
     id: 'espada_hierro',
     name: 'Espada de Hierro',
@@ -129,7 +165,19 @@ export const ITEMS: Record<string, Item> = {
     price: 500,
     sellPrice: 250,
     stats: { attack: 10 },
-    requiredLevel: 1
+    requiredLevel: 5
+  },
+  hacha_batalla: {
+    id: 'hacha_batalla',
+    name: 'Hacha de Batalla',
+    emoji: '🪓',
+    type: 'weapon',
+    rarity: 'raro',
+    description: 'Pesada pero devastadora.',
+    price: 1200,
+    sellPrice: 600,
+    stats: { attack: 18, critChance: 8 },
+    requiredLevel: 8
   },
   espada_acero: {
     id: 'espada_acero',
@@ -208,7 +256,31 @@ export const ITEMS: Record<string, Item> = {
     requiredClass: ['arquero']
   },
 
-  // === ARMADURAS ===
+  // === ARMADURAS NIVEL BAJO (1-10) ===
+  ropa_andrajos: {
+    id: 'ropa_andrajos',
+    name: 'Ropa de Andrajos',
+    emoji: '👕',
+    type: 'armor',
+    rarity: 'comun',
+    description: 'Ropa vieja pero cubre.',
+    price: 30,
+    sellPrice: 15,
+    stats: { defense: 2 },
+    requiredLevel: 1
+  },
+  chaleco_tela: {
+    id: 'chaleco_tela',
+    name: 'Chaleco de Tela',
+    emoji: '🧥',
+    type: 'armor',
+    rarity: 'comun',
+    description: 'Un chaleco simple.',
+    price: 100,
+    sellPrice: 50,
+    stats: { defense: 4, health: 5 },
+    requiredLevel: 1
+  },
   armadura_cuero: {
     id: 'armadura_cuero',
     name: 'Armadura de Cuero',
@@ -219,7 +291,31 @@ export const ITEMS: Record<string, Item> = {
     price: 400,
     sellPrice: 200,
     stats: { defense: 8, stamina: 10 },
-    requiredLevel: 1
+    requiredLevel: 3
+  },
+  armadura_cuero_reforzado: {
+    id: 'armadura_cuero_reforzado',
+    name: 'Cuero Reforzado',
+    emoji: '🦺',
+    type: 'armor',
+    rarity: 'raro',
+    description: 'Cuero con placas de metal.',
+    price: 900,
+    sellPrice: 450,
+    stats: { defense: 12, health: 15 },
+    requiredLevel: 6
+  },
+  cota_malla: {
+    id: 'cota_malla',
+    name: 'Cota de Malla',
+    emoji: '⛓️',
+    type: 'armor',
+    rarity: 'raro',
+    description: 'Anillos de metal entrelazados.',
+    price: 1500,
+    sellPrice: 750,
+    stats: { defense: 18, health: 20 },
+    requiredLevel: 10
   },
   armadura_hierro: {
     id: 'armadura_hierro',
@@ -259,7 +355,67 @@ export const ITEMS: Record<string, Item> = {
     requiredClass: ['mago']
   },
 
-  // === ACCESORIOS ===
+  // === ACCESORIOS NIVEL BAJO (1-10) ===
+  cuerda_vieja: {
+    id: 'cuerda_vieja',
+    name: 'Cuerda Vieja',
+    emoji: '🪢',
+    type: 'accessory',
+    rarity: 'comun',
+    description: 'Un amuleto improvisado.',
+    price: 50,
+    sellPrice: 25,
+    stats: { defense: 1 },
+    requiredLevel: 1
+  },
+  pulsera_cuero: {
+    id: 'pulsera_cuero',
+    name: 'Pulsera de Cuero',
+    emoji: '🔗',
+    type: 'accessory',
+    rarity: 'comun',
+    description: 'Una simple pulsera de cuero.',
+    price: 150,
+    sellPrice: 75,
+    stats: { stamina: 10, health: 5 },
+    requiredLevel: 1
+  },
+  amuleto_principiante: {
+    id: 'amuleto_principiante',
+    name: 'Amuleto de Principiante',
+    emoji: '🔮',
+    type: 'accessory',
+    rarity: 'comun',
+    description: 'Protege a los novatos.',
+    price: 300,
+    sellPrice: 150,
+    stats: { defense: 3, health: 10 },
+    requiredLevel: 3
+  },
+  anillo_cobre: {
+    id: 'anillo_cobre',
+    name: 'Anillo de Cobre',
+    emoji: '💍',
+    type: 'accessory',
+    rarity: 'comun',
+    description: 'Un anillo simple pero útil.',
+    price: 500,
+    sellPrice: 250,
+    stats: { attack: 5, critChance: 3 },
+    requiredLevel: 5
+  },
+  collar_plata: {
+    id: 'collar_plata',
+    name: 'Collar de Plata',
+    emoji: '📿',
+    type: 'accessory',
+    rarity: 'raro',
+    description: 'Un elegante collar de plata.',
+    price: 1200,
+    sellPrice: 600,
+    stats: { mana: 15, health: 15 },
+    requiredLevel: 8
+  },
   anillo_fuerza: {
     id: 'anillo_fuerza',
     name: 'Anillo de Fuerza',
@@ -270,7 +426,7 @@ export const ITEMS: Record<string, Item> = {
     price: 3000,
     sellPrice: 1500,
     stats: { attack: 15 },
-    requiredLevel: 20
+    requiredLevel: 15
   },
   amuleto_vida: {
     id: 'amuleto_vida',
@@ -297,7 +453,29 @@ export const ITEMS: Record<string, Item> = {
     requiredLevel: 30
   },
 
-  // === CONSUMIBLES ===
+  // === CONSUMIBLES (NIVEL BAJO) ===
+  vendaje: {
+    id: 'vendaje',
+    name: 'Vendaje',
+    emoji: '🩹',
+    type: 'consumable',
+    rarity: 'comun',
+    description: 'Restaura 20 puntos de salud.',
+    price: 25,
+    sellPrice: 12,
+    consumeEffect: { health: 20 }
+  },
+  pocion_salud_menor: {
+    id: 'pocion_salud_menor',
+    name: 'Poción de Salud Menor',
+    emoji: '🧴',
+    type: 'consumable',
+    rarity: 'comun',
+    description: 'Restaura 30 puntos de salud.',
+    price: 50,
+    sellPrice: 25,
+    consumeEffect: { health: 30 }
+  },
   pocion_salud: {
     id: 'pocion_salud',
     name: 'Poción de Salud',
@@ -394,6 +572,144 @@ export const ITEMS: Record<string, Item> = {
     description: 'Concentrado de energía mágica.',
     price: 3000,
     sellPrice: 1500
+  },
+
+  // === ITEMS ESPECIALES (DIAMANTES) ===
+  ticket_muteo: {
+    id: 'ticket_muteo',
+    name: 'Ticket de Muteo',
+    emoji: '🔇',
+    type: 'consumable',
+    rarity: 'legendario',
+    description: 'Mutea a alguien del grupo por 24 horas.',
+    price: 0,  // Solo diamantes
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  ticket_kick: {
+    id: 'ticket_kick',
+    name: 'Ticket de Expulsión',
+    emoji: '🚪',
+    type: 'consumable',
+    rarity: 'legendario',
+    description: 'Expulsa a alguien del grupo (temporalmente).',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  bomba_dinero: {
+    id: 'bomba_dinero',
+    name: 'Bomba de Dinero',
+    emoji: '💣',
+    type: 'consumable',
+    rarity: 'epico',
+    description: 'Explota y roba 500-2000 monedas a todos en el grupo.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  escudo_robo: {
+    id: 'escudo_robo',
+    name: 'Escudo Anti-Robo',
+    emoji: '🛡️',
+    type: 'consumable',
+    rarity: 'epico',
+    description: 'Protege de robos por 24 horas.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  pocion_resurrecion: {
+    id: 'pocion_resurrecion',
+    name: 'Poción de Resurrección',
+    emoji: '✨',
+    type: 'consumable',
+    rarity: 'legendario',
+    description: 'Restaura toda tu salud, maná y energía.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: { health: 999, mana: 999, stamina: 999 }
+  },
+  caja_misteriosa: {
+    id: 'caja_misteriosa',
+    name: 'Caja Misteriosa',
+    emoji: '📦',
+    type: 'consumable',
+    rarity: 'legendario',
+    description: 'Contiene un item aleatorio raro o mejor.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  boost_exp_24h: {
+    id: 'boost_exp_24h',
+    name: 'Boost de EXP (24h)',
+    emoji: '⭐',
+    type: 'consumable',
+    rarity: 'epico',
+    description: 'Duplica toda la experiencia ganada por 24 horas.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: { expBoost: 2, duration: 24 * 60 * 60 * 1000 }
+  },
+  cambio_nombre: {
+    id: 'cambio_nombre',
+    name: 'Ticket Cambio de Nombre',
+    emoji: '📝',
+    type: 'consumable',
+    rarity: 'raro',
+    description: 'Permite cambiar tu nombre de aventurero.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  reset_clase: {
+    id: 'reset_clase',
+    name: 'Reset de Clase',
+    emoji: '🔄',
+    type: 'consumable',
+    rarity: 'epico',
+    description: 'Permite cambiar tu clase de personaje.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  // Armas legendarias solo por diamantes
+  espada_celestial: {
+    id: 'espada_celestial',
+    name: 'Espada Celestial',
+    emoji: '⚔️',
+    type: 'weapon',
+    rarity: 'legendario',
+    description: 'Forjada en los cielos, poder divino.',
+    price: 0,
+    sellPrice: 25000,
+    stats: { attack: 100, critChance: 20, health: 50 },
+    requiredLevel: 30
+  },
+  armadura_celestial: {
+    id: 'armadura_celestial',
+    name: 'Armadura Celestial',
+    emoji: '🛡️',
+    type: 'armor',
+    rarity: 'legendario',
+    description: 'Protección divina del cielo.',
+    price: 0,
+    sellPrice: 30000,
+    stats: { defense: 100, health: 150, mana: 50 },
+    requiredLevel: 30
+  },
+  corona_reyes: {
+    id: 'corona_reyes',
+    name: 'Corona de Reyes',
+    emoji: '👑',
+    type: 'accessory',
+    rarity: 'legendario',
+    description: 'Solo los más dignos pueden portarla.',
+    price: 0,
+    sellPrice: 50000,
+    stats: { attack: 30, defense: 30, health: 100, critChance: 15 },
+    requiredLevel: 40
   }
 };
 
@@ -669,6 +985,7 @@ export interface Quest {
   rewards: {
     exp: number;
     money: number;
+    diamonds?: number;  // Diamantes como recompensa
     items?: string[];
   };
 }
@@ -682,7 +999,7 @@ export const DAILY_QUESTS: Quest[] = [
     type: 'daily',
     objective: 'work',
     target: 3,
-    rewards: { exp: 500, money: 300 }
+    rewards: { exp: 500, money: 300, diamonds: 10 }
   },
   {
     id: 'daily_combat_5',
@@ -692,7 +1009,7 @@ export const DAILY_QUESTS: Quest[] = [
     type: 'daily',
     objective: 'combat',
     target: 5,
-    rewards: { exp: 800, money: 500 }
+    rewards: { exp: 800, money: 500, diamonds: 15 }
   },
   {
     id: 'daily_dungeon_1',
@@ -702,7 +1019,7 @@ export const DAILY_QUESTS: Quest[] = [
     type: 'daily',
     objective: 'dungeon',
     target: 1,
-    rewards: { exp: 1000, money: 800 }
+    rewards: { exp: 1000, money: 800, diamonds: 25 }
   },
   {
     id: 'daily_rob_2',
@@ -712,7 +1029,7 @@ export const DAILY_QUESTS: Quest[] = [
     type: 'daily',
     objective: 'rob',
     target: 2,
-    rewards: { exp: 400, money: 600 }
+    rewards: { exp: 400, money: 600, diamonds: 20 }
   }
 ];
 
@@ -725,7 +1042,7 @@ export const WEEKLY_QUESTS: Quest[] = [
     type: 'weekly',
     objective: 'work',
     target: 15,
-    rewards: { exp: 3000, money: 2000, items: ['elixir_exp'] }
+    rewards: { exp: 3000, money: 2000, diamonds: 75, items: ['elixir_exp'] }
   },
   {
     id: 'weekly_combat_30',
@@ -735,7 +1052,7 @@ export const WEEKLY_QUESTS: Quest[] = [
     type: 'weekly',
     objective: 'combat',
     target: 30,
-    rewards: { exp: 5000, money: 3000, items: ['pocion_salud_mayor', 'pocion_salud_mayor'] }
+    rewards: { exp: 5000, money: 3000, diamonds: 100, items: ['pocion_salud_mayor', 'pocion_salud_mayor'] }
   },
   {
     id: 'weekly_dungeon_5',
@@ -745,7 +1062,7 @@ export const WEEKLY_QUESTS: Quest[] = [
     type: 'weekly',
     objective: 'dungeon',
     target: 5,
-    rewards: { exp: 8000, money: 5000, items: ['cristal_mana'] }
+    rewards: { exp: 8000, money: 5000, diamonds: 150, items: ['cristal_mana'] }
   },
   {
     id: 'weekly_earn_10000',
@@ -755,7 +1072,7 @@ export const WEEKLY_QUESTS: Quest[] = [
     type: 'weekly',
     objective: 'earn',
     target: 10000,
-    rewards: { exp: 4000, money: 0, items: ['anillo_fuerza'] }
+    rewards: { exp: 4000, money: 0, diamonds: 200, items: ['anillo_fuerza'] }
   }
 ];
 

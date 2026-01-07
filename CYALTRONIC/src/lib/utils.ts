@@ -73,6 +73,26 @@ export function capitalize(str: string): string {
 }
 
 /**
+ * Normaliza un texto removiendo tildes/acentos para búsquedas
+ * Convierte: "Poción de Salud" -> "pocion de salud"
+ */
+export function normalizeText(str: string): string {
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remueve diacríticos (tildes, etc)
+    .replace(/ñ/g, 'n')
+    .replace(/ü/g, 'u');
+}
+
+/**
+ * Compara dos strings ignorando tildes y mayúsculas
+ */
+export function matchesIgnoreAccents(text: string, search: string): boolean {
+  return normalizeText(text).includes(normalizeText(search));
+}
+
+/**
  * 🎨 Colección de emojis para el bot
  */
 export const EMOJI = {

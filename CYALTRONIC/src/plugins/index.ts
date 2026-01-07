@@ -16,7 +16,7 @@ import { robarPlugin } from './rpg-robar.js';
 
 // Importar plugins RPG avanzados
 import { atacarPlugin } from './rpg-atacar.js';
-import { dueloPlugin, aceptarPlugin, rechazarPlugin } from './rpg-duelo.js';
+import { dueloPlugin, aceptarPlugin, rechazarPlugin, atacarDueloPlugin, habilidadDueloPlugin, rendirsePlugin } from './rpg-duelo.js';
 import { registerInventoryPlugins } from './rpg-inventario.js';
 import { registerShopPlugins } from './rpg-tienda.js';
 import { clasePlugin, clasesPlugin, habilidadesPlugin } from './rpg-clase.js';
@@ -29,7 +29,9 @@ import { registerGroupAdminPlugins } from './group-admin.js';
 import { registerGroupMutePlugins } from './group-mute.js';
 import { registerGroupDeletePlugins } from './group-delete.js';
 import { registerGroupPinPlugins } from './group-pin.js';
+import { registerGroupLockPlugins } from './group-lock.js';
 import { notifyPlugin } from './admin-notify.js';
+import { restartPlugin, gitPullPlugin } from './admin-restart.js';
 
 // Importar plugins de utilidad
 import { menuPlugin } from './menu.js';
@@ -62,7 +64,10 @@ const rpgCombatPlugins = [
   { name: 'rpg-atacar', plugin: atacarPlugin },
   { name: 'rpg-duelo', plugin: dueloPlugin },
   { name: 'rpg-aceptar', plugin: aceptarPlugin },
-  { name: 'rpg-rechazar', plugin: rechazarPlugin }
+  { name: 'rpg-rechazar', plugin: rechazarPlugin },
+  { name: 'rpg-atacar-duelo', plugin: atacarDueloPlugin },
+  { name: 'rpg-habilidad-duelo', plugin: habilidadDueloPlugin },
+  { name: 'rpg-rendirse', plugin: rendirsePlugin }
 ];
 
 /**
@@ -112,7 +117,7 @@ export function loadPlugins(handler: MessageHandler): void {
   for (const { name, plugin } of rpgCombatPlugins) {
     handler.registerPlugin(name, plugin);
   }
-  console.log('      ✅ atacar, duelo, aceptar, rechazar');
+  console.log('      ✅ atacar, duelo, aceptar, rechazar, habilidad, rendirse');
 
   // Cargar plugins de inventario y tienda
   console.log('');
@@ -168,8 +173,15 @@ export function loadPlugins(handler: MessageHandler): void {
   registerGroupPinPlugins(handler);
   console.log('      ✅ pin, unpin, pinned');
 
+  registerGroupLockPlugins(handler);
+  console.log('      ✅ close, open (cerrar, abrir)');
+
   handler.registerPlugin('admin-notify', notifyPlugin);
   console.log('      ✅ notify (n, notificar, avisar)');
+
+  handler.registerPlugin('admin-restart', restartPlugin);
+  handler.registerPlugin('admin-gitpull', gitPullPlugin);
+  console.log('      ✅ restart, gitpull (reiniciar, update, actualizar)');
 
   // Cargar plugins de media
   console.log('');
@@ -194,22 +206,24 @@ export function loadPlugins(handler: MessageHandler): void {
 
   // Calcular total de plugins
   const totalPlugins =
-    rpgBasicPlugins.length +      // 6
-    rpgCombatPlugins.length +     // 4
-    5 +                            // inventario (5)
-    3 +                            // tienda (3)
-    rpgClassPlugins.length +      // 3
-    rpgDungeonPlugins.length +    // 2
-    5 +                            // ranking (5)
-    rpgQuestPlugins.length +      // 2
-    3 +                            // group-admin (3)
-    4 +                            // group-mute (4)
-    2 +                            // group-delete (2)
-    3 +                            // group-pin (3)
-    1 +                            // notify (1)
-    1 +                            // play (1)
-    4 +                            // stickers (4)
-    1;                             // menu (1)
+    rpgBasicPlugins.length +
+    rpgCombatPlugins.length +
+    5 +
+    3 +
+    rpgClassPlugins.length +
+    rpgDungeonPlugins.length +
+    5 +
+    rpgQuestPlugins.length +
+    3 +
+    4 +
+    2 +
+    3 +
+    2 +                            // close, open
+    1 +
+    1 +                            // restart
+    1 +
+    4 +
+    1;                             
 
   console.log('');
   console.log(`📦 Total: ${totalPlugins} comandos cargados`);

@@ -6,7 +6,7 @@
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, formatNumber } from '../lib/utils.js';
+import { EMOJI, formatNumber, matchesIgnoreAccents } from '../lib/utils.js';
 import { ACHIEVEMENTS, CLASSES, type Achievement } from '../types/rpg.js';
 import type { UserRPG } from '../types/user.js';
 
@@ -360,9 +360,9 @@ const tituloPlugin: PluginHandler = {
       return;
     }
 
-    // Buscar título
+    // Buscar título (sin importar tildes)
     const searchTerm = text.toLowerCase().trim();
-    const foundTitle = user.titles.find(t => t.toLowerCase().includes(searchTerm));
+    const foundTitle = user.titles.find(t => matchesIgnoreAccents(t, searchTerm));
 
     if (!foundTitle) {
       await m.reply(

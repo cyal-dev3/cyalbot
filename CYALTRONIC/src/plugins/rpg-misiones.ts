@@ -116,7 +116,11 @@ export const misionesPlugin: PluginHandler = {
       response += `   [${progressBar(progress, quest.target, 8)}] ${progress}/${quest.target}\n`;
 
       if (!isClaimed) {
-        response += `   🎁 ${formatNumber(quest.rewards.exp)} XP + ${formatNumber(quest.rewards.money)} 💰\n`;
+        response += `   🎁 ${formatNumber(quest.rewards.exp)} XP + ${formatNumber(quest.rewards.money)} 💰`;
+        if (quest.rewards.diamonds) {
+          response += ` + ${quest.rewards.diamonds} 💎`;
+        }
+        response += '\n';
       }
       response += '\n';
     }
@@ -145,6 +149,9 @@ export const misionesPlugin: PluginHandler = {
 
       if (!isClaimed) {
         response += `   🎁 ${formatNumber(quest.rewards.exp)} XP + ${formatNumber(quest.rewards.money)} 💰`;
+        if (quest.rewards.diamonds) {
+          response += ` + ${quest.rewards.diamonds} 💎`;
+        }
         if (quest.rewards.items && quest.rewards.items.length > 0) {
           response += ` + Items`;
         }
@@ -183,6 +190,7 @@ export const reclamarMisionPlugin: PluginHandler = {
 
     let totalExp = 0;
     let totalMoney = 0;
+    let totalDiamonds = 0;
     const itemsGained: string[] = [];
     let claimedCount = 0;
 
@@ -200,6 +208,9 @@ export const reclamarMisionPlugin: PluginHandler = {
 
         totalExp += quest.rewards.exp;
         totalMoney += quest.rewards.money;
+        if (quest.rewards.diamonds) {
+          totalDiamonds += quest.rewards.diamonds;
+        }
         claimedCount++;
 
         if (quest.rewards.items) {
@@ -224,6 +235,9 @@ export const reclamarMisionPlugin: PluginHandler = {
 
         totalExp += quest.rewards.exp;
         totalMoney += quest.rewards.money;
+        if (quest.rewards.diamonds) {
+          totalDiamonds += quest.rewards.diamonds;
+        }
         claimedCount++;
 
         if (quest.rewards.items) {
@@ -256,6 +270,7 @@ export const reclamarMisionPlugin: PluginHandler = {
     db.updateUser(m.sender, {
       exp: user.exp + totalExp,
       money: user.money + totalMoney,
+      limit: user.limit + totalDiamonds,
       dailyQuests: user.dailyQuests,
       weeklyQuests: user.weeklyQuests,
       inventory: user.inventory
@@ -268,6 +283,9 @@ export const reclamarMisionPlugin: PluginHandler = {
     response += `🎁 *Recompensas:*\n`;
     response += `   ${EMOJI.exp} +${formatNumber(totalExp)} XP\n`;
     response += `   ${EMOJI.coin} +${formatNumber(totalMoney)} monedas\n`;
+    if (totalDiamonds > 0) {
+      response += `   💎 +${formatNumber(totalDiamonds)} diamantes\n`;
+    }
 
     if (itemsGained.length > 0) {
       response += `   📦 Items:\n`;
@@ -280,6 +298,7 @@ export const reclamarMisionPlugin: PluginHandler = {
     }
 
     response += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
+    response += `💎 Total diamantes: *${formatNumber(user.limit + totalDiamonds)}*\n`;
     response += `💡 Sigue completando misiones para más recompensas!`;
 
     await m.reply(response);

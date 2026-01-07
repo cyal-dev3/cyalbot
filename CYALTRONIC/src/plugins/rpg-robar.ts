@@ -7,6 +7,7 @@ import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
+import { updateQuestProgress } from './rpg-misiones.js';
 
 /**
  * Tipos de recursos que se pueden robar
@@ -84,8 +85,8 @@ function calculateRobAttempt(
   const success = roll <= successChance;
 
   if (!success) {
-    // Falló - calcular penalización
-    const penalty = randomInt(50, 200);
+    // Falló - calcular penalización (aumentada)
+    const penalty = randomInt(100, 500);
     return {
       success: false,
       resource: 'money',
@@ -95,44 +96,44 @@ function calculateRobAttempt(
   }
 
   // Éxito - determinar qué robar
-  // Prioridad: dinero (60%), exp (25%), mana (15%)
+  // Prioridad: dinero (70%), exp (20%), mana (10%)
   const resourceRoll = randomInt(1, 100);
   let resource: RobbableResource;
   let maxSteal: number;
   let minSteal: number;
 
-  if (resourceRoll <= 60 && victimMoney > 100) {
+  if (resourceRoll <= 70 && victimMoney > 100) {
     resource = 'money';
-    // Robar entre 5% y 15% del dinero de la víctima
-    minSteal = Math.floor(victimMoney * 0.05);
-    maxSteal = Math.floor(victimMoney * 0.15);
-  } else if (resourceRoll <= 85 && victimExp > 500) {
+    // Robar entre 15% y 35% del dinero de la víctima (AUMENTADO)
+    minSteal = Math.floor(victimMoney * 0.15);
+    maxSteal = Math.floor(victimMoney * 0.35);
+  } else if (resourceRoll <= 90 && victimExp > 500) {
     resource = 'exp';
-    // Robar entre 2% y 8% de la experiencia
-    minSteal = Math.floor(victimExp * 0.02);
-    maxSteal = Math.floor(victimExp * 0.08);
+    // Robar entre 5% y 15% de la experiencia (AUMENTADO)
+    minSteal = Math.floor(victimExp * 0.05);
+    maxSteal = Math.floor(victimExp * 0.15);
   } else if (victimMana > 10) {
     resource = 'mana';
-    // Robar entre 5 y 20 de maná
-    minSteal = 5;
-    maxSteal = Math.min(20, victimMana - 5);
+    // Robar entre 10 y 40 de maná (AUMENTADO)
+    minSteal = 10;
+    maxSteal = Math.min(40, victimMana - 5);
   } else {
     // Fallback a dinero
     resource = 'money';
-    minSteal = Math.floor(victimMoney * 0.03);
-    maxSteal = Math.floor(victimMoney * 0.10);
+    minSteal = Math.floor(victimMoney * 0.10);
+    maxSteal = Math.floor(victimMoney * 0.25);
   }
 
-  // Asegurar mínimos
-  minSteal = Math.max(minSteal, 10);
-  maxSteal = Math.max(maxSteal, minSteal + 10);
+  // Asegurar mínimos más altos
+  minSteal = Math.max(minSteal, 50);
+  maxSteal = Math.max(maxSteal, minSteal + 100);
 
   const amount = randomInt(minSteal, maxSteal);
 
   return {
     success: true,
     resource,
-    amount: Math.max(amount, 1),
+    amount: Math.max(amount, 50),
     message: pickRandom(SUCCESS_MESSAGES[resource])
   };
 }
@@ -164,7 +165,7 @@ export const robarPlugin: PluginHandler = {
     'robar @usuario - Intenta robar dinero, XP o maná',
     'El éxito depende de tu nivel vs el de la víctima',
     'Si fallas, pagarás una multa',
-    'Cooldown: 2 horas'
+    'Cooldown: 1 hora'
   ],
   register: true,
   group: true,
@@ -281,7 +282,7 @@ export const robarPlugin: PluginHandler = {
         `🦹 *¡ROBO EXITOSO!*\n\n` +
         `${message}\n\n` +
         `${resourceEmoji[result.resource]} *+${formatNumber(result.amount)}* ${result.resource === 'money' ? 'monedas' : result.resource === 'exp' ? 'XP' : 'maná'}\n\n` +
-        `⏰ Próximo robo: *2 horas*`
+        `⏰ Próximo robo: *1 hora*`
       );
 
       await m.react('💰');
@@ -300,11 +301,14 @@ export const robarPlugin: PluginHandler = {
         `${message}\n\n` +
         `${EMOJI.coin} *-${formatNumber(penalty)}* monedas\n\n` +
         `💡 _Tip: Tu éxito depende de la diferencia de niveles._\n` +
-        `⏰ Próximo intento: *2 horas*`
+        `⏰ Próximo intento: *1 hora*`
       );
 
       await m.react('💀');
     }
+
+    // Actualizar progreso de misiones de robo
+    updateQuestProgress(db, m.sender, 'rob', 1);
   }
 };
 

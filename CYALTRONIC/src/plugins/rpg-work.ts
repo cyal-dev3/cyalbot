@@ -8,6 +8,7 @@ import { EMOJI, formatNumber, msToTime, pickRandom, randomInt } from '../lib/uti
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 import { canLevelUp, MULTIPLIER } from '../lib/levelling.js';
+import { updateQuestProgress } from './rpg-misiones.js';
 
 // Lista de trabajos/aventuras
 const WORK_ACTIVITIES = [
@@ -112,6 +113,9 @@ export const workPlugin: PluginHandler = {
     const levelMessage = canLevel
       ? `\n\n${EMOJI.level} *¡Puedes subir de nivel!* Usa *${usedPrefix}nivel*`
       : '';
+
+    // Actualizar progreso de misiones de trabajo
+    updateQuestProgress(db, m.sender, 'work', 1);
 
     // Mensaje de trabajo completado
     await m.reply(

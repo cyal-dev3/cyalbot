@@ -6,18 +6,68 @@
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, formatNumber } from '../lib/utils.js';
+import { EMOJI, formatNumber, matchesIgnoreAccents } from '../lib/utils.js';
 import { ITEMS, RARITY_COLORS, type Item, type ItemType } from '../types/rpg.js';
 
 /**
- * Items disponibles en la tienda (categorizados)
+ * Items disponibles en la tienda (categorizados) - Con monedas
  */
 const SHOP_ITEMS: Record<string, string[]> = {
-  armas: ['espada_hierro', 'espada_acero', 'baston_aprendiz', 'daga_sombras', 'arco_cazador'],
-  armaduras: ['armadura_cuero', 'armadura_hierro', 'tunica_mago'],
-  accesorios: ['anillo_fuerza', 'amuleto_vida', 'collar_suerte'],
-  consumibles: ['pocion_salud', 'pocion_salud_mayor', 'pocion_mana', 'pocion_energia', 'elixir_exp'],
+  armas: [
+    // Nivel bajo (1-10)
+    'palo_madera', 'daga_oxidada', 'espada_madera',
+    // Nivel medio (10-25)
+    'espada_hierro', 'hacha_batalla', 'baston_aprendiz',
+    // Nivel alto (25+)
+    'espada_acero', 'baston_arcano', 'daga_sombras', 'arco_cazador'
+  ],
+  armaduras: [
+    // Nivel bajo (1-10)
+    'ropa_andrajos', 'chaleco_tela',
+    // Nivel medio (10-25)
+    'armadura_cuero', 'armadura_cuero_reforzado', 'cota_malla',
+    // Nivel alto (25+)
+    'armadura_hierro', 'tunica_mago'
+  ],
+  accesorios: [
+    // Nivel bajo (1-10)
+    'cuerda_vieja', 'pulsera_cuero', 'amuleto_principiante',
+    // Nivel medio (10-25)
+    'anillo_cobre', 'collar_plata',
+    // Nivel alto (25+)
+    'anillo_fuerza', 'amuleto_vida', 'collar_suerte'
+  ],
+  consumibles: [
+    // Nivel bajo
+    'vendaje', 'pocion_salud_menor',
+    // Nivel medio-alto
+    'pocion_salud', 'pocion_salud_mayor', 'pocion_mana', 'pocion_energia', 'elixir_exp'
+  ],
   materiales: ['hierro', 'oro_material', 'cristal_mana']
+};
+
+/**
+ * Items especiales comprables SOLO con diamantes
+ */
+const DIAMOND_SHOP: Record<string, { itemId: string; diamonds: number; description: string }[]> = {
+  especiales: [
+    { itemId: 'ticket_muteo', diamonds: 1000, description: 'Mutea a alguien por 24h' },
+    { itemId: 'ticket_kick', diamonds: 2000, description: 'Expulsa a alguien del grupo' },
+    { itemId: 'bomba_dinero', diamonds: 500, description: 'Roba 50% del dinero de alguien' },
+    { itemId: 'escudo_robo', diamonds: 800, description: 'Protege de robos por 24h' },
+    { itemId: 'boost_exp_24h', diamonds: 1500, description: '+50% EXP por 24 horas' },
+    { itemId: 'cambio_nombre', diamonds: 300, description: 'Cambia tu nombre RPG' },
+    { itemId: 'reset_clase', diamonds: 2500, description: 'Reinicia tu clase y stats' }
+  ],
+  consumibles: [
+    { itemId: 'pocion_resurrecion', diamonds: 750, description: 'Revive con 100% HP' },
+    { itemId: 'caja_misteriosa', diamonds: 1000, description: 'Item aleatorio legendario' }
+  ],
+  legendarios: [
+    { itemId: 'espada_celestial', diamonds: 5000, description: 'Arma legendaria +100 ATK' },
+    { itemId: 'armadura_celestial', diamonds: 5000, description: 'Armadura legendaria +80 DEF' },
+    { itemId: 'corona_reyes', diamonds: 7500, description: 'Accesorio legendario +50 todos' }
+  ]
 };
 
 /**
@@ -43,7 +93,7 @@ const tiendaPlugin: PluginHandler = {
   help: [
     'tienda - Ver todos los items en venta',
     'tienda armas - Ver solo armas',
-    'tienda consumibles - Ver pociones'
+    'tienda diamantes - Ver tienda de diamantes'
   ],
   register: true,
 
@@ -54,9 +104,46 @@ const tiendaPlugin: PluginHandler = {
 
     const category = text.toLowerCase().trim();
 
+    // Si pide la tienda de diamantes
+    if (category === 'diamantes' || category === 'diamonds' || category === 'premium') {
+      let response = `💎 *TIENDA DE DIAMANTES*\n`;
+      response += `━━━━━━━━━━━━━━━━━━━━━\n`;
+      response += `💎 Tus diamantes: *${formatNumber(user.limit)}*\n\n`;
+
+      const diamondCategories = ['especiales', 'consumibles', 'legendarios'];
+      const diamondEmojis: Record<string, string> = {
+        especiales: '🎫',
+        consumibles: '🧪',
+        legendarios: '👑'
+      };
+
+      for (const cat of diamondCategories) {
+        response += `${diamondEmojis[cat]} *${cat.charAt(0).toUpperCase() + cat.slice(1)}:*\n`;
+
+        const items = DIAMOND_SHOP[cat];
+        for (const { itemId, diamonds, description } of items) {
+          const item = ITEMS[itemId];
+          if (item) {
+            const canBuy = user.limit >= diamonds ? '✓' : '✗';
+            response += `   ${item.emoji} *${item.name}*\n`;
+            response += `      💎 ${formatNumber(diamonds)} ${canBuy} - ${description}\n`;
+          }
+        }
+        response += '\n';
+      }
+
+      response += `━━━━━━━━━━━━━━━━━━━━━\n`;
+      response += `📝 */comprard [item]* - Comprar con diamantes\n`;
+      response += `💡 Gana diamantes con */daily*, */misiones* y */ranking*`;
+
+      await m.reply(response);
+      return;
+    }
+
     let response = `🏪 *TIENDA*\n`;
     response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `💰 Tu dinero: *${formatNumber(user.money)}* monedas\n\n`;
+    response += `💰 Tu dinero: *${formatNumber(user.money)}* monedas\n`;
+    response += `💎 Tus diamantes: *${formatNumber(user.limit)}*\n\n`;
 
     const categoryMap: Record<string, string> = {
       'armas': 'armas',
@@ -140,10 +227,14 @@ const tiendaPlugin: PluginHandler = {
         }
         response += '\n';
       }
+
+      // Mostrar preview de tienda de diamantes
+      response += `💎 *Tienda Premium:* usa */tienda diamantes*\n\n`;
     }
 
     response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📝 */comprar [item]* - Comprar\n`;
+    response += `📝 */comprar [item]* - Comprar con monedas\n`;
+    response += `📝 */comprard [item]* - Comprar con diamantes\n`;
     response += `📝 */vender [item]* - Vender\n`;
     response += `📝 */tienda [categoría]* - Ver categoría`;
 
@@ -187,13 +278,13 @@ const comprarPlugin: PluginHandler = {
       searchTerm = args.slice(0, -1).join(' ').toLowerCase().trim();
     }
 
-    // Buscar item en la tienda
+    // Buscar item en la tienda (sin importar tildes)
     let foundItem: Item | null = null;
 
     for (const itemIds of Object.values(SHOP_ITEMS)) {
       for (const itemId of itemIds) {
         const item = ITEMS[itemId];
-        if (item && item.name.toLowerCase().includes(searchTerm)) {
+        if (item && matchesIgnoreAccents(item.name, searchTerm)) {
           foundItem = item;
           break;
         }
@@ -360,7 +451,7 @@ const venderPlugin: PluginHandler = {
     for (let i = 0; i < user.inventory.length; i++) {
       const invItem = user.inventory[i];
       const item = ITEMS[invItem.itemId];
-      if (item && item.name.toLowerCase().includes(searchTerm)) {
+      if (item && matchesIgnoreAccents(item.name, searchTerm)) {
         foundItem = item;
         foundInvIndex = i;
         break;
@@ -422,10 +513,131 @@ const venderPlugin: PluginHandler = {
 };
 
 /**
+ * Plugin: Comprar con Diamantes - Comprar items premium
+ */
+const comprarDiamantesPlugin: PluginHandler = {
+  command: ['comprard', 'buyd', 'comprardiamantes', 'buydiamonds'],
+  tags: ['rpg'],
+  help: [
+    'comprard [item] - Compra un item con diamantes',
+    'comprard ticket muteo - Comprar ticket de muteo'
+  ],
+  register: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m, text } = ctx;
+    const db = getDatabase();
+    const user = db.getUser(m.sender);
+
+    if (!text.trim()) {
+      await m.reply(
+        `${EMOJI.error} Especifica qué quieres comprar.\n\n` +
+        `📝 *Uso:* /comprard ticket muteo\n` +
+        `📝 *Uso:* /comprard espada celestial\n\n` +
+        `💎 Tus diamantes: *${formatNumber(user.limit)}*\n` +
+        `💡 Usa */tienda diamantes* para ver items disponibles.`
+      );
+      return;
+    }
+
+    const searchTerm = text.toLowerCase().trim();
+
+    // Buscar item en la tienda de diamantes (sin importar tildes)
+    let foundItem: Item | null = null;
+    let foundDiamondCost = 0;
+
+    for (const items of Object.values(DIAMOND_SHOP)) {
+      for (const { itemId, diamonds } of items) {
+        const item = ITEMS[itemId];
+        if (item && matchesIgnoreAccents(item.name, searchTerm)) {
+          foundItem = item;
+          foundDiamondCost = diamonds;
+          break;
+        }
+      }
+      if (foundItem) break;
+    }
+
+    if (!foundItem) {
+      await m.reply(
+        `${EMOJI.error} Ese item no está en la tienda de diamantes.\n\n` +
+        `💡 Usa */tienda diamantes* para ver los items disponibles.`
+      );
+      return;
+    }
+
+    // Verificar nivel requerido
+    if (foundItem.requiredLevel && user.level < foundItem.requiredLevel) {
+      await m.reply(
+        `${EMOJI.error} Necesitas nivel *${foundItem.requiredLevel}* para comprar esto.\n\n` +
+        `📊 Tu nivel: *${user.level}*`
+      );
+      return;
+    }
+
+    // Verificar diamantes
+    if (user.limit < foundDiamondCost) {
+      await m.reply(
+        `${EMOJI.error} No tienes suficientes diamantes.\n\n` +
+        `💎 Costo: *${formatNumber(foundDiamondCost)}* diamantes\n` +
+        `💎 Tus diamantes: *${formatNumber(user.limit)}*\n` +
+        `❌ Te faltan: *${formatNumber(foundDiamondCost - user.limit)}* diamantes\n\n` +
+        `💡 Gana diamantes con */daily*, */misiones* y */ranking*`
+      );
+      return;
+    }
+
+    // Realizar compra
+    user.limit -= foundDiamondCost;
+
+    // Agregar al inventario
+    const existingItem = user.inventory.find(i => i.itemId === foundItem!.id);
+    if (existingItem) {
+      existingItem.quantity += 1;
+    } else {
+      user.inventory.push({ itemId: foundItem.id, quantity: 1 });
+    }
+
+    db.updateUser(m.sender, {
+      limit: user.limit,
+      inventory: user.inventory
+    });
+
+    let response = `💎 ¡Compra con diamantes exitosa!\n\n`;
+    response += `🛒 Compraste: ${foundItem.emoji} *${foundItem.name}*\n`;
+    response += `💎 Pagaste: *${formatNumber(foundDiamondCost)}* diamantes\n`;
+    response += `💎 Te quedan: *${formatNumber(user.limit)}* diamantes\n\n`;
+
+    // Instrucciones de uso para items especiales
+    if (foundItem.id === 'ticket_muteo') {
+      response += `💡 *Uso:* /usar ticket muteo @usuario`;
+    } else if (foundItem.id === 'ticket_kick') {
+      response += `💡 *Uso:* /usar ticket kick @usuario`;
+    } else if (foundItem.id === 'bomba_dinero') {
+      response += `💡 *Uso:* /usar bomba dinero @usuario`;
+    } else if (foundItem.id === 'escudo_robo') {
+      response += `💡 *Uso:* /usar escudo robo (se activa automáticamente)`;
+    } else if (foundItem.id === 'boost_exp_24h') {
+      response += `💡 *Uso:* /usar boost exp`;
+    } else if (foundItem.id === 'cambio_nombre') {
+      response += `💡 *Uso:* /usar cambio nombre [nuevo nombre]`;
+    } else if (foundItem.id === 'reset_clase') {
+      response += `💡 *Uso:* /usar reset clase`;
+    } else if (foundItem.type === 'weapon' || foundItem.type === 'armor' || foundItem.type === 'accessory') {
+      response += `💡 *Uso:* /equipar ${foundItem.name.toLowerCase()}`;
+    }
+
+    await m.reply(response);
+    await m.react('💎');
+  }
+};
+
+/**
  * Registra los plugins de tienda
  */
 export function registerShopPlugins(handler: MessageHandler): void {
   handler.registerPlugin('tienda', tiendaPlugin);
   handler.registerPlugin('comprar', comprarPlugin);
+  handler.registerPlugin('comprard', comprarDiamantesPlugin);
   handler.registerPlugin('vender', venderPlugin);
 }

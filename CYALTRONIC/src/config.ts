@@ -22,12 +22,12 @@ export const CONFIG = {
 
   // ⏰ Cooldowns en milisegundos
   cooldowns: {
-    daily: 2 * 60 * 60 * 1000,     // 2 horas
+    daily: 24 * 60 * 60 * 1000,    // 24 horas (una vez al día)
     work: 10 * 60 * 1000,          // 10 minutos
     mine: 10 * 60 * 1000,          // 10 minutos (futuro)
     adventure: 25 * 60 * 1000,     // 25 minutos (futuro)
     hunt: 45 * 60 * 1000,          // 45 minutos (futuro)
-    rob: 2 * 60 * 60 * 1000,       // 2 horas (futuro)
+    rob: 60 * 60 * 1000,           // 1 hora
     crime: 60 * 60 * 1000          // 1 hora (futuro)
   },
 
@@ -51,11 +51,12 @@ export const CONFIG = {
       exp: 5000
     },
 
-    // Recompensas diarias
+    // Recompensas diarias (mejoradas - una vez al día)
     dailyRewards: {
-      exp: [500, 600, 700, 800, 900, 1000, 1200, 1500],
-      money: [300, 500, 700, 900, 1100, 1300, 1500],
-      potion: [1, 2, 3, 4, 5]
+      exp: [2000, 2500, 3000, 3500, 4000, 4500, 5000, 6000],
+      money: [1500, 2000, 2500, 3000, 3500, 4000, 5000],
+      potion: [3, 4, 5, 6, 7, 8],
+      diamonds: [5, 10, 15, 20, 25, 30]  // Diamantes aleatorios
     },
 
     // Recompensas de trabajo

@@ -5,7 +5,7 @@
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
+import { EMOJI, msToTime, formatNumber, randomInt, pickRandom, matchesIgnoreAccents } from '../lib/utils.js';
 import { DUNGEONS, MONSTERS, ITEMS, type Dungeon, type Monster } from '../types/rpg.js';
 import { calculateTotalStats } from '../types/user.js';
 
@@ -320,12 +320,12 @@ export const dungeonPlugin: PluginHandler = {
       return;
     }
 
-    // Buscar dungeon
+    // Buscar dungeon (sin importar tildes)
     const searchTerm = text.toLowerCase().trim();
     let selectedDungeon: Dungeon | null = null;
 
     for (const dungeon of Object.values(DUNGEONS)) {
-      if (dungeon.name.toLowerCase().includes(searchTerm) ||
+      if (matchesIgnoreAccents(dungeon.name, searchTerm) ||
           dungeon.id.includes(searchTerm.replace(/\s+/g, '_'))) {
         selectedDungeon = dungeon;
         break;

@@ -11,7 +11,7 @@ import { CONFIG } from '../config.js';
 export const dailyPlugin: PluginHandler = {
   command: /^(daily|claim|reclamar|regalo|diario)$/i,
   tags: ['rpg'],
-  help: ['daily - Reclamar recompensa diaria (cada 2 horas)'],
+  help: ['daily - Reclamar recompensa diaria (una vez al día)'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
@@ -46,28 +46,32 @@ export const dailyPlugin: PluginHandler = {
     const expReward = pickRandom(rewards.exp);
     const moneyReward = pickRandom(rewards.money);
     const potionReward = pickRandom(rewards.potion);
+    const diamondReward = pickRandom(rewards.diamonds);
 
     // Calcular streak (días consecutivos) - Feature bonus
     const lastClaimDate = new Date(user.lastclaim).toDateString();
-    const todayDate = new Date().toDateString();
     const yesterdayDate = new Date(Date.now() - 86400000).toDateString();
 
     let streakBonus = 0;
+    let diamondStreakBonus = 0;
     let streakMessage = '';
 
     // Si reclamó ayer, bonus de racha
     if (lastClaimDate === yesterdayDate) {
-      streakBonus = Math.floor(expReward * 0.1); // 10% bonus
-      streakMessage = `\n${EMOJI.fire} *Bonus de racha:* +${formatNumber(streakBonus)} ${EMOJI.exp}`;
+      streakBonus = Math.floor(expReward * 0.1); // 10% bonus EXP
+      diamondStreakBonus = Math.floor(diamondReward * 0.5); // 50% bonus diamantes
+      streakMessage = `\n${EMOJI.fire} *Bonus de racha:* +${formatNumber(streakBonus)} ${EMOJI.exp} | +${diamondStreakBonus} 💎`;
     }
 
     // Aplicar recompensas
     const totalExp = expReward + streakBonus;
+    const totalDiamonds = diamondReward + diamondStreakBonus;
 
     db.updateUser(m.sender, {
       exp: user.exp + totalExp,
       money: user.money + moneyReward,
       potion: user.potion + potionReward,
+      limit: user.limit + totalDiamonds,
       lastclaim: now
     });
 
@@ -81,13 +85,16 @@ export const dailyPlugin: PluginHandler = {
       `│  +${formatNumber(expReward)} ${EMOJI.exp} Experiencia\n` +
       `│  +${formatNumber(moneyReward)} ${EMOJI.coin} Monedas\n` +
       `│  +${potionReward} ${EMOJI.potion} Pociones\n` +
+      `│  +${diamondReward} 💎 Diamantes\n` +
       `╰═══════════════════════════╯${streakMessage}\n\n` +
-      `${EMOJI.time} Próximo regalo en: *2 horas*\n\n` +
+      `${EMOJI.time} Próximo regalo en: *24 horas*\n\n` +
       `${EMOJI.info} *Tu nuevo balance:*\n` +
       `├ ${EMOJI.exp} EXP Total: *${formatNumber(user.exp + totalExp)}*\n` +
       `├ ${EMOJI.coin} Monedas: *${formatNumber(user.money + moneyReward)}*\n` +
-      `╰ ${EMOJI.potion} Pociones: *${user.potion + potionReward}*\n\n` +
-      `${EMOJI.level} ¿Tienes suficiente XP? Usa *${usedPrefix}nivel* para subir.`
+      `├ ${EMOJI.potion} Pociones: *${user.potion + potionReward}*\n` +
+      `╰ 💎 Diamantes: *${formatNumber(user.limit + totalDiamonds)}*\n\n` +
+      `${EMOJI.level} ¿Tienes suficiente XP? Usa *${usedPrefix}nivel* para subir.\n` +
+      `💎 Usa */tienda diamantes* para gastar tus diamantes.`
     );
   }
 };

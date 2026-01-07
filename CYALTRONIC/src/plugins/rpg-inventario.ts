@@ -6,7 +6,7 @@
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, formatNumber } from '../lib/utils.js';
+import { EMOJI, formatNumber, matchesIgnoreAccents } from '../lib/utils.js';
 import { ITEMS, RARITY_COLORS, type Item, type ItemType } from '../types/rpg.js';
 import { calculateTotalStats } from '../types/user.js';
 
@@ -173,14 +173,14 @@ const equiparPlugin: PluginHandler = {
 
     const searchTerm = text.toLowerCase().trim();
 
-    // Buscar item en inventario
+    // Buscar item en inventario (sin importar tildes)
     let foundItem: Item | null = null;
     let foundInvIndex = -1;
 
     for (let i = 0; i < user.inventory.length; i++) {
       const invItem = user.inventory[i];
       const item = ITEMS[invItem.itemId];
-      if (item && item.name.toLowerCase().includes(searchTerm)) {
+      if (item && matchesIgnoreAccents(item.name, searchTerm)) {
         foundItem = item;
         foundInvIndex = i;
         break;
@@ -343,14 +343,14 @@ const usarPlugin: PluginHandler = {
 
     const searchTerm = text.toLowerCase().trim();
 
-    // Buscar item en inventario
+    // Buscar item en inventario (sin importar tildes)
     let foundItem: Item | null = null;
     let foundInvIndex = -1;
 
     for (let i = 0; i < user.inventory.length; i++) {
       const invItem = user.inventory[i];
       const item = ITEMS[invItem.itemId];
-      if (item && item.name.toLowerCase().includes(searchTerm)) {
+      if (item && matchesIgnoreAccents(item.name, searchTerm)) {
         foundItem = item;
         foundInvIndex = i;
         break;
@@ -458,11 +458,11 @@ const itemInfoPlugin: PluginHandler = {
 
     const searchTerm = text.toLowerCase().trim();
 
-    // Buscar item
+    // Buscar item (sin importar tildes)
     let foundItem: Item | null = null;
 
     for (const item of Object.values(ITEMS)) {
-      if (item.name.toLowerCase().includes(searchTerm)) {
+      if (matchesIgnoreAccents(item.name, searchTerm)) {
         foundItem = item;
         break;
       }
