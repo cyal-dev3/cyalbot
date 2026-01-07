@@ -1,339 +1,200 @@
 /**
  * 🎵 Plugin de Música - CYALTRONIC
- * Descarga y envía música desde YouTube con múltiples APIs de respaldo
- *
- * Requiere:
- * - yt-dlp: pip3 install yt-dlp
- * - Plugin PO Token: pip3 install bgutil-ytdlp-pot-provider
- * - Servidor bgutil: docker run -d -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider
+ * Busca y envía música desde SoundCloud (principal) y YouTube (respaldo)
+ * Usa play-dl para streaming directo sin APIs externas
  */
 
-import play from 'play-dl';
+import play, { SoundCloudTrack } from 'play-dl';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 
-// yt-dlp con el plugin bgutil-ytdlp-pot-provider se conecta automáticamente al servidor Docker
-// Usar wrapper script que configura el entorno correctamente
-const YT_DLP_PATH = process.env.YT_DLP_PATH || '/home/dev3/cyalbot/CYALTRONIC/scripts/yt-dlp-wrapper.sh';
+// Inicializar cliente de SoundCloud al cargar
+let scInitialized = false;
+
+async function initSoundCloud(): Promise<boolean> {
+  if (scInitialized) return true;
+  try {
+    const clientId = await play.getFreeClientID();
+    await play.setToken({ soundcloud: { client_id: clientId } });
+    scInitialized = true;
+    console.log('✅ SoundCloud inicializado');
+    return true;
+  } catch (err) {
+    console.log('⚠️ No se pudo inicializar SoundCloud:', (err as Error).message);
+    return false;
+  }
+}
+
+// Inicializar al cargar el módulo
+initSoundCloud().catch(() => {});
+
+/**
+ * Formatea duración de milisegundos a mm:ss
+ */
+function formatDuration(ms: number): string {
+  const totalSecs = Math.floor(ms / 1000);
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
 
 /**
  * Formatea duración de segundos a mm:ss
  */
-function formatDuration(seconds: number): string {
+function formatDurationSecs(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 /**
- * Valida que el buffer sea un MP3 válido y tenga tamaño mínimo
+ * Convierte un stream a Buffer
  */
-function validateAudio(buffer: Buffer): boolean {
-  if (buffer.length < 50000) return false; // Mínimo 50KB
-  // Verificar header MP3 (ID3 o Frame sync)
-  const isId3 = buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33;
-  const isFrameSync = buffer[0] === 0xFF && (buffer[1] & 0xE0) === 0xE0;
-  return isId3 || isFrameSync;
-}
-
-/**
- * Descarga buffer desde URL con timeout
- */
-async function downloadBuffer(url: string, timeout = 30000): Promise<Buffer> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return Buffer.from(await response.arrayBuffer());
-  } finally {
-    clearTimeout(timeoutId);
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
   }
+  return Buffer.concat(chunks);
 }
 
 /**
- * API 1: yt-dlp local con plugin bgutil-ytdlp-pot-provider
- * El plugin se conecta automáticamente al servidor Docker en puerto 4416
+ * Descarga audio desde SoundCloud usando play-dl
  */
-async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
+async function downloadFromSoundCloud(url: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
   try {
-    console.log('🎵 Intentando yt-dlp con plugin bgutil...');
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-    const fs = await import('fs/promises');
-    const path = await import('path');
-    const os = await import('os');
+    await initSoundCloud();
 
-    const tempFile = path.join(os.tmpdir(), `cyaltronic_${Date.now()}.mp3`);
+    console.log('🎵 Descargando desde SoundCloud...');
+    const trackInfo = await play.soundcloud(url);
 
-    // El plugin bgutil-ytdlp-pot-provider maneja automáticamente los PO Tokens
-    // conectándose al servidor Docker en puerto 4416
-    // El wrapper script configura el entorno (PATH, PYTHONPATH, HOME)
-    const command = `${YT_DLP_PATH} --js-runtimes node -x --audio-format mp3 --audio-quality 128K --no-playlist -o "${tempFile}" "${url}"`;
-
-    await execAsync(command, { timeout: 120000 });
-
-    const buffer = await fs.readFile(tempFile);
-    await fs.unlink(tempFile).catch(() => {});
-
-    if (validateAudio(buffer)) {
-      console.log('✅ yt-dlp exitoso');
-      return buffer;
+    if (!trackInfo || trackInfo.type !== 'track') {
+      console.log('❌ No es un track válido de SoundCloud');
+      return null;
     }
-    return null;
+
+    const track = trackInfo as SoundCloudTrack;
+    const stream = await play.stream_from_info(track);
+
+    const buffer = await streamToBuffer(stream.stream);
+
+    if (buffer.length < 10000) {
+      console.log('❌ Buffer muy pequeño');
+      return null;
+    }
+
+    console.log('✅ SoundCloud exitoso');
+    return {
+      buffer,
+      title: track.name || 'Audio',
+      duration: formatDuration(track.durationInMs || 0)
+    };
   } catch (err) {
-    console.log('❌ yt-dlp falló:', (err as Error).message);
+    console.log('❌ SoundCloud falló:', (err as Error).message);
     return null;
   }
 }
 
 /**
- * API 2: y2mate (muy confiable)
+ * Busca en SoundCloud y descarga el primer resultado
  */
-async function downloadWithY2mate(videoId: string): Promise<Buffer | null> {
+async function searchAndDownloadSoundCloud(query: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
   try {
-    console.log('🎵 Intentando y2mate...');
+    await initSoundCloud();
 
-    // Paso 1: Analizar video
-    const analyzeRes = await fetch('https://www.y2mate.com/mates/analyzeV2/ajax', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Origin': 'https://www.y2mate.com',
-        'Referer': 'https://www.y2mate.com/'
-      },
-      body: `k_query=https://www.youtube.com/watch?v=${videoId}&k_page=home&hl=en&q_auto=1`
-    });
+    console.log('🔍 Buscando en SoundCloud:', query);
+    const results = await play.search(query, { source: { soundcloud: 'tracks' }, limit: 1 });
 
-    const analyzeData = await analyzeRes.json() as Record<string, unknown>;
-
-    if (analyzeData.status !== 'ok') {
-      throw new Error('y2mate analyze failed');
+    if (!results || results.length === 0) {
+      console.log('❌ Sin resultados en SoundCloud');
+      return null;
     }
 
-    // Obtener el ID de conversión para MP3 128kbps
-    const links = analyzeData.links as Record<string, Record<string, { k: string; size: string }>>;
-    const mp3Links = links?.mp3;
+    const track = results[0] as SoundCloudTrack;
+    console.log('🎵 Encontrado:', track.name);
 
-    if (!mp3Links) throw new Error('No MP3 links found');
+    const stream = await play.stream_from_info(track);
+    const buffer = await streamToBuffer(stream.stream);
 
-    // Buscar 128kbps o el primero disponible
-    const mp3Key = mp3Links['mp3128']?.k || Object.values(mp3Links)[0]?.k;
-
-    if (!mp3Key) throw new Error('No MP3 key found');
-
-    // Paso 2: Convertir
-    const convertRes = await fetch('https://www.y2mate.com/mates/convertV2/index', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Origin': 'https://www.y2mate.com',
-        'Referer': 'https://www.y2mate.com/'
-      },
-      body: `vid=${videoId}&k=${encodeURIComponent(mp3Key)}`
-    });
-
-    const convertData = await convertRes.json() as Record<string, unknown>;
-
-    if (convertData.status !== 'ok' || !convertData.dlink) {
-      throw new Error('y2mate convert failed');
+    if (buffer.length < 10000) {
+      console.log('❌ Buffer muy pequeño');
+      return null;
     }
 
-    const buffer = await downloadBuffer(convertData.dlink as string);
-
-    if (validateAudio(buffer)) {
-      console.log('✅ y2mate exitoso');
-      return buffer;
-    }
-
-    return null;
+    console.log('✅ SoundCloud exitoso');
+    return {
+      buffer,
+      title: track.name || 'Audio',
+      duration: formatDuration(track.durationInMs || 0)
+    };
   } catch (err) {
-    console.log('❌ y2mate falló:', (err as Error).message);
+    console.log('❌ Búsqueda SoundCloud falló:', (err as Error).message);
     return null;
   }
 }
 
 /**
- * API 3: ssyoutube (mp3download.to)
+ * Descarga audio desde YouTube usando play-dl (respaldo)
  */
-async function downloadWithSsyoutube(videoId: string): Promise<Buffer | null> {
+async function downloadFromYouTube(url: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
   try {
-    console.log('🎵 Intentando ssyoutube...');
+    console.log('🎵 Intentando YouTube con play-dl...');
 
-    const response = await fetch(`https://api.mp3download.to/v1/convert`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        url: `https://www.youtube.com/watch?v=${videoId}`,
-        format: 'mp3',
-        quality: '128'
-      })
-    });
+    const info = await play.video_basic_info(url);
+    const stream = await play.stream(url, { quality: 2 }); // quality 2 = audio only
 
-    const data = await response.json() as Record<string, unknown>;
+    const buffer = await streamToBuffer(stream.stream);
 
-    if (data.error) throw new Error(data.error as string);
-
-    // Si devuelve URL directa
-    if (data.url) {
-      const buffer = await downloadBuffer(data.url as string);
-      if (validateAudio(buffer)) {
-        console.log('✅ ssyoutube exitoso');
-        return buffer;
-      }
+    if (buffer.length < 10000) {
+      console.log('❌ Buffer muy pequeño');
+      return null;
     }
 
-    // Si necesita polling
-    if (data.id) {
-      for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await fetch(`https://api.mp3download.to/v1/status/${data.id}`);
-        const statusData = await statusRes.json() as Record<string, unknown>;
-
-        if (statusData.status === 'completed' && statusData.url) {
-          const buffer = await downloadBuffer(statusData.url as string);
-          if (validateAudio(buffer)) {
-            console.log('✅ ssyoutube exitoso');
-            return buffer;
-          }
-        }
-      }
-    }
-
-    return null;
+    console.log('✅ YouTube exitoso');
+    return {
+      buffer,
+      title: info.video_details.title || 'Audio',
+      duration: formatDurationSecs(info.video_details.durationInSec || 0)
+    };
   } catch (err) {
-    console.log('❌ ssyoutube falló:', (err as Error).message);
+    console.log('❌ YouTube falló:', (err as Error).message);
     return null;
   }
 }
 
 /**
- * API 4: Cobalt API (instancias públicas)
+ * Busca en YouTube y descarga el primer resultado (respaldo)
  */
-async function downloadWithCobalt(url: string): Promise<Buffer | null> {
-  const instances = [
-    { url: 'https://api.cobalt.tools', apiKey: null },
-    { url: 'https://cobalt.canine.tools', apiKey: null },
-    { url: 'https://dwnld.nichol.as', apiKey: null }
-  ];
+async function searchAndDownloadYouTube(query: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
+  try {
+    console.log('🔍 Buscando en YouTube:', query);
+    const results = await play.search(query, { limit: 1 });
 
-  for (const instance of instances) {
-    try {
-      console.log(`🎵 Intentando Cobalt ${instance.url}...`);
-
-      const headers: Record<string, string> = {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      };
-
-      if (instance.apiKey) {
-        headers['Authorization'] = `Api-Key ${instance.apiKey}`;
-      }
-
-      const response = await fetch(`${instance.url}/`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          url: url,
-          downloadMode: 'audio',
-          audioFormat: 'mp3',
-          filenameStyle: 'basic'
-        })
-      });
-
-      const data = await response.json() as Record<string, unknown>;
-
-      if (data.status === 'error') continue;
-
-      const audioUrl = (data.url || data.audio) as string | undefined;
-      if (audioUrl) {
-        const buffer = await downloadBuffer(audioUrl);
-        if (validateAudio(buffer)) {
-          console.log('✅ Cobalt exitoso');
-          return buffer;
-        }
-      }
-
-      if (data.status === 'picker' && Array.isArray(data.picker)) {
-        const firstItem = data.picker[0] as { url?: string };
-        if (firstItem?.url) {
-          const buffer = await downloadBuffer(firstItem.url);
-          if (validateAudio(buffer)) return buffer;
-        }
-      }
-    } catch (err) {
-      console.log(`❌ Cobalt ${instance.url} falló:`, (err as Error).message);
+    if (!results || results.length === 0) {
+      console.log('❌ Sin resultados en YouTube');
+      return null;
     }
+
+    const video = results[0];
+    console.log('🎵 Encontrado:', video.title);
+
+    const stream = await play.stream(video.url, { quality: 2 });
+    const buffer = await streamToBuffer(stream.stream);
+
+    if (buffer.length < 10000) {
+      console.log('❌ Buffer muy pequeño');
+      return null;
+    }
+
+    console.log('✅ YouTube exitoso');
+    return {
+      buffer,
+      title: video.title || 'Audio',
+      duration: video.durationRaw || '0:00'
+    };
+  } catch (err) {
+    console.log('❌ Búsqueda YouTube falló:', (err as Error).message);
+    return null;
   }
-
-  return null;
-}
-
-/**
- * API 5: APIs de respaldo adicionales
- */
-async function downloadWithBackupApis(videoUrl: string, videoId: string): Promise<Buffer | null> {
-  const apis = [
-    {
-      name: 'tomp3',
-      fetch: async () => {
-        const res = await fetch(`https://tomp3.cc/api/ajax/search`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: `query=${encodeURIComponent(videoUrl)}&vt=mp3`
-        });
-        const data = await res.json() as Record<string, unknown>;
-        if (data.status === 'ok' && data.url) {
-          return downloadBuffer(data.url as string);
-        }
-        return null;
-      }
-    },
-    {
-      name: 'savefrom',
-      fetch: async () => {
-        const res = await fetch(`https://worker.sf-tools.com/savefrom.php?url=${encodeURIComponent(videoUrl)}`, {
-          headers: { 'Origin': 'https://savefrom.net' }
-        });
-        const data = await res.json() as Record<string, unknown>[];
-        const audio = data?.find((d: Record<string, unknown>) => d.type === 'audio');
-        if (audio?.url) {
-          return downloadBuffer(audio.url as string);
-        }
-        return null;
-      }
-    },
-    {
-      name: 'ytmp3-api',
-      fetch: async () => {
-        const res = await fetch(`https://api.vevioz.com/api/button/mp3/${videoId}`);
-        const html = await res.text();
-        const match = html.match(/href="(https:\/\/[^"]+\.mp3[^"]*)"/);
-        if (match?.[1]) {
-          return downloadBuffer(match[1]);
-        }
-        return null;
-      }
-    }
-  ];
-
-  for (const api of apis) {
-    try {
-      console.log(`🎵 Intentando ${api.name}...`);
-      const buffer = await api.fetch();
-      if (buffer && validateAudio(buffer)) {
-        console.log(`✅ ${api.name} exitoso`);
-        return buffer;
-      }
-    } catch (err) {
-      console.log(`❌ ${api.name} falló:`, (err as Error).message);
-    }
-  }
-
-  return null;
 }
 
 export const playPlugin: PluginHandler = {
@@ -341,7 +202,7 @@ export const playPlugin: PluginHandler = {
   tags: ['media', 'musica'],
   help: [
     'play <nombre> - Busca y envía una canción',
-    'play <url youtube> - Descarga de YouTube'
+    'play <url> - Descarga de SoundCloud o YouTube'
   ],
 
   handler: async (ctx: MessageContext) => {
@@ -352,106 +213,62 @@ export const playPlugin: PluginHandler = {
         '🎵 *REPRODUCTOR DE MÚSICA*\n\n' +
         '📝 *Uso:*\n' +
         '• .play Bad Bunny Monaco\n' +
-        '• .play https://youtube.com/watch?v=...\n\n' +
-        '🔍 Busca canciones en YouTube'
+        '• .play <url de SoundCloud>\n' +
+        '• .play <url de YouTube>\n\n' +
+        '🔍 Busca en SoundCloud y YouTube'
       );
     }
 
     await m.react('🔍');
 
     try {
-      let videoUrl: string;
-      let title: string;
-      let duration: string;
+      const isSoundCloudUrl = text.includes('soundcloud.com');
+      const isYouTubeUrl = text.includes('youtube.com') || text.includes('youtu.be');
 
-      const isUrl = text.includes('youtube.com') || text.includes('youtu.be');
+      let result: { buffer: Buffer; title: string; duration: string } | null = null;
 
-      if (isUrl) {
-        videoUrl = text;
-        await m.reply('🎵 *Obteniendo info...*');
-
-        try {
-          const info = await play.video_basic_info(text);
-          title = info.video_details.title || 'Sin título';
-          duration = formatDuration(info.video_details.durationInSec || 0);
-        } catch {
-          title = 'Audio de YouTube';
-          duration = '??:??';
-        }
-
-      } else {
+      // Caso 1: URL directa de SoundCloud
+      if (isSoundCloudUrl) {
+        await m.reply('🎵 *Descargando de SoundCloud...*');
+        result = await downloadFromSoundCloud(text);
+      }
+      // Caso 2: URL directa de YouTube
+      else if (isYouTubeUrl) {
+        await m.reply('🎵 *Descargando de YouTube...*');
+        result = await downloadFromYouTube(text);
+      }
+      // Caso 3: Búsqueda por texto
+      else {
         await m.reply('🔍 Buscando: *' + text + '*...');
 
-        const searchResults = await play.search(text, { limit: 1 });
+        // Primero intentar SoundCloud (más estable)
+        result = await searchAndDownloadSoundCloud(text);
 
-        if (!searchResults || searchResults.length === 0) {
-          await m.react('❌');
-          return m.reply('❌ No se encontraron resultados para: ' + text);
+        // Si falla, intentar YouTube
+        if (!result) {
+          console.log('⚠️ SoundCloud sin resultados, probando YouTube...');
+          result = await searchAndDownloadYouTube(text);
         }
-
-        const result = searchResults[0];
-        videoUrl = result.url;
-        title = result.title || 'Sin título';
-        duration = result.durationRaw || '0:00';
       }
 
-      await m.reply(
-        `🎵 *Descargando...*\n\n` +
-        `📀 *${title}*\n` +
-        `⏱️ Duración: ${duration}`
-      );
-
-      // Extraer videoId
-      const videoIdMatch = videoUrl.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-      const videoId = videoIdMatch ? videoIdMatch[1] : null;
-
-      if (!videoId) {
+      // Si no se encontró nada
+      if (!result) {
         await m.react('❌');
-        return m.reply('❌ No se pudo extraer el ID del video.');
-      }
-
-      let audioBuffer: Buffer | null = null;
-      const errors: string[] = [];
-
-      // Intento 1: yt-dlp local (con cookies si existen)
-      audioBuffer = await downloadWithYtDlp(videoUrl);
-      if (!audioBuffer) errors.push('yt-dlp');
-
-      // Intento 2: y2mate
-      if (!audioBuffer) {
-        audioBuffer = await downloadWithY2mate(videoId);
-        if (!audioBuffer) errors.push('y2mate');
-      }
-
-      // Intento 3: ssyoutube
-      if (!audioBuffer) {
-        audioBuffer = await downloadWithSsyoutube(videoId);
-        if (!audioBuffer) errors.push('ssyoutube');
-      }
-
-      // Intento 4: Cobalt API
-      if (!audioBuffer) {
-        audioBuffer = await downloadWithCobalt(videoUrl);
-        if (!audioBuffer) errors.push('cobalt');
-      }
-
-      // Intento 5: APIs de respaldo
-      if (!audioBuffer) {
-        audioBuffer = await downloadWithBackupApis(videoUrl, videoId);
-        if (!audioBuffer) errors.push('backup-apis');
-      }
-
-      // Si ninguna API funcionó
-      if (!audioBuffer) {
-        await m.react('❌');
-        console.log('❌ Todas las APIs fallaron:', errors.join(', '));
         return m.reply(
           '❌ No se pudo descargar la canción.\n\n' +
-          '_Tip: Si el problema persiste, configura cookies de YouTube._'
+          '_Intenta con otro nombre o una URL directa._'
         );
       }
 
-      const sizeMB = audioBuffer.length / (1024 * 1024);
+      const { buffer, title, duration } = result;
+      const sizeMB = buffer.length / (1024 * 1024);
+
+      await m.reply(
+        `🎵 *Enviando...*\n\n` +
+        `📀 *${title}*\n` +
+        `⏱️ Duración: ${duration}\n` +
+        `📦 Tamaño: ${sizeMB.toFixed(1)}MB`
+      );
 
       if (sizeMB > 15) {
         await m.react('⚠️');
@@ -464,7 +281,7 @@ export const playPlugin: PluginHandler = {
       await m.react('🎵');
 
       await conn.sendMessage(m.chat, {
-        audio: audioBuffer,
+        audio: buffer,
         mimetype: 'audio/mpeg',
         ptt: false,
         fileName: `${title}.mp3`
@@ -478,10 +295,10 @@ export const playPlugin: PluginHandler = {
 
       if (error instanceof Error) {
         if (error.message.includes('private')) {
-          return m.reply('❌ Este video es privado.');
+          return m.reply('❌ Este contenido es privado.');
         }
         if (error.message.includes('unavailable') || error.message.includes('not available')) {
-          return m.reply('❌ Video no disponible.');
+          return m.reply('❌ Contenido no disponible.');
         }
       }
 
