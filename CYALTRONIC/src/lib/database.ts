@@ -117,29 +117,67 @@ export class Database {
         needsMigration = true;
       }
 
-      // Asegurar valores numéricos válidos
-      if (typeof user.maxHealth !== 'number' || isNaN(user.maxHealth)) {
+      // Asegurar valores numéricos válidos para stats máximos
+      if (typeof user.maxHealth !== 'number' || isNaN(user.maxHealth) || user.maxHealth === null) {
         user.maxHealth = 100;
         needsMigration = true;
       }
-      if (typeof user.maxMana !== 'number' || isNaN(user.maxMana)) {
+      if (typeof user.maxMana !== 'number' || isNaN(user.maxMana) || user.maxMana === null) {
         user.maxMana = 20;
         needsMigration = true;
       }
-      if (typeof user.maxStamina !== 'number' || isNaN(user.maxStamina)) {
+      if (typeof user.maxStamina !== 'number' || isNaN(user.maxStamina) || user.maxStamina === null) {
         user.maxStamina = 100;
         needsMigration = true;
       }
-      if (typeof user.attack !== 'number' || isNaN(user.attack)) {
+
+      // Asegurar valores numéricos válidos para stats actuales
+      if (typeof user.health !== 'number' || isNaN(user.health) || user.health === null) {
+        user.health = user.maxHealth;
+        needsMigration = true;
+      }
+      if (typeof user.mana !== 'number' || isNaN(user.mana) || user.mana === null) {
+        user.mana = user.maxMana;
+        needsMigration = true;
+      }
+      if (typeof user.stamina !== 'number' || isNaN(user.stamina) || user.stamina === null) {
+        user.stamina = user.maxStamina;
+        needsMigration = true;
+      }
+
+      // Asegurar valores numéricos válidos para stats de combate
+      if (typeof user.attack !== 'number' || isNaN(user.attack) || user.attack === null) {
         user.attack = 10;
         needsMigration = true;
       }
-      if (typeof user.defense !== 'number' || isNaN(user.defense)) {
+      if (typeof user.defense !== 'number' || isNaN(user.defense) || user.defense === null) {
         user.defense = 5;
         needsMigration = true;
       }
-      if (typeof user.critChance !== 'number' || isNaN(user.critChance)) {
+      if (typeof user.critChance !== 'number' || isNaN(user.critChance) || user.critChance === null) {
         user.critChance = 5;
+        needsMigration = true;
+      }
+
+      // Asegurar valores numéricos válidos para economía y nivel
+      if (typeof user.level !== 'number' || isNaN(user.level) || user.level === null) {
+        user.level = 0;
+        needsMigration = true;
+      }
+      if (typeof user.exp !== 'number' || isNaN(user.exp) || user.exp === null) {
+        user.exp = 0;
+        needsMigration = true;
+      }
+      if (typeof user.money !== 'number' || isNaN(user.money) || user.money === null) {
+        user.money = 15;
+        needsMigration = true;
+      }
+      if (typeof user.limit !== 'number' || isNaN(user.limit) || user.limit === null) {
+        user.limit = 20;
+        needsMigration = true;
+      }
+      if (typeof user.potion !== 'number' || isNaN(user.potion) || user.potion === null) {
+        user.potion = 10;
         needsMigration = true;
       }
 
@@ -157,7 +195,25 @@ export class Database {
    */
   updateUser(jid: string, updates: Partial<UserRPG>): void {
     const user = this.getUser(jid);
-    Object.assign(user, updates);
+
+    // Filtrar valores undefined y null para stats críticos
+    // Esto previene que se sobrescriban valores válidos con null/undefined
+    const criticalNumericFields = [
+      'health', 'maxHealth', 'stamina', 'maxStamina', 'mana', 'maxMana',
+      'attack', 'defense', 'critChance', 'level', 'exp', 'money', 'limit', 'potion'
+    ];
+
+    const safeUpdates = { ...updates };
+    for (const field of criticalNumericFields) {
+      if (field in safeUpdates) {
+        const value = (safeUpdates as Record<string, unknown>)[field];
+        if (value === undefined || value === null || (typeof value === 'number' && isNaN(value))) {
+          delete (safeUpdates as Record<string, unknown>)[field];
+        }
+      }
+    }
+
+    Object.assign(user, safeUpdates);
     this.isDirty = true;
   }
 

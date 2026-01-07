@@ -120,7 +120,7 @@ export async function addExif(
     await img.load(webpBuffer);
     img.exif = createExifMetadata(packname, author, categories);
 
-    return await img.save(null);
+    return Buffer.from(await img.save(null));
   } catch (error) {
     console.error('❌ Error agregando EXIF:', error);
     // Si falla, devolver el buffer original
@@ -153,7 +153,7 @@ export async function imageToSticker(
       '-loop', '0'
     ]);
 
-    let stickerBuffer = await fs.readFile(outputPath);
+    let stickerBuffer: Buffer = Buffer.from(await fs.readFile(outputPath));
 
     // Agregar metadatos EXIF
     stickerBuffer = await addExif(stickerBuffer, packname, author, categories);
@@ -195,7 +195,7 @@ export async function videoToSticker(
       '-vsync', '0'
     ]);
 
-    let stickerBuffer = await fs.readFile(outputPath);
+    let stickerBuffer: Buffer = Buffer.from(await fs.readFile(outputPath));
 
     // Agregar metadatos EXIF
     stickerBuffer = await addExif(stickerBuffer, packname, author, categories);

@@ -27,7 +27,7 @@
     "chalk": "^5.3.0",
     "lowdb": "^7.0.1",
     "node-cache": "^5.1.2",
-    "node-webpmux": "^3.2.0",
+    "node-webpmux": "^3.2.1",
     "pino": "^9.5.0",
     "play-dl": "^1.9.7",
     "qrcode-terminal": "^0.12.0"

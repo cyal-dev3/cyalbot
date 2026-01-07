@@ -113,6 +113,7 @@ export interface UserRPG {
   // ⏰ Cooldowns (timestamps)
   lastclaim: number;
   lastwork: number;
+  lastmine: number;
   lastrob: number;
   lastduel: number;
   lastattack: number;
@@ -193,6 +194,7 @@ export const DEFAULT_USER: UserRPG = {
   // Cooldowns
   lastclaim: 0,
   lastwork: 0,
+  lastmine: 0,
   lastrob: 0,
   lastduel: 0,
   lastattack: 0,
