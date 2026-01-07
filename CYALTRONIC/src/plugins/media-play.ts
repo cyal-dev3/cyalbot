@@ -5,15 +5,10 @@
 
 import play from 'play-dl';
 import type { PluginHandler, MessageContext } from '../types/message.js';
+import { getPoToken, getVisitorData, markTokensFailed } from '../lib/youtube-token-manager.js';
 
 // yt-dlp debe estar instalado en el sistema (pip install yt-dlp o apt install yt-dlp)
 const YT_DLP_PATH = 'yt-dlp';
-
-// PO Token para evitar bloqueos de YouTube (más seguro que cookies)
-// Genera el token siguiendo: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
-// O instala el plugin: pip install bgutil-ytdlp-pot-provider
-const PO_TOKEN = process.env.YT_PO_TOKEN || '';
-const VISITOR_DATA = process.env.YT_VISITOR_DATA || '';
 
 /**
  * Formatea duración de segundos a mm:ss
@@ -66,19 +61,27 @@ async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
 
     const tempFile = path.join(os.tmpdir(), `cyaltronic_${Date.now()}.mp3`);
 
-    // Construir argumentos para PO Token si está configurado
-    let poTokenArgs = '';
-    if (PO_TOKEN && VISITOR_DATA) {
+    // Obtener tokens del manager
+    const poToken = await getPoToken();
+    const visitorData = await getVisitorData();
+
+    // Construir argumentos para YouTube
+    let ytArgs = '';
+    if (poToken && visitorData) {
       // Usar cliente mweb con PO Token (recomendado por yt-dlp)
-      poTokenArgs = `--extractor-args "youtube:player_client=mweb;po_token=mweb.gvs+${PO_TOKEN}" --extractor-args "youtubetab:skip=webpage" --extractor-args "youtube:visitor_data=${VISITOR_DATA}"`;
+      ytArgs = `--extractor-args "youtube:player_client=mweb;po_token=mweb.gvs+${poToken}" --extractor-args "youtube:visitor_data=${visitorData}"`;
       console.log('🔐 Usando PO Token con cliente mweb');
-    } else if (PO_TOKEN) {
-      poTokenArgs = `--extractor-args "youtube:player_client=mweb;po_token=mweb.gvs+${PO_TOKEN}"`;
+    } else if (poToken) {
+      ytArgs = `--extractor-args "youtube:player_client=mweb;po_token=mweb.gvs+${poToken}"`;
       console.log('🔐 Usando PO Token');
+    } else {
+      // Sin PO Token: usar cliente tv que no requiere autenticación (por ahora)
+      ytArgs = '--extractor-args "youtube:player_client=tv"';
+      console.log('📺 Usando cliente tv (sin PO Token)');
     }
 
     // --js-runtime node: usa Node.js para ejecutar JS de YouTube (requerido desde 2025)
-    const command = `${YT_DLP_PATH} --js-runtime node -x --audio-format mp3 --audio-quality 128K --no-playlist ${poTokenArgs} -o "${tempFile}" "${url}"`;
+    const command = `${YT_DLP_PATH} --js-runtime node -x --audio-format mp3 --audio-quality 128K --no-playlist ${ytArgs} -o "${tempFile}" "${url}"`;
 
     await execAsync(command, { timeout: 120000 });
 
@@ -92,6 +95,8 @@ async function downloadWithYtDlp(url: string): Promise<Buffer | null> {
     return null;
   } catch (err) {
     console.log('❌ yt-dlp falló:', (err as Error).message);
+    // Marcar tokens como fallidos para regenerar
+    await markTokensFailed();
     return null;
   }
 }
