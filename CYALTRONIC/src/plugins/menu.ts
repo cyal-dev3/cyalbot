@@ -321,6 +321,139 @@ const MENU_CATEGORIES: MenuCategory[] = [
     ]
   },
   {
+    emoji: '👑',
+    name: 'Owner RPG',
+    description: 'Control total del sistema RPG',
+    commands: [
+      {
+        cmd: 'rpgowner',
+        aliases: ['ownerrpg', 'rpgadmin', 'rpgmenu'],
+        description: 'Panel de control RPG',
+        usage: '/rpgowner'
+      },
+      {
+        cmd: 'rpgdar',
+        aliases: ['rpggive', 'rpgadd'],
+        description: 'Dar recursos a usuario',
+        usage: '/rpgdar @user [tipo] [cantidad]'
+      },
+      {
+        cmd: 'rpgquitar',
+        aliases: ['rpgremove', 'rpgtake'],
+        description: 'Quitar recursos a usuario',
+        usage: '/rpgquitar @user [tipo] [cantidad]'
+      },
+      {
+        cmd: 'rpgset',
+        aliases: ['rpgsetstat'],
+        description: 'Establecer stats',
+        usage: '/rpgset @user [stat] [valor]'
+      },
+      {
+        cmd: 'rpgdaritem',
+        aliases: ['rpggiveitem'],
+        description: 'Dar items a usuario',
+        usage: '/rpgdaritem @user [itemId] [cantidad]'
+      },
+      {
+        cmd: 'rpgbonus',
+        aliases: ['bonusmode', 'modobonus'],
+        description: 'Activar modo bonus global',
+        usage: '/rpgbonus [xp] [dinero] [mana] [tiempo]'
+      },
+      {
+        cmd: 'rpgrobolibre',
+        aliases: ['freerobo', 'modorobo'],
+        description: 'Robo sin cooldown',
+        usage: '/rpgrobolibre [tiempo]'
+      },
+      {
+        cmd: 'rpgevento',
+        aliases: ['rpgevent'],
+        description: 'Activar evento especial',
+        usage: '/rpgevento "nombre" [dropMult] [tiempo]'
+      },
+      {
+        cmd: 'rpgpvp',
+        aliases: ['modopvp'],
+        description: 'Daño aumentado en duelos',
+        usage: '/rpgpvp [mult] [tiempo]'
+      },
+      {
+        cmd: 'rpgcaos',
+        aliases: ['modocaos', 'chaosmode'],
+        description: 'Modo caos: TODO multiplicado',
+        usage: '/rpgcaos [mult] [tiempo]'
+      },
+      {
+        cmd: 'rpgdesactivar',
+        aliases: ['rpgoff'],
+        description: 'Desactivar modos especiales',
+        usage: '/rpgdesactivar [modo]'
+      },
+      {
+        cmd: 'rpgresetcd',
+        aliases: ['resetcooldown'],
+        description: 'Resetear cooldowns',
+        usage: '/rpgresetcd @user [tipo]'
+      },
+      {
+        cmd: 'rpgsetclase',
+        aliases: ['rpgsetclass'],
+        description: 'Establecer clase de usuario',
+        usage: '/rpgsetclase @user [clase]'
+      },
+      {
+        cmd: 'rpgfullstats',
+        aliases: ['rpgmaxstats', 'rpggod'],
+        description: 'Dar stats máximos (MODO DIOS)',
+        usage: '/rpgfullstats @user'
+      },
+      {
+        cmd: 'rpgmaxlevel',
+        aliases: ['rpgsetlevel'],
+        description: 'Establecer nivel',
+        usage: '/rpgmaxlevel @user [nivel]'
+      },
+      {
+        cmd: 'rpginfo',
+        aliases: ['rpgcheck'],
+        description: 'Ver info completa de usuario',
+        usage: '/rpginfo @user'
+      },
+      {
+        cmd: 'rpgdaratodos',
+        aliases: ['rpggiveall'],
+        description: 'Dar recursos a TODOS',
+        usage: '/rpgdaratodos [tipo] [cantidad]'
+      },
+      {
+        cmd: 'rpglluviamoney',
+        aliases: ['rpgrainmoney'],
+        description: 'Lluvia de dinero en grupo',
+        usage: '/rpglluviamoney [cantidad]'
+      },
+      {
+        cmd: 'rpgborrar',
+        aliases: ['rpgdelete', 'rpgreset'],
+        description: 'Eliminar progreso de usuario',
+        usage: '/rpgborrar @user confirmar'
+      },
+      {
+        cmd: 'rpgtop',
+        aliases: ['rpgranking'],
+        description: 'Ver rankings RPG',
+        usage: '/rpgtop [tipo]'
+      },
+      {
+        cmd: 'rpglistitems',
+        aliases: ['rpgitems'],
+        description: 'Lista todos los items',
+        usage: '/rpglistitems [categoria]'
+      }
+    ]
+  },
+  {
     emoji: '🎵',
     name: 'Media',
     description: 'Multimedia',
@@ -522,6 +655,7 @@ function generateMainMenu(isOwner: boolean, isAdmin: boolean): string {
     // Filtrar categorías según permisos
     if (category.name === 'Admin' && !isAdmin && !isOwner) continue;
     if (category.name === 'Owner' && !isOwner) continue;
+    if (category.name === 'Owner RPG' && !isOwner) continue;
 
     menuContent += `\n${category.emoji} *${category.name}*\n`;
 
