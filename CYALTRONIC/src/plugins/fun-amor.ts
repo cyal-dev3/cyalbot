@@ -188,7 +188,7 @@ export const gayPlugin: PluginHandler = {
       `👤 @${targetName}\n\n` +
       `${bar}\n\n` +
       `📊 *Resultado:* ${percentage}%\n\n` +
-      `⚠️ _Esto es solo una broma, no te lo tomes en serio_ 😄`;
+      ``;
 
     await conn.sendMessage(m.chat, {
       text: response,
