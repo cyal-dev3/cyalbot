@@ -9,6 +9,7 @@ import { CONFIG } from '../config.js';
 import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
 import { updateQuestProgress } from './rpg-misiones.js';
 import { getRankBenefits, getRoleByLevel } from '../types/user.js';
+import { globalModes, checkExpiredModes } from './owner-rpg.js';
 
 /**
  * Tipos de recursos que se pueden robar
@@ -183,18 +184,23 @@ export const robarPlugin: PluginHandler = {
     const db = getDatabase();
     const thief = db.getUser(m.sender);
 
+    // Verificar modos globales activos
+    checkExpiredModes();
+    const isFreeRobMode = globalModes.freeRobMode.active;
+    const isChaosMode = globalModes.chaosMode.active;
+
     // Obtener beneficios de rango del ladrón
     const thiefRankBenefits = getRankBenefits(thief.level);
     const thiefRank = getRoleByLevel(thief.level);
 
-    // Verificar cooldown (con reducción por rango)
+    // Verificar cooldown (con reducción por rango) - SKIP si modo robo libre activo
     const now = Date.now();
     const baseCooldown = CONFIG.cooldowns.rob;
     const cooldownReduction = thiefRankBenefits.cooldownReduction / 100;
     const cooldown = Math.floor(baseCooldown * (1 - cooldownReduction));
     const lastRob = thief.lastrob || 0;
 
-    if (now - lastRob < cooldown) {
+    if (!isFreeRobMode && now - lastRob < cooldown) {
       const remaining = cooldown - (now - lastRob);
       let cooldownMsg = `${EMOJI.time} ¡Los guardias te están buscando!\n\n` +
         `⏳ Espera *${msToTime(remaining)}* antes de volver a robar.`;
@@ -256,21 +262,39 @@ export const robarPlugin: PluginHandler = {
     // Realizar el intento de robo con bonus de rango
     await m.react('🦹');
 
+    // Aplicar multiplicadores de modo caos si está activo
+    let robSuccessBonus = thiefRankBenefits.robSuccessBonus;
+    let robAmountBonus = thiefRankBenefits.robAmountBonus;
+
+    if (isChaosMode) {
+      robSuccessBonus += 20 * globalModes.chaosMode.multiplier; // Más éxito en caos
+      robAmountBonus += 50 * globalModes.chaosMode.multiplier; // Más cantidad en caos
+    }
+
     const result = calculateRobAttempt(
       thief.level,
       victim.level,
       victim.money,
       victim.exp,
       victim.mana,
-      thiefRankBenefits.robSuccessBonus,
-      thiefRankBenefits.robAmountBonus
+      robSuccessBonus,
+      robAmountBonus
     );
 
     // Aplicar el cooldown
     db.updateUser(m.sender, { lastrob: now });
 
     // Calcular tiempo del próximo robo
-    const nextRobMinutes = Math.floor(cooldown / 60000);
+    const nextRobMinutes = isFreeRobMode ? 0 : Math.floor(cooldown / 60000);
+
+    // Mensaje de modo especial activo
+    let modeMsg = '';
+    if (isFreeRobMode) {
+      modeMsg = '\n🦹 *MODO ROBO LIBRE ACTIVO* - Sin cooldown!\n';
+    }
+    if (isChaosMode) {
+      modeMsg += `\n🌀 *MODO CAOS x${globalModes.chaosMode.multiplier}* - Bonuses aumentados!\n`;
+    }
 
     if (result.success) {
       // Éxito - transferir recursos
@@ -312,8 +336,8 @@ export const robarPlugin: PluginHandler = {
         `🦹 *¡ROBO EXITOSO!*\n\n` +
         `${message}\n\n` +
         `${resourceEmoji[result.resource]} *+${formatNumber(result.amount)}* ${result.resource === 'money' ? 'monedas' : result.resource === 'exp' ? 'XP' : 'maná'}` +
-        `${rankBonusMsg}\n` +
-        `⏰ Próximo robo: *${nextRobMinutes} minutos*`
+        `${rankBonusMsg}${modeMsg}\n` +
+        `⏰ Próximo robo: *${isFreeRobMode ? '¡YA!' : nextRobMinutes + ' minutos'}*`
       );
 
       await m.react('💰');
@@ -331,9 +355,9 @@ export const robarPlugin: PluginHandler = {
         `🚨 *¡ROBO FALLIDO!*\n\n` +
         `${message}\n\n` +
         `${EMOJI.coin} *-${formatNumber(penalty)}* monedas\n\n` +
-        `🎖️ Tu rango: ${thiefRank}\n` +
+        `🎖️ Tu rango: ${thiefRank}${modeMsg}\n` +
         `💡 _Tip: Tu éxito depende de la diferencia de niveles y tu rango._\n` +
-        `⏰ Próximo intento: *${nextRobMinutes} minutos*`
+        `⏰ Próximo intento: *${isFreeRobMode ? '¡YA!' : nextRobMinutes + ' minutos'}*`
       );
 
       await m.react('💀');

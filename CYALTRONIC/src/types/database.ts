@@ -6,14 +6,26 @@
 import type { UserRPG } from './user.js';
 
 /**
+ * Advertencia de usuario en un grupo
+ */
+export interface UserWarning {
+  odBy: string;      // JID del admin que advirtió
+  odTo: string;      // JID del usuario advertido
+  reason: string;    // Razón de la advertencia
+  timestamp: number; // Fecha de la advertencia
+}
+
+/**
  * Configuración de un chat/grupo
  */
 export interface ChatSettings {
   welcome: boolean;
   antiLink: boolean;
+  antiSpam: boolean;   // NUEVO: Sistema antispam
   detect: boolean;
   sWelcome: string;
   sBye: string;
+  warnings: UserWarning[];  // NUEVO: Advertencias del grupo
 }
 
 /**
@@ -46,6 +58,19 @@ export interface DatabaseSchema {
     publicMode: boolean;
   };
 }
+
+/**
+ * Valores por defecto para configuración de chat
+ */
+export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
+  welcome: true,
+  antiLink: false,
+  antiSpam: false,
+  detect: true,
+  sWelcome: '👋 ¡Bienvenido/a {user} a {group}!\n\n📝 Usa /verificar nombre.edad para registrarte.',
+  sBye: '👋 {user} ha abandonado el grupo.',
+  warnings: []
+};
 
 /**
  * Valores por defecto de la base de datos

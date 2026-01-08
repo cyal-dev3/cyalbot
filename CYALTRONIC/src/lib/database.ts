@@ -5,8 +5,8 @@
 
 import { Low } from 'lowdb';
 import { JSONFile } from 'lowdb/node';
-import type { DatabaseSchema } from '../types/database.js';
-import { DEFAULT_DATABASE } from '../types/database.js';
+import type { DatabaseSchema, ChatSettings, UserWarning } from '../types/database.js';
+import { DEFAULT_DATABASE, DEFAULT_CHAT_SETTINGS } from '../types/database.js';
 import { DEFAULT_USER, type UserRPG } from '../types/user.js';
 
 /**
@@ -269,6 +269,105 @@ export class Database {
       clearInterval(this.saveInterval);
       this.saveInterval = null;
     }
+  }
+
+  // ============================================
+  // 🛡️ FUNCIONES DE CONFIGURACIÓN DE CHATS
+  // ============================================
+
+  /**
+   * Obtiene la configuración de un chat/grupo
+   * Si no existe, la crea con valores por defecto
+   */
+  getChatSettings(chatId: string): ChatSettings {
+    if (!this.db.data.chats[chatId]) {
+      this.db.data.chats[chatId] = { ...DEFAULT_CHAT_SETTINGS };
+      this.isDirty = true;
+    } else {
+      // Migrar configuración existente: agregar campos faltantes
+      const chat = this.db.data.chats[chatId];
+      let needsMigration = false;
+
+      for (const [key, defaultValue] of Object.entries(DEFAULT_CHAT_SETTINGS)) {
+        if (!(key in chat)) {
+          (chat as unknown as Record<string, unknown>)[key] = defaultValue;
+          needsMigration = true;
+        }
+      }
+
+      if (needsMigration) {
+        this.isDirty = true;
+      }
+    }
+    return this.db.data.chats[chatId];
+  }
+
+  /**
+   * Actualiza la configuración de un chat
+   */
+  updateChatSettings(chatId: string, updates: Partial<ChatSettings>): void {
+    const chat = this.getChatSettings(chatId);
+    Object.assign(chat, updates);
+    this.isDirty = true;
+  }
+
+  // ============================================
+  // ⚠️ FUNCIONES DE ADVERTENCIAS
+  // ============================================
+
+  /**
+   * Agrega una advertencia a un usuario en un grupo
+   */
+  addWarning(chatId: string, warning: UserWarning): number {
+    const chat = this.getChatSettings(chatId);
+    chat.warnings.push(warning);
+    this.isDirty = true;
+    // Retornar el número de advertencias del usuario
+    return chat.warnings.filter(w => w.odTo === warning.odTo).length;
+  }
+
+  /**
+   * Obtiene las advertencias de un usuario en un grupo
+   */
+  getWarnings(chatId: string, userId: string): UserWarning[] {
+    const chat = this.getChatSettings(chatId);
+    return chat.warnings.filter(w => w.odTo === userId);
+  }
+
+  /**
+   * Quita una advertencia de un usuario (la más reciente)
+   */
+  removeWarning(chatId: string, userId: string): boolean {
+    const chat = this.getChatSettings(chatId);
+    const index = chat.warnings.findIndex(w => w.odTo === userId);
+    if (index !== -1) {
+      chat.warnings.splice(index, 1);
+      this.isDirty = true;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Limpia todas las advertencias de un usuario
+   */
+  clearWarnings(chatId: string, userId: string): number {
+    const chat = this.getChatSettings(chatId);
+    const before = chat.warnings.length;
+    chat.warnings = chat.warnings.filter(w => w.odTo !== userId);
+    const removed = before - chat.warnings.length;
+    if (removed > 0) {
+      this.isDirty = true;
+    }
+    return removed;
+  }
+
+  /**
+   * Obtiene todas las advertencias de un grupo
+   */
+  getAllWarnings(chatId: string): UserWarning[] {
+    const chat = this.getChatSettings(chatId);
+    return chat.warnings;
   }
 }
 

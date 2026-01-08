@@ -9,7 +9,7 @@
 import chalk from 'chalk';
 import { startBot, shouldReconnect } from './main.js';
 import { MessageHandler } from './handler.js';
-import { initDatabase, type Database } from './lib/database.js';
+import { initDatabase, type Database, getDatabase } from './lib/database.js';
 import { loadPlugins } from './plugins/index.js';
 import { CONFIG } from './config.js';
 import type { WASocket, proto, GroupMetadata } from 'baileys';
@@ -161,6 +161,8 @@ async function handleParticipantsUpdate(
 
   try {
     const groupName = await getGroupName(conn, groupId);
+    const db = getDatabase();
+    const chatSettings = db.getChatSettings(groupId);
 
     for (const participant of participants) {
       const participantNumber = participant.split('@')[0];
@@ -172,11 +174,18 @@ async function handleParticipantsUpdate(
             chalk.cyan(`[${groupName}] `) +
             chalk.green(`👋 ${participantNumber} se unió al grupo`)
           );
-          // Mensaje de bienvenida
-          await conn.sendMessage(groupId, {
-            text: `👋 ¡Bienvenido/a @${participantNumber} al grupo!\n\n📝 Usa /verificar nombre.edad para registrarte.`,
-            mentions: [participant]
-          });
+          // Mensaje de bienvenida personalizado
+          if (chatSettings.welcome) {
+            const welcomeMsg = chatSettings.sWelcome
+              .replace(/{user}/g, `@${participantNumber}`)
+              .replace(/{group}/g, groupName)
+              .replace(/{desc}/g, groupMetadataCache.get(groupId)?.desc || 'Sin descripción');
+
+            await conn.sendMessage(groupId, {
+              text: welcomeMsg,
+              mentions: [participant]
+            });
+          }
           break;
 
         case 'remove':
@@ -185,6 +194,16 @@ async function handleParticipantsUpdate(
             chalk.cyan(`[${groupName}] `) +
             chalk.red(`👋 ${participantNumber} salió del grupo`)
           );
+          // Mensaje de despedida personalizado
+          if (chatSettings.detect) {
+            const byeMsg = chatSettings.sBye
+              .replace(/{user}/g, participantNumber)
+              .replace(/{group}/g, groupName);
+
+            await conn.sendMessage(groupId, {
+              text: byeMsg
+            });
+          }
           break;
 
         case 'promote':

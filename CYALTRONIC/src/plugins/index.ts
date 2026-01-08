@@ -44,6 +44,30 @@ import { stickerPlugin } from './sticker-sticker.js';
 import { toImagePlugin } from './sticker-toimg.js';
 import { toVideoPlugin, toGifPlugin } from './sticker-tovideo.js';
 
+// Importar plugins de protección de grupos
+import { antiLinkPlugin, antiSpamPlugin } from './group-protection.js';
+import { warnPlugin, unwarnPlugin, listWarnPlugin, clearWarnPlugin } from './group-warn.js';
+import { setWelcomePlugin, setByePlugin, welcomeTogglePlugin, byeTogglePlugin } from './group-welcome.js';
+import { tagAllPlugin, hideTagPlugin } from './group-tagall.js';
+
+// Importar plugins de descarga
+import { tiktokPlugin } from './download-tiktok.js';
+import { instagramPlugin } from './download-instagram.js';
+import { facebookPlugin } from './download-facebook.js';
+import { twitterPlugin } from './download-twitter.js';
+import { pinterestPlugin } from './download-pinterest.js';
+
+// Importar plugins de herramientas
+import { translatePlugin } from './tools-translate.js';
+import { climaPlugin } from './tools-clima.js';
+
+// Importar plugins de diversión
+import { slotPlugin, slotInfoPlugin } from './game-slot.js';
+import { amorPlugin, gayPlugin } from './fun-amor.js';
+
+// Importar plugins de owner
+import ownerRpgPlugins from './owner-rpg.js';
+
 /**
  * Lista de plugins RPG básicos
  */
@@ -205,26 +229,91 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('menu', menuPlugin);
   console.log('      ✅ menu (help, ayuda, comandos)');
 
+  // Cargar plugins de protección de grupos
+  console.log('');
+  console.log('   🛡️ Protección de Grupos:');
+  handler.registerPlugin('group-antilink', antiLinkPlugin);
+  handler.registerPlugin('group-antispam', antiSpamPlugin);
+  handler.registerPlugin('group-warn', warnPlugin);
+  handler.registerPlugin('group-unwarn', unwarnPlugin);
+  handler.registerPlugin('group-listwarn', listWarnPlugin);
+  handler.registerPlugin('group-clearwarn', clearWarnPlugin);
+  console.log('      ✅ antilink, antispam, warn, unwarn, listwarn, clearwarn');
+
+  // Cargar plugins de bienvenida
+  console.log('');
+  console.log('   👋 Bienvenida/Despedida:');
+  handler.registerPlugin('group-setwelcome', setWelcomePlugin);
+  handler.registerPlugin('group-setbye', setByePlugin);
+  handler.registerPlugin('group-welcome', welcomeTogglePlugin);
+  handler.registerPlugin('group-bye', byeTogglePlugin);
+  handler.registerPlugin('group-tagall', tagAllPlugin);
+  handler.registerPlugin('group-hidetag', hideTagPlugin);
+  console.log('      ✅ setwelcome, setbye, welcome, bye, tagall, hidetag');
+
+  // Cargar plugins de descarga
+  console.log('');
+  console.log('   📥 Descargadores:');
+  handler.registerPlugin('download-tiktok', tiktokPlugin);
+  handler.registerPlugin('download-instagram', instagramPlugin);
+  handler.registerPlugin('download-facebook', facebookPlugin);
+  handler.registerPlugin('download-twitter', twitterPlugin);
+  handler.registerPlugin('download-pinterest', pinterestPlugin);
+  console.log('      ✅ tiktok, ig, fb, twitter, pinterest');
+
+  // Cargar plugins de herramientas
+  console.log('');
+  console.log('   🔧 Herramientas:');
+  handler.registerPlugin('tools-translate', translatePlugin);
+  handler.registerPlugin('tools-clima', climaPlugin);
+  console.log('      ✅ translate, clima');
+
+  // Cargar plugins de diversión
+  console.log('');
+  console.log('   🎮 Diversión:');
+  handler.registerPlugin('game-slot', slotPlugin);
+  handler.registerPlugin('game-slotinfo', slotInfoPlugin);
+  handler.registerPlugin('fun-amor', amorPlugin);
+  handler.registerPlugin('fun-gay', gayPlugin);
+  console.log('      ✅ slot, slotinfo, amor, gay');
+
+  // Cargar plugins de owner RPG
+  console.log('');
+  console.log('   👑 Owner RPG:');
+  for (let i = 0; i < ownerRpgPlugins.length; i++) {
+    handler.registerPlugin(`owner-rpg-${i}`, ownerRpgPlugins[i]);
+  }
+  console.log('      ✅ rpgowner, rpgdar, rpgquitar, rpgset, rpgdaritem');
+  console.log('      ✅ rpgbonus, rpgrobolibre, rpgevento, rpgpvp, rpgcaos');
+  console.log('      ✅ rpgresetcd, rpgsetclase, rpgfullstats, rpgmaxlevel');
+  console.log('      ✅ rpginfo, rpgdaratodos, rpglluviamoney, rpgborrar, rpgtop');
+
   // Calcular total de plugins
   const totalPlugins =
-    rpgBasicPlugins.length +
-    rpgCombatPlugins.length +
-    5 +
-    3 +
-    rpgClassPlugins.length +
-    rpgDungeonPlugins.length +
-    5 +
-    rpgQuestPlugins.length +
-    3 +
-    4 +
-    2 +
-    3 +
+    rpgBasicPlugins.length +       // 7 - RPG básico
+    rpgCombatPlugins.length +      // 8 - RPG combate
+    5 +                            // inventario
+    3 +                            // tienda
+    rpgClassPlugins.length +       // 3 - clases
+    rpgDungeonPlugins.length +     // 2 - dungeons
+    5 +                            // ranking
+    rpgQuestPlugins.length +       // 2 - misiones
+    3 +                            // group admin
+    4 +                            // group mute
+    2 +                            // group delete
+    3 +                            // group pin
     2 +                            // close, open
-    1 +
-    1 +                            // restart
-    1 +
-    4 +
-    1;                             
+    1 +                            // notify
+    2 +                            // restart, gitpull
+    1 +                            // play
+    4 +                            // stickers
+    1 +                            // menu
+    6 +                            // protección (antilink, antispam, warn, unwarn, listwarn, clearwarn)
+    6 +                            // bienvenida (setwelcome, setbye, welcome, bye, tagall, hidetag)
+    5 +                            // descargadores
+    2 +                            // herramientas (translate, clima)
+    4 +                            // diversión (slot, slotinfo, amor, gay)
+    ownerRpgPlugins.length;        // owner RPG (22 comandos)
 
   console.log('');
   console.log(`📦 Total: ${totalPlugins} comandos cargados`);

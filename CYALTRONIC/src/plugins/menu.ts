@@ -363,6 +363,142 @@ const MENU_CATEGORIES: MenuCategory[] = [
         usage: '/togif (responde a sticker)'
       }
     ]
+  },
+  {
+    emoji: '🛡️',
+    name: 'Protección',
+    description: 'Protección de grupos',
+    commands: [
+      {
+        cmd: 'antilink',
+        aliases: [],
+        description: 'Activar/desactivar anti-enlaces',
+        usage: '/antilink on/off'
+      },
+      {
+        cmd: 'antispam',
+        aliases: [],
+        description: 'Activar/desactivar anti-spam',
+        usage: '/antispam on/off'
+      },
+      {
+        cmd: 'warn',
+        aliases: ['advertir'],
+        description: 'Advertir a un usuario',
+        usage: '/warn @usuario [razón]'
+      },
+      {
+        cmd: 'unwarn',
+        aliases: ['quitarwarn'],
+        description: 'Quitar advertencia',
+        usage: '/unwarn @usuario'
+      },
+      {
+        cmd: 'listwarn',
+        aliases: ['warns', 'advertencias'],
+        description: 'Ver usuarios con advertencias',
+        usage: '/listwarn'
+      },
+      {
+        cmd: 'setwelcome',
+        aliases: ['bienvenida'],
+        description: 'Configurar mensaje de bienvenida',
+        usage: '/setwelcome <mensaje>'
+      },
+      {
+        cmd: 'setbye',
+        aliases: ['despedida'],
+        description: 'Configurar mensaje de despedida',
+        usage: '/setbye <mensaje>'
+      },
+      {
+        cmd: 'tagall',
+        aliases: ['todos', 'invocar'],
+        description: 'Mencionar a todos',
+        usage: '/tagall [mensaje]'
+      }
+    ]
+  },
+  {
+    emoji: '📥',
+    name: 'Descargas',
+    description: 'Descargar contenido de redes sociales',
+    commands: [
+      {
+        cmd: 'tiktok',
+        aliases: ['tt', 'ttdl'],
+        description: 'Descargar video de TikTok',
+        usage: '/tiktok <url>'
+      },
+      {
+        cmd: 'ig',
+        aliases: ['instagram', 'igdl'],
+        description: 'Descargar de Instagram',
+        usage: '/ig <url>'
+      },
+      {
+        cmd: 'fb',
+        aliases: ['facebook', 'fbdl'],
+        description: 'Descargar video de Facebook',
+        usage: '/fb <url>'
+      },
+      {
+        cmd: 'twitter',
+        aliases: ['tw', 'x', 'twdl'],
+        description: 'Descargar video de Twitter/X',
+        usage: '/twitter <url>'
+      },
+      {
+        cmd: 'pinterest',
+        aliases: ['pin'],
+        description: 'Buscar imágenes en Pinterest',
+        usage: '/pinterest <búsqueda>'
+      }
+    ]
+  },
+  {
+    emoji: '🔧',
+    name: 'Herramientas',
+    description: 'Herramientas útiles',
+    commands: [
+      {
+        cmd: 'translate',
+        aliases: ['traducir', 'tr'],
+        description: 'Traducir texto',
+        usage: '/translate <idioma> <texto>'
+      },
+      {
+        cmd: 'clima',
+        aliases: ['weather', 'tiempo'],
+        description: 'Ver clima de una ciudad',
+        usage: '/clima <ciudad>'
+      }
+    ]
+  },
+  {
+    emoji: '🎮',
+    name: 'Diversión',
+    description: 'Juegos y entretenimiento',
+    commands: [
+      {
+        cmd: 'slot',
+        aliases: ['tragamonedas', 'casino'],
+        description: 'Jugar tragamonedas',
+        usage: '/slot [apuesta]'
+      },
+      {
+        cmd: 'amor',
+        aliases: ['love', 'ship', 'compatibilidad'],
+        description: 'Calculadora de amor',
+        usage: '/amor @usuario'
+      },
+      {
+        cmd: 'gay',
+        aliases: ['gaytest'],
+        description: 'Test de gayedad (broma)',
+        usage: '/gay [@usuario]'
+      }
+    ]
   }
 ];
 

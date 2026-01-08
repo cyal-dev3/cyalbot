@@ -43,6 +43,15 @@ export const CONFIG = {
     privateOnly: '📱 Este comando solo funciona en chat privado.'
   },
 
+  // 🛡️ Configuración de protección
+  protection: {
+    maxMessagesPerInterval: 5,   // Máximo de mensajes permitidos
+    intervalMs: 10000,           // Intervalo en ms (10 segundos)
+    maxWarnings: 3,              // Advertencias antes de kick
+    linkRegex: /chat\.whatsapp\.com\/[a-zA-Z0-9]{15,}/gi,
+    telegramRegex: /t\.me\/[a-zA-Z0-9_]+/gi
+  },
+
   // 🎮 Configuración del RPG
   rpg: {
     // Bonificación al registrarse

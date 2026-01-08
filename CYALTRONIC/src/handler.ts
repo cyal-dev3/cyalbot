@@ -21,6 +21,7 @@ export class MessageHandler {
   private plugins: PluginRegistry = new Map();
   private muteRegistry: MuteRegistry = new Map();
   private autoMuteEnabled: Map<string, boolean> = new Map(); // Grupos con automute activado
+  private spamTracker: Map<string, number[]> = new Map(); // Rastreo de spam por usuario
 
   constructor(
     private conn: WASocket,
@@ -305,6 +306,77 @@ export class MessageHandler {
             console.log(`🔇 Mensaje eliminado de usuario muteado: ${m.sender}`);
           }
           return; // No procesar comandos de usuarios muteados
+        }
+
+        // 🛡️ PROTECCIÓN: Antilink y Antispam
+        if (isBotAdmin && !isAdmin && m.text) {
+          const chatSettings = this.db.getChatSettings(m.chat);
+
+          // 🔗 ANTILINK: Detectar enlaces de WhatsApp
+          if (chatSettings.antiLink) {
+            const linkMatch = m.text.match(CONFIG.protection.linkRegex);
+            if (linkMatch) {
+              await this.deleteMessage(m.chat, m.key);
+              await this.conn.sendMessage(m.chat, {
+                text: `⚠️ @${m.sender.split('@')[0]} los enlaces de grupos no están permitidos aquí.`,
+                mentions: [m.sender]
+              });
+              console.log(`🔗 Antilink: Enlace eliminado de ${m.sender}`);
+
+              // Agregar advertencia automática
+              const warningCount = this.db.addWarning(m.chat, {
+                odBy: 'SISTEMA',
+                odTo: m.sender,
+                reason: 'Enviar enlace de grupo',
+                timestamp: Date.now()
+              });
+
+              if (warningCount >= CONFIG.protection.maxWarnings) {
+                try {
+                  await this.conn.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
+                  await this.conn.sendMessage(m.chat, {
+                    text: `🚫 @${m.sender.split('@')[0]} fue expulsado por acumular ${CONFIG.protection.maxWarnings} advertencias.`,
+                    mentions: [m.sender]
+                  });
+                  this.db.clearWarnings(m.chat, m.sender);
+                } catch (e) {
+                  console.error('Error expulsando usuario:', e);
+                }
+              }
+              return;
+            }
+          }
+
+          // 🚫 ANTISPAM: Detectar spam de mensajes
+          if (chatSettings.antiSpam) {
+            const now = Date.now();
+            const userKey = `${m.chat}:${m.sender}`;
+
+            if (!this.spamTracker.has(userKey)) {
+              this.spamTracker.set(userKey, []);
+            }
+
+            const timestamps = this.spamTracker.get(userKey)!;
+            // Filtrar timestamps dentro del intervalo
+            const recentTimestamps = timestamps.filter(
+              t => now - t < CONFIG.protection.intervalMs
+            );
+            recentTimestamps.push(now);
+            this.spamTracker.set(userKey, recentTimestamps);
+
+            if (recentTimestamps.length > CONFIG.protection.maxMessagesPerInterval) {
+              await this.deleteMessage(m.chat, m.key);
+              await this.conn.sendMessage(m.chat, {
+                text: `⚠️ @${m.sender.split('@')[0]} deja de hacer spam o serás advertido.`,
+                mentions: [m.sender]
+              });
+              console.log(`🚫 Antispam: Spam detectado de ${m.sender}`);
+
+              // Resetear contador para no advertir en cada mensaje
+              this.spamTracker.set(userKey, [now]);
+              return;
+            }
+          }
         }
       }
     }

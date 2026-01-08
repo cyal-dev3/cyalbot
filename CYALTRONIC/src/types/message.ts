@@ -60,7 +60,13 @@ export interface PluginHandler {
   /** Comando(s) que activan el plugin */
   command: RegExp | string[];
 
-  /** Categorías del comando */
+  /** Descripción del comando */
+  description?: string;
+
+  /** Categoría del comando (rpg, group, download, tools, fun, etc.) */
+  category?: string;
+
+  /** Categorías del comando (legacy) */
   tags?: string[];
 
   /** Texto de ayuda */
