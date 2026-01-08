@@ -12,6 +12,52 @@ import { calculateTotalStats, getRankBenefits, getRoleByLevel, type UserRPG } fr
 import { globalModes, checkExpiredModes } from './owner-rpg.js';
 
 /**
+ * Alias y atajos para habilidades (facilita el uso en duelos)
+ * Se pueden usar en lugar del nombre completo de la habilidad
+ */
+const SKILL_ALIASES: Record<string, string> = {
+  // Guerrero
+  'brutal': 'golpe_brutal',
+  'gb': 'golpe_brutal',
+  'escudo': 'escudo_defensor',
+  'defensor': 'escudo_defensor',
+  'ed': 'escudo_defensor',
+  'grito': 'grito_guerra',
+  'guerra': 'grito_guerra',
+  'gg': 'grito_guerra',
+  // Mago
+  'fuego': 'bola_fuego',
+  'bola': 'bola_fuego',
+  'bf': 'bola_fuego',
+  'rayo': 'rayo_arcano',
+  'arcano': 'rayo_arcano',
+  'ra': 'rayo_arcano',
+  'escudomagico': 'escudo_magico',
+  'magico': 'escudo_magico',
+  'em': 'escudo_magico',
+  // Ladrón
+  'furtivo': 'ataque_furtivo',
+  'af': 'ataque_furtivo',
+  'evadir': 'evadir',
+  'esquivar': 'evadir',
+  'ev': 'evadir',
+  'robo': 'robo_vital',
+  'vital': 'robo_vital',
+  'rv': 'robo_vital',
+  'robovital': 'robo_vital',
+  // Arquero
+  'disparo': 'disparo_preciso',
+  'preciso': 'disparo_preciso',
+  'dp': 'disparo_preciso',
+  'lluvia': 'lluvia_flechas',
+  'flechas': 'lluvia_flechas',
+  'lf': 'lluvia_flechas',
+  'trampa': 'trampa_cazador',
+  'cazador': 'trampa_cazador',
+  'tc': 'trampa_cazador'
+};
+
+/**
  * Estructura de un duelo activo - SIN TURNOS
  */
 interface ActiveDuel {
@@ -219,6 +265,19 @@ function getClassSkills(playerClass: string | null, mana: number, stamina: numbe
 }
 
 /**
+ * Obtiene los alias para una habilidad específica
+ */
+function getSkillAliases(skillId: string): string[] {
+  const aliases: string[] = [];
+  for (const [alias, id] of Object.entries(SKILL_ALIASES)) {
+    if (id === skillId && alias.length <= 4) { // Solo alias cortos
+      aliases.push(alias);
+    }
+  }
+  return aliases.slice(0, 2); // Máximo 2 alias
+}
+
+/**
  * Formatea las habilidades disponibles de un jugador para el estado del duelo
  */
 function formatPlayerSkills(
@@ -241,14 +300,16 @@ function formatPlayerSkills(
     const cooldownEnd = skillCooldowns.get(skill.id) || 0;
     const isOnCooldown = now < cooldownEnd;
     const hasResources = mana >= skill.manaCost && stamina >= skill.staminaCost;
+    const aliases = getSkillAliases(skill.id);
+    const aliasText = aliases.length > 0 ? ` (${aliases.join('/')})` : '';
 
     if (isOnCooldown) {
       const remaining = Math.ceil((cooldownEnd - now) / 1000);
-      result += `   ${skill.emoji} ~${skill.name}~ ⏳${remaining}s\n`;
+      result += `   ${skill.emoji} ~${skill.name}~${aliasText} ⏳${remaining}s\n`;
     } else if (!hasResources) {
-      result += `   ${skill.emoji} ~${skill.name}~ ❌\n`;
+      result += `   ${skill.emoji} ~${skill.name}~${aliasText} ❌\n`;
     } else {
-      result += `   ${skill.emoji} *${skill.name}* ✅\n`;
+      result += `   ${skill.emoji} *${skill.name}*${aliasText} ✅\n`;
     }
   }
 
@@ -327,8 +388,8 @@ function generateDuelStatusMessage(duel: ActiveDuel): string {
 
   msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
   msg += `*Comandos:*\n`;
-  msg += `• *g* o */golpe* - Ataque básico\n`;
-  msg += `• Escribe el *nombre* de tu poder\n`;
+  msg += `• *g* - Ataque básico\n`;
+  msg += `• Escribe el *nombre* o *alias* del poder\n`;
   msg += `• */rendirse* - Abandonar\n`;
   msg += `\n💡 _¡El más rápido ataca! 3 seguidos = +daño_`;
 
@@ -908,6 +969,7 @@ export const atacarDueloPlugin: PluginHandler = {
 
 /**
  * Busca si el texto contiene el nombre de una habilidad
+ * Ahora busca en TODAS las habilidades del juego, no solo las de clase
  */
 function findSkillByText(text: string, playerClass: string | null): Skill | null {
   if (!playerClass) return null;
@@ -915,23 +977,56 @@ function findSkillByText(text: string, playerClass: string | null): Skill | null
   const classInfo = CLASSES[playerClass as keyof typeof CLASSES];
   if (!classInfo) return null;
 
-  const normalizedText = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  // Normalizar texto de entrada
+  const normalizedText = text.toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '') // Quitar espacios y caracteres especiales
+    .trim();
 
+  if (!normalizedText) return null;
+
+  // 1. Primero buscar en alias
+  const aliasMatch = SKILL_ALIASES[normalizedText];
+  if (aliasMatch && classInfo.skills.includes(aliasMatch)) {
+    return SKILLS[aliasMatch];
+  }
+
+  // 2. Buscar en las habilidades de la clase del jugador
   for (const skillId of classInfo.skills) {
     const skill = SKILLS[skillId];
     if (!skill) continue;
 
-    const skillNameNorm = skill.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const skillIdNorm = skill.id.toLowerCase();
+    // Normalizar nombre de habilidad
+    const skillNameNorm = skill.name.toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '');
 
-    // Coincidencia exacta o parcial
+    const skillIdNorm = skill.id.toLowerCase().replace(/_/g, '');
+
+    // Coincidencias múltiples
     if (
-      normalizedText === skillNameNorm ||
-      normalizedText === skillIdNorm ||
-      normalizedText.includes(skillNameNorm) ||
-      skillNameNorm.includes(normalizedText)
+      normalizedText === skillNameNorm ||                    // Nombre exacto
+      normalizedText === skillIdNorm ||                      // ID exacto
+      skillNameNorm.startsWith(normalizedText) ||            // Empieza con el texto
+      skillIdNorm.startsWith(normalizedText) ||              // ID empieza con el texto
+      normalizedText.includes(skillNameNorm) ||              // Texto contiene el nombre
+      skillNameNorm.includes(normalizedText)                 // Nombre contiene el texto
     ) {
       return skill;
+    }
+
+    // Buscar palabras individuales del nombre
+    const skillWords = skill.name.toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .split(/\s+/);
+
+    for (const word of skillWords) {
+      if (word.length >= 3 && (normalizedText === word || word.startsWith(normalizedText))) {
+        return skill;
+      }
     }
   }
 
@@ -1081,12 +1176,55 @@ async function executeSkill(
 }
 
 /**
+ * Genera un regex dinámico que captura todas las habilidades y alias
+ */
+function generateSkillRegex(): RegExp {
+  const allPatterns: string[] = [];
+
+  // Agregar todos los alias
+  for (const alias of Object.keys(SKILL_ALIASES)) {
+    allPatterns.push(alias);
+  }
+
+  // Agregar todos los nombres de habilidades
+  for (const skill of Object.values(SKILLS)) {
+    // ID sin guiones bajos
+    allPatterns.push(skill.id.replace(/_/g, ''));
+    // ID con guiones como espacios opcionales
+    allPatterns.push(skill.id.replace(/_/g, '.?'));
+    // Nombre normalizado
+    const nameNorm = skill.name.toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, '.?');
+    allPatterns.push(nameNorm);
+    // Palabras individuales del nombre (mínimo 4 letras para evitar falsos positivos)
+    const words = skill.name.toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .split(/\s+/)
+      .filter(w => w.length >= 4);
+    allPatterns.push(...words);
+  }
+
+  // Eliminar duplicados y ordenar por longitud (más largos primero)
+  const uniquePatterns = [...new Set(allPatterns)]
+    .filter(p => p.length >= 2)
+    .sort((a, b) => b.length - a.length);
+
+  return new RegExp(`^(${uniquePatterns.join('|')})$`, 'i');
+}
+
+// Regex generado dinámicamente con todas las habilidades
+const SKILL_REGEX = generateSkillRegex();
+
+/**
  * Plugin: Detectar habilidades por nombre directo (sin comando)
  * Detecta cuando alguien escribe el nombre de una habilidad durante un duelo
+ * Ahora usa un regex generado dinámicamente con TODAS las habilidades
  */
 export const skillDetectorPlugin: PluginHandler = {
-  // Regex que captura nombres de habilidades de todas las clases
-  command: /^(golpe.?brutal|escudo.?defensor|grito.?guerra|bola.?fuego|rayo.?arcano|escudo.?magico|ataque.?furtivo|evadir|robo.?vital|disparo.?preciso|lluvia.?flechas|trampa.?cazador|fuego|rayo|brutal|furtivo|flechas|trampa)$/i,
+  command: SKILL_REGEX,
   tags: ['rpg'],
   help: ['Escribe el nombre de tu habilidad directamente para usarla'],
   register: true,
