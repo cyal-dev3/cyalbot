@@ -8,6 +8,7 @@ import { EMOJI, formatNumber, msToTime, pickRandom, randomInt } from '../lib/uti
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 import { canLevelUp, MULTIPLIER } from '../lib/levelling.js';
+import { globalModes, checkExpiredModes } from './owner-rpg.js';
 
 // Tipos de minerales que se pueden encontrar
 interface Mineral {
@@ -111,6 +112,9 @@ export const minePlugin: PluginHandler = {
       return m.reply(CONFIG.messages.notRegistered);
     }
 
+    // Verificar modos globales expirados
+    checkExpiredModes();
+
     // Verificar cooldown
     const now = Date.now();
     const cooldown = CONFIG.cooldowns.mine;
@@ -145,7 +149,37 @@ export const minePlugin: PluginHandler = {
 
     // Calcular XP base
     const baseExp = 80 + (user.level * 30);
-    const totalExp = baseExp + totalBonusExp;
+    let totalExp = baseExp + totalBonusExp;
+
+    // Aplicar multiplicadores de modos globales
+    let modeMessages: string[] = [];
+
+    // Bonus Mode - Multiplicador de XP y dinero
+    if (globalModes.bonusMode.active) {
+      const bonusExp = Math.floor(totalExp * (globalModes.bonusMode.expMultiplier - 1));
+      const bonusMoney = Math.floor(totalMoney * (globalModes.bonusMode.moneyMultiplier - 1));
+      totalExp += bonusExp;
+      totalMoney += bonusMoney;
+      modeMessages.push(`🎁 Modo Bonus: +${bonusExp} XP, +${bonusMoney} 💰`);
+    }
+
+    // Chaos Mode - Multiplicador general
+    if (globalModes.chaosMode.active) {
+      const chaosExp = Math.floor(totalExp * (globalModes.chaosMode.multiplier - 1));
+      const chaosMoney = Math.floor(totalMoney * (globalModes.chaosMode.multiplier - 1));
+      totalExp += chaosExp;
+      totalMoney += chaosMoney;
+      modeMessages.push(`🌀 Modo Caos: +${chaosExp} XP, +${chaosMoney} 💰`);
+    }
+
+    // Event Mode - Multiplicador de drops/recompensas
+    if (globalModes.eventMode.active) {
+      const eventExp = Math.floor(totalExp * (globalModes.eventMode.dropMultiplier - 1));
+      const eventMoney = Math.floor(totalMoney * (globalModes.eventMode.dropMultiplier - 1));
+      totalExp += eventExp;
+      totalMoney += eventMoney;
+      modeMessages.push(`🎉 ${globalModes.eventMode.eventName}: +${eventExp} XP, +${eventMoney} 💰`);
+    }
 
     // Aplicar recompensas
     db.updateUser(m.sender, {
@@ -182,6 +216,12 @@ export const minePlugin: PluginHandler = {
       specialMessage = `\n\n✨ *¡Wow! ¡Encontraste un mineral ÉPICO!* ✨`;
     }
 
+    // Mensaje de modos activos
+    let modesMsg = '';
+    if (modeMessages.length > 0) {
+      modesMsg = `\n\n🎮 *BONIFICACIONES ACTIVAS:*\n├ ${modeMessages.join('\n├ ')}`;
+    }
+
     // Mensaje de minería completada
     await m.reply(
       `⛏️${EMOJI.sparkles} *¡MINERÍA COMPLETADA!* ${EMOJI.sparkles}⛏️\n\n` +
@@ -198,7 +238,7 @@ export const minePlugin: PluginHandler = {
       `├ ${EMOJI.exp} EXP Total: *${formatNumber(user.exp + totalExp)}*\n` +
       `├ ${EMOJI.level} Nivel: *${user.level}*\n` +
       `╰ ${EMOJI.coin} Monedas: *${formatNumber(user.money + totalMoney)}*\n\n` +
-      `${EMOJI.time} Próxima minería en: *10 minutos*${levelMessage}`
+      `${EMOJI.time} Próxima minería en: *10 minutos*${modesMsg}${levelMessage}`
     );
   }
 };

@@ -8,6 +8,7 @@ import { EMOJI, formatNumber, msToTime, pickRandom } from '../lib/utils.js';
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 import { getRankBenefits, getRoleByLevel } from '../types/user.js';
+import { globalModes, checkExpiredModes } from './owner-rpg.js';
 
 export const dailyPlugin: PluginHandler = {
   command: /^(daily|claim|reclamar|regalo|diario)$/i,
@@ -24,6 +25,9 @@ export const dailyPlugin: PluginHandler = {
     if (!user.registered) {
       return m.reply(CONFIG.messages.notRegistered);
     }
+
+    // Verificar modos globales expirados
+    checkExpiredModes();
 
     // Obtener beneficios de rango
     const rankBenefits = getRankBenefits(user.level);
@@ -85,13 +89,46 @@ export const dailyPlugin: PluginHandler = {
       streakMessage = `\n${EMOJI.fire} *Bonus de racha:* +${formatNumber(streakBonus)} ${EMOJI.exp} | +${diamondStreakBonus} 💎`;
     }
 
-    // Aplicar recompensas
-    const totalExp = expReward + streakBonus;
+    // Aplicar multiplicadores de modos globales
+    let globalExpBonus = 0;
+    let globalMoneyBonus = 0;
+    let modeMessages: string[] = [];
+
+    // Bonus Mode
+    if (globalModes.bonusMode.active) {
+      const bonusExp = Math.floor(expReward * (globalModes.bonusMode.expMultiplier - 1));
+      const bonusMoney = Math.floor(moneyReward * (globalModes.bonusMode.moneyMultiplier - 1));
+      globalExpBonus += bonusExp;
+      globalMoneyBonus += bonusMoney;
+      modeMessages.push(`🎁 Modo Bonus: +${bonusExp} XP, +${bonusMoney} 💰`);
+    }
+
+    // Chaos Mode
+    if (globalModes.chaosMode.active) {
+      const chaosExp = Math.floor(expReward * (globalModes.chaosMode.multiplier - 1));
+      const chaosMoney = Math.floor(moneyReward * (globalModes.chaosMode.multiplier - 1));
+      globalExpBonus += chaosExp;
+      globalMoneyBonus += chaosMoney;
+      modeMessages.push(`🌀 Modo Caos: +${chaosExp} XP, +${chaosMoney} 💰`);
+    }
+
+    // Event Mode
+    if (globalModes.eventMode.active) {
+      const eventExp = Math.floor(expReward * (globalModes.eventMode.dropMultiplier - 1));
+      const eventMoney = Math.floor(moneyReward * (globalModes.eventMode.dropMultiplier - 1));
+      globalExpBonus += eventExp;
+      globalMoneyBonus += eventMoney;
+      modeMessages.push(`🎉 ${globalModes.eventMode.eventName}: +${eventExp} XP, +${eventMoney} 💰`);
+    }
+
+    // Aplicar recompensas con bonos globales
+    const totalExp = expReward + streakBonus + globalExpBonus;
+    const totalMoney = moneyReward + globalMoneyBonus;
     const totalDiamonds = diamondReward + diamondStreakBonus;
 
     db.updateUser(m.sender, {
       exp: user.exp + totalExp,
-      money: user.money + moneyReward,
+      money: user.money + totalMoney,
       potion: user.potion + potionReward,
       limit: user.limit + totalDiamonds,
       lastclaim: now
@@ -102,6 +139,12 @@ export const dailyPlugin: PluginHandler = {
     if (rankBenefits.dailyBonus > 0) {
       rankBonusMsg = `\n│  🎖️ Bonus rango (+${rankBenefits.dailyBonus}%):\n` +
         `│     +${formatNumber(rankExpBonus)} XP | +${formatNumber(rankMoneyBonus)} 💰`;
+    }
+
+    // Mensaje de modos activos
+    let modesMsg = '';
+    if (modeMessages.length > 0) {
+      modesMsg = `\n\n🎮 *BONIFICACIONES ACTIVAS:*\n├ ${modeMessages.join('\n├ ')}`;
     }
 
     // Calcular horas del próximo daily
@@ -119,11 +162,11 @@ export const dailyPlugin: PluginHandler = {
       `│  +${formatNumber(moneyReward)} ${EMOJI.coin} Monedas\n` +
       `│  +${potionReward} ${EMOJI.potion} Pociones\n` +
       `│  +${diamondReward} 💎 Diamantes${rankBonusMsg}\n` +
-      `╰═══════════════════════════╯${streakMessage}\n\n` +
+      `╰═══════════════════════════╯${streakMessage}${modesMsg}\n\n` +
       `${EMOJI.time} Próximo regalo en: *${nextDailyHours} horas*\n\n` +
       `${EMOJI.info} *Tu nuevo balance:*\n` +
       `├ ${EMOJI.exp} EXP Total: *${formatNumber(user.exp + totalExp)}*\n` +
-      `├ ${EMOJI.coin} Monedas: *${formatNumber(user.money + moneyReward)}*\n` +
+      `├ ${EMOJI.coin} Monedas: *${formatNumber(user.money + totalMoney)}*\n` +
       `├ ${EMOJI.potion} Pociones: *${user.potion + potionReward}*\n` +
       `╰ 💎 Diamantes: *${formatNumber(user.limit + totalDiamonds)}*\n\n` +
       `${EMOJI.level} ¿Tienes suficiente XP? Usa *${usedPrefix}nivel* para subir.\n` +

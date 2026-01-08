@@ -9,6 +9,7 @@ import { EMOJI, msToTime, formatNumber, randomInt, pickRandom, matchesIgnoreAcce
 import { DUNGEONS, MONSTERS, ITEMS, type Dungeon, type Monster } from '../types/rpg.js';
 import { calculateTotalStats } from '../types/user.js';
 import { updateQuestProgress } from './rpg-misiones.js';
+import { globalModes, checkExpiredModes } from './owner-rpg.js';
 
 /**
  * Cooldown de dungeon: 30 minutos
@@ -281,6 +282,9 @@ export const dungeonPlugin: PluginHandler = {
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
+    // Verificar modos globales expirados
+    checkExpiredModes();
+
     // Verificar cooldown
     const now = Date.now();
     const lastDungeon = user.lastdungeon || 0;
@@ -385,6 +389,43 @@ export const dungeonPlugin: PluginHandler = {
     // Ejecutar dungeon
     const result = runDungeon(selectedDungeon, playerStats, user.health, user.level);
 
+    // Aplicar multiplicadores de modos globales a las recompensas
+    let modeMessages: string[] = [];
+
+    // Bonus Mode
+    if (globalModes.bonusMode.active) {
+      const bonusExp = Math.floor(result.expGained * (globalModes.bonusMode.expMultiplier - 1));
+      const bonusMoney = Math.floor(result.moneyGained * (globalModes.bonusMode.moneyMultiplier - 1));
+      result.expGained += bonusExp;
+      result.moneyGained += bonusMoney;
+      modeMessages.push(`🎁 Modo Bonus: +${bonusExp} XP, +${bonusMoney} 💰`);
+    }
+
+    // PvP Mode - Mayor daño y recompensas en combate
+    if (globalModes.pvpMode.active) {
+      const pvpExp = Math.floor(result.expGained * (globalModes.pvpMode.damageMultiplier - 1));
+      result.expGained += pvpExp;
+      modeMessages.push(`⚔️ Modo PvP: +${pvpExp} XP`);
+    }
+
+    // Chaos Mode
+    if (globalModes.chaosMode.active) {
+      const chaosExp = Math.floor(result.expGained * (globalModes.chaosMode.multiplier - 1));
+      const chaosMoney = Math.floor(result.moneyGained * (globalModes.chaosMode.multiplier - 1));
+      result.expGained += chaosExp;
+      result.moneyGained += chaosMoney;
+      modeMessages.push(`🌀 Modo Caos: +${chaosExp} XP, +${chaosMoney} 💰`);
+    }
+
+    // Event Mode
+    if (globalModes.eventMode.active) {
+      const eventExp = Math.floor(result.expGained * (globalModes.eventMode.dropMultiplier - 1));
+      const eventMoney = Math.floor(result.moneyGained * (globalModes.eventMode.dropMultiplier - 1));
+      result.expGained += eventExp;
+      result.moneyGained += eventMoney;
+      modeMessages.push(`🎉 ${globalModes.eventMode.eventName}: +${eventExp} XP, +${eventMoney} 💰`);
+    }
+
     // Actualizar estadísticas
     const newCombatStats = { ...user.combatStats };
     newCombatStats.totalKills += result.monstersKilled;
@@ -439,6 +480,12 @@ export const dungeonPlugin: PluginHandler = {
         return item ? `${item.emoji} ${item.name}` : id;
       });
       response += itemNames.join(', ') + '\n';
+    }
+
+    // Mostrar modos activos
+    if (modeMessages.length > 0) {
+      response += `\n🎮 *Bonificaciones activas:*\n`;
+      response += modeMessages.map(msg => `   ${msg}`).join('\n') + '\n';
     }
 
     response += `\n❤️ Salud: *${result.finalHealth}/${user.maxHealth}*\n`;

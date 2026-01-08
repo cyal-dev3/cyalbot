@@ -10,6 +10,7 @@ import { CONFIG } from '../config.js';
 import { canLevelUp, MULTIPLIER } from '../lib/levelling.js';
 import { updateQuestProgress } from './rpg-misiones.js';
 import { getRankBenefits, getRoleByLevel } from '../types/user.js';
+import { globalModes, checkExpiredModes } from './owner-rpg.js';
 
 // Lista de trabajos/aventuras
 const WORK_ACTIVITIES = [
@@ -66,6 +67,9 @@ export const workPlugin: PluginHandler = {
       return m.reply(CONFIG.messages.notRegistered);
     }
 
+    // Verificar modos globales expirados
+    checkExpiredModes();
+
     // Obtener beneficios de rango
     const rankBenefits = getRankBenefits(user.level);
     const userRank = getRoleByLevel(user.level);
@@ -100,8 +104,37 @@ export const workPlugin: PluginHandler = {
 
     // Aplicar multiplicador de rango a XP
     const expBeforeBonus = Math.floor(baseExp * randomMultiplier);
-    const expReward = Math.floor(expBeforeBonus * rankBenefits.expMultiplier);
+    let expReward = Math.floor(expBeforeBonus * rankBenefits.expMultiplier);
     const rankExpBonus = expReward - expBeforeBonus;
+
+    // Aplicar multiplicadores de modos globales
+    let globalExpBonus = 0;
+    let globalMoneyBonus = 0;
+    let modeMessages: string[] = [];
+
+    // Bonus Mode - Multiplicador de XP y dinero
+    if (globalModes.bonusMode.active) {
+      const bonusExp = Math.floor(expReward * (globalModes.bonusMode.expMultiplier - 1));
+      globalExpBonus += bonusExp;
+      modeMessages.push(`🎁 Modo Bonus: +${bonusExp} XP (x${globalModes.bonusMode.expMultiplier})`);
+    }
+
+    // Chaos Mode - Multiplicador general
+    if (globalModes.chaosMode.active) {
+      const chaosExp = Math.floor(expReward * (globalModes.chaosMode.multiplier - 1));
+      globalExpBonus += chaosExp;
+      modeMessages.push(`🌀 Modo Caos: +${chaosExp} XP (x${globalModes.chaosMode.multiplier})`);
+    }
+
+    // Event Mode - Multiplicador de drops/recompensas
+    if (globalModes.eventMode.active) {
+      const eventExp = Math.floor(expReward * (globalModes.eventMode.dropMultiplier - 1));
+      globalExpBonus += eventExp;
+      modeMessages.push(`🎉 ${globalModes.eventMode.eventName}: +${eventExp} XP (x${globalModes.eventMode.dropMultiplier})`);
+    }
+
+    // Aplicar bonos globales
+    expReward += globalExpBonus;
 
     // Probabilidad de bonus (aumentada por rango)
     let bonusMoney = 0;
@@ -112,6 +145,22 @@ export const workPlugin: PluginHandler = {
     if (hasBonus) {
       const baseMoney = randomInt(workConfig.bonusMoney.min, workConfig.bonusMoney.max);
       bonusMoney = Math.floor(baseMoney * rankBenefits.moneyMultiplier);
+
+      // Aplicar multiplicadores de modos globales al dinero
+      if (globalModes.bonusMode.active) {
+        const bonusMoneyFromMode = Math.floor(bonusMoney * (globalModes.bonusMode.moneyMultiplier - 1));
+        globalMoneyBonus += bonusMoneyFromMode;
+      }
+      if (globalModes.chaosMode.active) {
+        const chaosMoneyBonus = Math.floor(bonusMoney * (globalModes.chaosMode.multiplier - 1));
+        globalMoneyBonus += chaosMoneyBonus;
+      }
+      if (globalModes.eventMode.active) {
+        const eventMoneyBonus = Math.floor(bonusMoney * (globalModes.eventMode.dropMultiplier - 1));
+        globalMoneyBonus += eventMoneyBonus;
+      }
+
+      bonusMoney += globalMoneyBonus;
       bonusMessage = `\n│  +${formatNumber(bonusMoney)} ${EMOJI.coin} Monedas`;
     }
 
@@ -145,6 +194,12 @@ export const workPlugin: PluginHandler = {
       rankBonusMsg = `\n│  🎖️ +${formatNumber(rankExpBonus)} XP (Bonus rango)`;
     }
 
+    // Mensaje de modos activos
+    let modesMsg = '';
+    if (modeMessages.length > 0) {
+      modesMsg = '\n│  ' + modeMessages.join('\n│  ');
+    }
+
     // Calcular tiempo del próximo trabajo
     const nextWorkMinutes = Math.floor(cooldown / 60000);
 
@@ -155,7 +210,7 @@ export const workPlugin: PluginHandler = {
       `╭═══════════════════════════╮\n` +
       `│  ${EMOJI.success} *RECOMPENSA*\n` +
       `├───────────────────────────\n` +
-      `│  +${formatNumber(expReward)} ${EMOJI.exp} Experiencia${rankBonusMsg}${bonusMessage}\n` +
+      `│  +${formatNumber(expReward)} ${EMOJI.exp} Experiencia${rankBonusMsg}${modesMsg}${bonusMessage}\n` +
       `╰═══════════════════════════╯\n\n` +
       `🎖️ *Rango:* ${userRank}\n\n` +
       `${EMOJI.info} *Tu progreso:*\n` +

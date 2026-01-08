@@ -121,6 +121,7 @@ export function checkExpiredModes(): void {
 
 /**
  * Obtiene el JID del usuario objetivo
+ * Si no hay mención ni mensaje citado, retorna null
  */
 function getTargetUser(ctx: MessageContext): string | null {
   if (ctx.m.mentionedJid.length > 0) {
@@ -130,6 +131,15 @@ function getTargetUser(ctx: MessageContext): string | null {
     return ctx.m.quoted.sender;
   }
   return null;
+}
+
+/**
+ * Obtiene el JID del usuario objetivo o el propio sender si no hay mención
+ * Útil para comandos que pueden auto-aplicarse
+ */
+function getTargetUserOrSelf(ctx: MessageContext): string {
+  const target = getTargetUser(ctx);
+  return target || ctx.m.sender;
 }
 
 /**
@@ -278,14 +288,12 @@ export const rpgDarPlugin: PluginHandler = {
     const { m, args } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    // Si no hay mención, se aplica a uno mismo
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     const type = args[0]?.toLowerCase();
@@ -293,14 +301,15 @@ export const rpgDarPlugin: PluginHandler = {
 
     if (!type || amount <= 0) {
       return m.reply(
-        `${EMOJI.error} Uso: .rpgdar @user [tipo] [cantidad]\n\n` +
+        `${EMOJI.error} Uso: .rpgdar [@user] [tipo] [cantidad]\n\n` +
         `*Tipos disponibles:*\n` +
         `• dinero/money - Monedas\n` +
         `• xp/exp - Experiencia\n` +
         `• mana - Maná\n` +
         `• diamantes/diamonds/limit - Diamantes\n` +
         `• vida/health - Vida actual\n` +
-        `• stamina/energia - Energía`
+        `• stamina/energia - Energía\n\n` +
+        `💡 _Sin mención se aplica a ti mismo_`
       );
     }
 
@@ -377,21 +386,18 @@ export const rpgQuitarPlugin: PluginHandler = {
     const { m, args } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     const type = args[0]?.toLowerCase();
     const amount = parseInt(args[1]) || 0;
 
     if (!type || amount <= 0) {
-      return m.reply(`${EMOJI.error} Uso: .rpgquitar @user [tipo] [cantidad]`);
+      return m.reply(`${EMOJI.error} Uso: .rpgquitar [@user] [tipo] [cantidad]\n💡 _Sin mención se aplica a ti mismo_`);
     }
 
     const updates: Record<string, number> = {};
@@ -463,14 +469,11 @@ export const rpgSetPlugin: PluginHandler = {
     const { m, args } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     const stat = args[0]?.toLowerCase();
@@ -478,7 +481,7 @@ export const rpgSetPlugin: PluginHandler = {
 
     if (!stat || isNaN(value)) {
       return m.reply(
-        `${EMOJI.error} Uso: .rpgset @user [stat] [valor]\n\n` +
+        `${EMOJI.error} Uso: .rpgset [@user] [stat] [valor]\n\n` +
         `*Stats disponibles:*\n` +
         `• level - Nivel\n` +
         `• attack - Ataque base\n` +
@@ -486,7 +489,8 @@ export const rpgSetPlugin: PluginHandler = {
         `• crit - Probabilidad de crítico\n` +
         `• maxhealth - Vida máxima\n` +
         `• maxmana - Maná máximo\n` +
-        `• maxstamina - Energía máxima`
+        `• maxstamina - Energía máxima\n\n` +
+        `💡 _Sin mención se aplica a ti mismo_`
       );
     }
 
@@ -551,14 +555,11 @@ export const rpgDarItemPlugin: PluginHandler = {
     const { m, args } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     const itemId = args[0]?.toLowerCase();
@@ -566,8 +567,9 @@ export const rpgDarItemPlugin: PluginHandler = {
 
     if (!itemId) {
       return m.reply(
-        `${EMOJI.error} Uso: .rpgdaritem @user [itemId] [cantidad]\n\n` +
-        `💡 Usa \`.rpglistitems\` para ver los IDs disponibles`
+        `${EMOJI.error} Uso: .rpgdaritem [@user] [itemId] [cantidad]\n\n` +
+        `💡 Usa \`.rpglistitems\` para ver los IDs disponibles\n` +
+        `💡 _Sin mención se aplica a ti mismo_`
       );
     }
 
@@ -998,14 +1000,11 @@ export const rpgResetCdPlugin: PluginHandler = {
     const { m, args } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     const type = args[0]?.toLowerCase() || 'all';
@@ -1139,26 +1138,24 @@ export const rpgSetClasePlugin: PluginHandler = {
     const { m, args } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     const className = args[0]?.toLowerCase() as PlayerClass;
 
     if (!className || !CLASSES[className]) {
       return m.reply(
-        `${EMOJI.error} Uso: .rpgsetclase @user [clase]\n\n` +
+        `${EMOJI.error} Uso: .rpgsetclase [@user] [clase]\n\n` +
         `*Clases disponibles:*\n` +
         `• guerrero ⚔️\n` +
         `• mago 🔮\n` +
         `• ladron 🗡️\n` +
-        `• arquero 🏹`
+        `• arquero 🏹\n\n` +
+        `💡 _Sin mención se aplica a ti mismo_`
       );
     }
 
@@ -1202,14 +1199,11 @@ export const rpgFullStatsPlugin: PluginHandler = {
     const { m } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     db.updateUser(targetJid, {
@@ -1259,14 +1253,11 @@ export const rpgMaxLevelPlugin: PluginHandler = {
     const { m, args } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     const level = parseInt(args[0]) || 100;
@@ -1302,14 +1293,11 @@ export const rpgInfoPlugin: PluginHandler = {
     const { m } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     const classInfo = user.playerClass ? CLASSES[user.playerClass] : null;
@@ -1525,14 +1513,11 @@ export const rpgBorrarPlugin: PluginHandler = {
     const { m, text } = ctx;
     const db = getDatabase();
 
-    const targetJid = getTargetUser(ctx);
-    if (!targetJid) {
-      return m.reply(`${EMOJI.error} Menciona o responde al mensaje del usuario`);
-    }
+    const targetJid = getTargetUserOrSelf(ctx);
 
     const user = db.getUser(targetJid);
     if (!user.registered) {
-      return m.reply(`${EMOJI.error} Este usuario no está registrado en el RPG`);
+      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
     }
 
     // Confirmación
@@ -1545,7 +1530,8 @@ export const rpgBorrarPlugin: PluginHandler = {
         `• ${formatNumber(user.limit)} diamantes\n` +
         `• ${user.inventory.length} items\n\n` +
         `Para confirmar, escribe:\n` +
-        `\`.rpgborrar @user confirmar\``
+        `\`.rpgborrar [@user] confirmar\`\n\n` +
+        `💡 _Sin mención se aplica a ti mismo_`
       );
     }
 

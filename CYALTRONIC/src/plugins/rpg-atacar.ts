@@ -9,6 +9,7 @@ import { CONFIG } from '../config.js';
 import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
 import { MONSTERS, ITEMS, type Monster } from '../types/rpg.js';
 import { calculateTotalStats } from '../types/user.js';
+import { globalModes, checkExpiredModes } from './owner-rpg.js';
 
 /**
  * Cooldown de ataque: 3 minutos
@@ -152,6 +153,9 @@ export const atacarPlugin: PluginHandler = {
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
+    // Verificar modos globales expirados
+    checkExpiredModes();
+
     // Verificar cooldown
     const now = Date.now();
     const lastAttack = user.lastattack || 0;
@@ -216,10 +220,47 @@ export const atacarPlugin: PluginHandler = {
       // Victoria
       newCombatStats.totalKills++;
 
-      // Calcular recompensas
-      const expGain = monster.expReward + randomInt(0, Math.floor(monster.expReward * 0.2));
-      const moneyGain = randomInt(monster.moneyReward[0], monster.moneyReward[1]);
+      // Calcular recompensas base
+      let expGain = monster.expReward + randomInt(0, Math.floor(monster.expReward * 0.2));
+      let moneyGain = randomInt(monster.moneyReward[0], monster.moneyReward[1]);
       const drops = processDrops(monster);
+
+      // Aplicar multiplicadores de modos globales
+      let modeMessages: string[] = [];
+
+      // Bonus Mode - Multiplicador de XP y dinero
+      if (globalModes.bonusMode.active) {
+        const bonusExp = Math.floor(expGain * (globalModes.bonusMode.expMultiplier - 1));
+        const bonusMoney = Math.floor(moneyGain * (globalModes.bonusMode.moneyMultiplier - 1));
+        expGain += bonusExp;
+        moneyGain += bonusMoney;
+        modeMessages.push(`🎁 Modo Bonus activo (x${globalModes.bonusMode.expMultiplier} XP)`);
+      }
+
+      // PvP Mode - Aumenta daño y recompensas en combate
+      if (globalModes.pvpMode.active) {
+        const pvpExp = Math.floor(expGain * (globalModes.pvpMode.damageMultiplier - 1));
+        expGain += pvpExp;
+        modeMessages.push(`⚔️ Modo PvP activo (x${globalModes.pvpMode.damageMultiplier} daño)`);
+      }
+
+      // Chaos Mode - Multiplicador general
+      if (globalModes.chaosMode.active) {
+        const chaosExp = Math.floor(expGain * (globalModes.chaosMode.multiplier - 1));
+        const chaosMoney = Math.floor(moneyGain * (globalModes.chaosMode.multiplier - 1));
+        expGain += chaosExp;
+        moneyGain += chaosMoney;
+        modeMessages.push(`🌀 Modo Caos activo (x${globalModes.chaosMode.multiplier})`);
+      }
+
+      // Event Mode - Multiplicador de drops/recompensas
+      if (globalModes.eventMode.active) {
+        const eventExp = Math.floor(expGain * (globalModes.eventMode.dropMultiplier - 1));
+        const eventMoney = Math.floor(moneyGain * (globalModes.eventMode.dropMultiplier - 1));
+        expGain += eventExp;
+        moneyGain += eventMoney;
+        modeMessages.push(`🎉 ${globalModes.eventMode.eventName} (x${globalModes.eventMode.dropMultiplier})`);
+      }
 
       // Actualizar usuario
       const newHealth = Math.max(1, user.health - result.playerDamageTaken);
@@ -261,6 +302,13 @@ export const atacarPlugin: PluginHandler = {
       if (drops.length > 0) {
         victoryMsg += `   🎒 Items: `;
         victoryMsg += drops.map(d => ITEMS[d]?.emoji + ' ' + ITEMS[d]?.name).join(', ');
+        victoryMsg += '\n';
+      }
+
+      // Mostrar modos activos
+      if (modeMessages.length > 0) {
+        victoryMsg += `\n🎮 *Bonificaciones:*\n`;
+        victoryMsg += modeMessages.map(msg => `   ${msg}`).join('\n');
         victoryMsg += '\n';
       }
 

@@ -9,6 +9,7 @@ import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
 import { ITEMS, CLASSES, SKILLS, type Skill } from '../types/rpg.js';
 import { calculateTotalStats, getRankBenefits, getRoleByLevel, type UserRPG } from '../types/user.js';
+import { globalModes, checkExpiredModes } from './owner-rpg.js';
 
 /**
  * Estructura de un duelo activo - SIN TURNOS
@@ -356,9 +357,33 @@ async function finishDuel(
   const challengerFinalHealth = Math.max(0, duel.challengerHealth);
   const targetFinalHealth = Math.max(0, duel.targetHealth);
 
-  // Calcular recompensas
+  // Calcular recompensas base
   const baseExpReward = 300 + Math.floor(loser.level * 15);
-  const expReward = baseExpReward + randomInt(0, 150);
+  let expReward = baseExpReward + randomInt(0, 150);
+
+  // Aplicar multiplicadores de modos globales
+  let modeMessages: string[] = [];
+
+  // Bonus Mode
+  if (globalModes.bonusMode.active) {
+    const bonusExp = Math.floor(expReward * (globalModes.bonusMode.expMultiplier - 1));
+    expReward += bonusExp;
+    modeMessages.push(`🎁 Modo Bonus: +${bonusExp} XP`);
+  }
+
+  // PvP Mode - Bonus específico para duelos
+  if (globalModes.pvpMode.active) {
+    const pvpExp = Math.floor(expReward * (globalModes.pvpMode.damageMultiplier - 1));
+    expReward += pvpExp;
+    modeMessages.push(`⚔️ Modo PvP: +${pvpExp} XP`);
+  }
+
+  // Chaos Mode
+  if (globalModes.chaosMode.active) {
+    const chaosExp = Math.floor(expReward * (globalModes.chaosMode.multiplier - 1));
+    expReward += chaosExp;
+    modeMessages.push(`🌀 Modo Caos: +${chaosExp} XP`);
+  }
 
   // Actualizar stats del ganador
   const winnerStats = { ...winner.combatStats };
@@ -425,6 +450,12 @@ async function finishDuel(
     resultMsg += `   ${EMOJI.coin} +${formatNumber(duel.bet)} monedas\n`;
   }
 
+  // Mostrar modos activos
+  if (modeMessages.length > 0) {
+    resultMsg += `\n🎮 *Bonificaciones:*\n`;
+    resultMsg += modeMessages.map(msg => `   ${msg}`).join('\n') + '\n';
+  }
+
   resultMsg += `\n❤️ *Salud final (GUARDADA):*\n`;
   resultMsg += `   ${duel.challengerName}: *${challengerFinalHealth}* HP\n`;
   resultMsg += `   ${duel.targetName}: *${targetFinalHealth}* HP\n\n`;
@@ -453,6 +484,9 @@ export const dueloPlugin: PluginHandler = {
     const db = getDatabase();
     const challenger = db.getUser(m.sender);
     const groupJid = m.chat;
+
+    // Verificar modos globales expirados
+    checkExpiredModes();
 
     // Verificar si ya hay un duelo activo
     if (activeDuels.has(groupJid)) {
