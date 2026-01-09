@@ -11,6 +11,7 @@ import { ITEMS, CLASSES, SKILLS, type Skill } from '../types/rpg.js';
 import { calculateTotalStats, getRankBenefits, getRoleByLevel, type UserRPG } from '../types/user.js';
 import { globalModes, checkExpiredModes } from './owner-rpg.js';
 import { applyDeathPenalty, generateIMSSMessage } from './rpg-bombardear.js';
+import { PVP } from '../constants/rpg.js';
 
 // ==================== CONFIGURACIÓN DE BALANCE PVP ====================
 
@@ -18,13 +19,13 @@ import { applyDeathPenalty, generateIMSSMessage } from './rpg-bombardear.js';
  * Multiplicador de vida en duelos (vida_real * este valor)
  * Hace que los duelos duren más tiempo
  */
-const PVP_HEALTH_MULTIPLIER = 2.5;
+const PVP_HEALTH_MULTIPLIER = PVP.HEALTH_MULTIPLIER;
 
 /**
  * Multiplicador de daño base en PvP (reduce el daño general)
  * Evita que un golpe mate instantáneamente
  */
-const PVP_DAMAGE_MULTIPLIER = 0.4;
+const PVP_DAMAGE_MULTIPLIER = PVP.DAMAGE_MULTIPLIER;
 
 /**
  * Multiplicadores de habilidades REDUCIDOS para PvP
@@ -412,9 +413,9 @@ function generateDuelStatusMessage(duel: ActiveDuel): string {
   const challengerWeapon = duel.challengerWeapon ? ITEMS[duel.challengerWeapon] : null;
   const targetWeapon = duel.targetWeapon ? ITEMS[duel.targetWeapon] : null;
 
-  // Calcular barras de vida visual
-  const chHpPct = Math.max(0, Math.floor((duel.challengerHealth / duel.challengerMaxHealth) * 10));
-  const tgHpPct = Math.max(0, Math.floor((duel.targetHealth / duel.targetMaxHealth) * 10));
+  // Calcular barras de vida visual (limitar entre 0 y 10 para evitar valores negativos en repeat)
+  const chHpPct = Math.min(10, Math.max(0, Math.floor((duel.challengerHealth / duel.challengerMaxHealth) * 10)));
+  const tgHpPct = Math.min(10, Math.max(0, Math.floor((duel.targetHealth / duel.targetMaxHealth) * 10)));
   const chHpBar = '█'.repeat(chHpPct) + '░'.repeat(10 - chHpPct);
   const tgHpBar = '█'.repeat(tgHpPct) + '░'.repeat(10 - tgHpPct);
 
@@ -730,7 +731,7 @@ export const dueloPlugin: PluginHandler = {
     }
 
     // Verificar salud
-    if (challenger.health < 30) {
+    if (challenger.health < PVP.MIN_HEALTH_DUEL) {
       await m.reply(
         `${EMOJI.error} ¡Estás muy herido para un duelo!\n\n` +
         `❤️ Salud: *${challenger.health}/${challenger.maxHealth}*\n` +
@@ -764,7 +765,7 @@ export const dueloPlugin: PluginHandler = {
       return;
     }
 
-    if (target.health < 30) {
+    if (target.health < PVP.MIN_HEALTH_DUEL) {
       await m.reply(`${EMOJI.warning} *${target.name}* está muy herido para un duelo.`);
       return;
     }
@@ -901,12 +902,12 @@ export const aceptarPlugin: PluginHandler = {
     const challenger = db.getUser(challengerJid);
 
     // Verificaciones
-    if (accepter.health < 30) {
+    if (accepter.health < PVP.MIN_HEALTH_DUEL) {
       await m.reply(`${EMOJI.error} Estás muy herido. Cúrate primero.`);
       return;
     }
 
-    if (challenger.health < 30) {
+    if (challenger.health < PVP.MIN_HEALTH_DUEL) {
       await m.reply(`${EMOJI.error} *${challenger.name}* ya no puede pelear.`);
       pendingDuels.delete(challengerJid);
       return;
@@ -942,10 +943,11 @@ export const aceptarPlugin: PluginHandler = {
     const now = Date.now();
 
     // Calcular vida de duelo (multiplicada para combates más largos)
+    // Usar maxHealth de calculateTotalStats que incluye clase y equipamiento
     const challengerDuelHealth = Math.floor(challenger.health * PVP_HEALTH_MULTIPLIER);
-    const challengerDuelMaxHealth = Math.floor(challenger.maxHealth * PVP_HEALTH_MULTIPLIER);
+    const challengerDuelMaxHealth = Math.floor(challengerStats.maxHealth * PVP_HEALTH_MULTIPLIER);
     const targetDuelHealth = Math.floor(accepter.health * PVP_HEALTH_MULTIPLIER);
-    const targetDuelMaxHealth = Math.floor(accepter.maxHealth * PVP_HEALTH_MULTIPLIER);
+    const targetDuelMaxHealth = Math.floor(accepterStats.maxHealth * PVP_HEALTH_MULTIPLIER);
 
     // Crear duelo activo con SISTEMA MEJORADO
     const newDuel: ActiveDuel = {

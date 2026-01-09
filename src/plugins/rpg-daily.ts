@@ -38,7 +38,7 @@ export const dailyPlugin: PluginHandler = {
     const baseCooldown = CONFIG.cooldowns.daily;
     const cooldownReduction = rankBenefits.cooldownReduction / 100;
     const cooldown = Math.floor(baseCooldown * (1 - cooldownReduction));
-    const timeSinceLastClaim = now - user.lastclaim;
+    const timeSinceLastClaim = now - user.lastClaim;
 
     if (timeSinceLastClaim < cooldown) {
       const remaining = cooldown - timeSinceLastClaim;
@@ -75,7 +75,7 @@ export const dailyPlugin: PluginHandler = {
     const rankMoneyBonus = moneyReward - baseMoneyReward;
 
     // Calcular streak (días consecutivos) - Feature bonus
-    const lastClaimDate = new Date(user.lastclaim).toDateString();
+    const lastClaimDate = new Date(user.lastClaim).toDateString();
     const yesterdayDate = new Date(Date.now() - 86400000).toDateString();
 
     let streakBonus = 0;
@@ -131,7 +131,7 @@ export const dailyPlugin: PluginHandler = {
       money: user.money + totalMoney,
       potion: user.potion + potionReward,
       limit: user.limit + totalDiamonds,
-      lastclaim: now
+      lastClaim: now
     });
 
     // Mensaje de bonus de rango

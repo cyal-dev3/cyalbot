@@ -619,6 +619,61 @@ export const ITEMS: Record<string, Item> = {
     sellPrice: 0,
     consumeEffect: {}
   },
+  escudo_antibombas: {
+    id: 'escudo_antibombas',
+    name: 'Escudo Antibombas',
+    emoji: '🧱',
+    type: 'consumable',
+    rarity: 'epico',
+    description: 'Protege de bombardeos por 24 horas.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  seguro_vida: {
+    id: 'seguro_vida',
+    name: 'Seguro de Vida Premium',
+    emoji: '📜',
+    type: 'consumable',
+    rarity: 'legendario',
+    description: 'Evita cuotas del IMSS por 48 horas al morir.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  doble_exp_permanente: {
+    id: 'doble_exp_permanente',
+    name: 'Runa de Experiencia',
+    emoji: '🔯',
+    type: 'consumable',
+    rarity: 'legendario',
+    description: '+25% EXP permanente (se acumula hasta 3 veces).',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  cofre_oro: {
+    id: 'cofre_oro',
+    name: 'Cofre de Oro',
+    emoji: '🎁',
+    type: 'consumable',
+    rarity: 'epico',
+    description: 'Contiene 5,000-15,000 monedas aleatorias.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
+  pocion_suerte: {
+    id: 'pocion_suerte',
+    name: 'Pocion de Suerte',
+    emoji: '🍀',
+    type: 'consumable',
+    rarity: 'epico',
+    description: '+20% probabilidad de drops raros por 1 hora.',
+    price: 0,
+    sellPrice: 0,
+    consumeEffect: {}
+  },
   pocion_resurrecion: {
     id: 'pocion_resurrecion',
     name: 'Poción de Resurrección',

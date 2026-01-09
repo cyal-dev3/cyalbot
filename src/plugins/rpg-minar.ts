@@ -118,7 +118,7 @@ export const minePlugin: PluginHandler = {
     // Verificar cooldown
     const now = Date.now();
     const cooldown = CONFIG.cooldowns.mine;
-    const timeSinceLastMine = now - user.lastmine;
+    const timeSinceLastMine = now - user.lastMine;
 
     if (timeSinceLastMine < cooldown) {
       const remaining = cooldown - timeSinceLastMine;
@@ -185,7 +185,7 @@ export const minePlugin: PluginHandler = {
     db.updateUser(m.sender, {
       exp: user.exp + totalExp,
       money: user.money + totalMoney,
-      lastmine: now
+      lastMine: now
     });
 
     // Verificar si puede subir de nivel

@@ -38,9 +38,25 @@ export function pickRandom<T>(list: readonly T[] | T[]): T {
 }
 
 /**
- * Formatea un número con separadores de miles
+ * Estilo de formateo de números
  */
-export function formatNumber(num: number): string {
+export type NumberFormatStyle = 'locale' | 'compact';
+
+/**
+ * Formatea un número con separadores de miles o formato compacto
+ * @param num - Número a formatear
+ * @param style - 'locale' para separadores (1.234.567) o 'compact' para K/M (1.2M)
+ */
+export function formatNumber(num: number, style: NumberFormatStyle = 'locale'): string {
+  if (style === 'compact') {
+    if (num >= 1_000_000) {
+      return `${(num / 1_000_000).toFixed(1)}M`;
+    }
+    if (num >= 1_000) {
+      return `${(num / 1_000).toFixed(1)}K`;
+    }
+    return num.toString();
+  }
   return num.toLocaleString('es-ES');
 }
 
@@ -70,6 +86,23 @@ export function randomInt(min: number, max: number): number {
  */
 export function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+/**
+ * Selecciona un elemento aleatorio basado en pesos
+ * @param items - Array de elementos con propiedad 'weight'
+ * @returns Elemento seleccionado aleatoriamente según peso
+ */
+export function weightedRandom<T extends { weight: number }>(items: T[]): T {
+  const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
+  let random = Math.random() * totalWeight;
+
+  for (const item of items) {
+    random -= item.weight;
+    if (random <= 0) return item;
+  }
+
+  return items[items.length - 1];
 }
 
 /**
@@ -141,3 +174,68 @@ export const EMOJI = {
  * Tipo para las claves de emoji
  */
 export type EmojiKey = keyof typeof EMOJI;
+
+/**
+ * Resultado de verificación de cooldown
+ */
+export interface CooldownResult {
+  /** true si está en cooldown */
+  onCooldown: boolean;
+  /** Tiempo restante en ms */
+  remaining: number;
+  /** Cooldown efectivo después de reducciones */
+  effectiveCooldown: number;
+}
+
+/**
+ * Verifica si un usuario está en cooldown
+ * @param lastTime - Timestamp de la última acción
+ * @param baseCooldown - Cooldown base en ms
+ * @param cooldownReduction - Reducción por rango (0-100)
+ * @returns Resultado del cooldown
+ */
+export function checkCooldown(
+  lastTime: number,
+  baseCooldown: number,
+  cooldownReduction: number = 0
+): CooldownResult {
+  const now = Date.now();
+  const reductionMultiplier = 1 - (cooldownReduction / 100);
+  const effectiveCooldown = Math.floor(baseCooldown * reductionMultiplier);
+  const elapsed = now - lastTime;
+  const remaining = Math.max(0, effectiveCooldown - elapsed);
+
+  return {
+    onCooldown: elapsed < effectiveCooldown,
+    remaining,
+    effectiveCooldown
+  };
+}
+
+/**
+ * Contexto mínimo necesario para obtener target user
+ */
+export interface TargetContext {
+  mentionedJid: string[];
+  quoted?: { sender?: string };
+}
+
+/**
+ * Obtiene el JID del usuario objetivo de una acción
+ * Busca en menciones primero, luego en mensaje citado
+ * @param ctx - Contexto del mensaje con mentionedJid y quoted
+ * @returns JID del usuario objetivo o null si no se encuentra
+ */
+export function getTargetUser(ctx: TargetContext): string | null {
+  // Primero menciones
+  if (ctx.mentionedJid.length > 0) {
+    return ctx.mentionedJid[0];
+  }
+
+  // Luego mensaje citado
+  if (ctx.quoted?.sender) {
+    return ctx.quoted.sender;
+  }
+
+  return null;
+}

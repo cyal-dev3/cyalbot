@@ -7,6 +7,9 @@
  */
 
 import { getDatabase } from './database.js';
+import { calculateTotalStats } from '../types/user.js';
+import { ITEMS, CLASSES } from '../types/rpg.js';
+import { REGEN } from '../constants/rpg.js';
 
 // ==================== CONFIGURACIÓN ====================
 
@@ -16,11 +19,11 @@ interface RegenConfig {
   checkIntervalMs: number;    // Cada cuánto revisar (en ms)
 }
 
-// Configuración por defecto
+// Configuración usando constantes centralizadas
 export const regenConfig: RegenConfig = {
-  healthPerHour: 10,
-  staminaPerHour: 10,
-  checkIntervalMs: 60 * 1000  // Revisar cada minuto
+  healthPerHour: REGEN.HEALTH_PER_HOUR,
+  staminaPerHour: REGEN.STAMINA_PER_HOUR,
+  checkIntervalMs: REGEN.CHECK_INTERVAL_MS
 };
 
 // Intervalo de regeneración
@@ -80,12 +83,15 @@ function applyRegenToAllUsers(): void {
         lastStaminaRegen?: number
       } = {};
 
+      // Calcular stats máximos reales (incluyendo clase y equipamiento)
+      const realMaxStats = calculateTotalStats(user, ITEMS, CLASSES);
+
       // Regenerar vida si no está al máximo
-      if (user.health < user.maxHealth) {
+      if (user.health < realMaxStats.maxHealth) {
         const healthRegen = calculateRegen(user.lastHealthRegen, regenConfig.healthPerHour);
 
         if (healthRegen.amount > 0) {
-          const newHealth = Math.min(user.health + healthRegen.amount, user.maxHealth);
+          const newHealth = Math.min(user.health + healthRegen.amount, realMaxStats.maxHealth);
           updates.health = newHealth;
           updates.lastHealthRegen = healthRegen.newTimestamp;
           needsUpdate = true;
@@ -97,11 +103,11 @@ function applyRegenToAllUsers(): void {
       }
 
       // Regenerar energía si no está al máximo
-      if (user.stamina < user.maxStamina) {
+      if (user.stamina < realMaxStats.maxStamina) {
         const staminaRegen = calculateRegen(user.lastStaminaRegen, regenConfig.staminaPerHour);
 
         if (staminaRegen.amount > 0) {
-          const newStamina = Math.min(user.stamina + staminaRegen.amount, user.maxStamina);
+          const newStamina = Math.min(user.stamina + staminaRegen.amount, realMaxStats.maxStamina);
           updates.stamina = newStamina;
           updates.lastStaminaRegen = staminaRegen.newTimestamp;
           needsUpdate = true;
@@ -150,12 +156,15 @@ export function applyRegenToUser(jid: string): { healthRegen: number; staminaReg
       lastStaminaRegen?: number
     } = {};
 
+    // Calcular stats máximos reales (incluyendo clase y equipamiento)
+    const realMaxStats = calculateTotalStats(user, ITEMS, CLASSES);
+
     // Regenerar vida
-    if (user.health < user.maxHealth) {
+    if (user.health < realMaxStats.maxHealth) {
       const healthRegen = calculateRegen(user.lastHealthRegen, regenConfig.healthPerHour);
 
       if (healthRegen.amount > 0) {
-        healthRegenAmount = Math.min(healthRegen.amount, user.maxHealth - user.health);
+        healthRegenAmount = Math.min(healthRegen.amount, realMaxStats.maxHealth - user.health);
         updates.health = user.health + healthRegenAmount;
         updates.lastHealthRegen = healthRegen.newTimestamp;
       }
@@ -167,11 +176,11 @@ export function applyRegenToUser(jid: string): { healthRegen: number; staminaReg
     }
 
     // Regenerar energía
-    if (user.stamina < user.maxStamina) {
+    if (user.stamina < realMaxStats.maxStamina) {
       const staminaRegen = calculateRegen(user.lastStaminaRegen, regenConfig.staminaPerHour);
 
       if (staminaRegen.amount > 0) {
-        staminaRegenAmount = Math.min(staminaRegen.amount, user.maxStamina - user.stamina);
+        staminaRegenAmount = Math.min(staminaRegen.amount, realMaxStats.maxStamina - user.stamina);
         updates.stamina = user.stamina + staminaRegenAmount;
         updates.lastStaminaRegen = staminaRegen.newTimestamp;
       }

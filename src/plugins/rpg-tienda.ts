@@ -48,25 +48,39 @@ const SHOP_ITEMS: Record<string, string[]> = {
 
 /**
  * Items especiales comprables SOLO con diamantes
+ * Precios equilibrados respecto a beneficios:
+ * - Items ofensivos: mas caros por su impacto en otros
+ * - Items defensivos: precio moderado, duran 24h
+ * - Items de utilidad: precio bajo-medio
+ * - Equipamiento legendario: muy caro pero permanente
  */
 const DIAMOND_SHOP: Record<string, { itemId: string; diamonds: number; description: string }[]> = {
   especiales: [
-    { itemId: 'ticket_muteo', diamonds: 1000, description: 'Mutea a alguien por 24h' },
-    { itemId: 'ticket_kick', diamonds: 2000, description: 'Expulsa a alguien del grupo' },
-    { itemId: 'bomba_dinero', diamonds: 500, description: 'Roba 50% del dinero de alguien' },
-    { itemId: 'escudo_robo', diamonds: 800, description: 'Protege de robos por 24h' },
-    { itemId: 'boost_exp_24h', diamonds: 1500, description: '+50% EXP por 24 horas' },
-    { itemId: 'cambio_nombre', diamonds: 300, description: 'Cambia tu nombre RPG' },
-    { itemId: 'reset_clase', diamonds: 2500, description: 'Reinicia tu clase y stats' }
+    { itemId: 'ticket_muteo', diamonds: 1500, description: 'Mutea a alguien por 24h' },
+    { itemId: 'ticket_kick', diamonds: 2500, description: 'Expulsa a alguien del grupo' },
+    { itemId: 'bomba_dinero', diamonds: 800, description: 'Roba 500-2000 monedas a todos' },
+    { itemId: 'cambio_nombre', diamonds: 200, description: 'Cambia tu nombre RPG' },
+    { itemId: 'reset_clase', diamonds: 1500, description: 'Reinicia tu clase y stats' }
+  ],
+  proteccion: [
+    { itemId: 'escudo_robo', diamonds: 600, description: 'Protege de robos por 24h' },
+    { itemId: 'escudo_antibombas', diamonds: 750, description: 'Protege de bombardeos por 24h' },
+    { itemId: 'seguro_vida', diamonds: 1200, description: 'Sin cuotas IMSS por 48h' }
   ],
   consumibles: [
-    { itemId: 'pocion_resurrecion', diamonds: 750, description: 'Revive con 100% HP' },
-    { itemId: 'caja_misteriosa', diamonds: 1000, description: 'Item aleatorio legendario' }
+    { itemId: 'pocion_resurrecion', diamonds: 500, description: 'Revive con 100% HP/MP/ST' },
+    { itemId: 'caja_misteriosa', diamonds: 800, description: 'Item aleatorio raro+' },
+    { itemId: 'cofre_oro', diamonds: 400, description: '5,000-15,000 monedas' },
+    { itemId: 'pocion_suerte', diamonds: 350, description: '+20% drops raros por 1h' }
+  ],
+  boosts: [
+    { itemId: 'boost_exp_24h', diamonds: 1000, description: '+50% EXP por 24 horas' },
+    { itemId: 'doble_exp_permanente', diamonds: 3000, description: '+25% EXP permanente (max 3)' }
   ],
   legendarios: [
-    { itemId: 'espada_celestial', diamonds: 5000, description: 'Arma legendaria +100 ATK' },
-    { itemId: 'armadura_celestial', diamonds: 5000, description: 'Armadura legendaria +80 DEF' },
-    { itemId: 'corona_reyes', diamonds: 7500, description: 'Accesorio legendario +50 todos' }
+    { itemId: 'espada_celestial', diamonds: 4000, description: 'Arma legendaria +100 ATK' },
+    { itemId: 'armadura_celestial', diamonds: 4000, description: 'Armadura legendaria +100 DEF' },
+    { itemId: 'corona_reyes', diamonds: 6000, description: 'Accesorio +30ATK/DEF +100HP' }
   ]
 };
 
@@ -110,10 +124,12 @@ const tiendaPlugin: PluginHandler = {
       response += `━━━━━━━━━━━━━━━━━━━━━\n`;
       response += `💎 Tus diamantes: *${formatNumber(user.limit)}*\n\n`;
 
-      const diamondCategories = ['especiales', 'consumibles', 'legendarios'];
+      const diamondCategories = ['especiales', 'proteccion', 'consumibles', 'boosts', 'legendarios'];
       const diamondEmojis: Record<string, string> = {
         especiales: '🎫',
+        proteccion: '🛡️',
         consumibles: '🧪',
+        boosts: '⚡',
         legendarios: '👑'
       };
 
@@ -618,11 +634,21 @@ const comprarDiamantesPlugin: PluginHandler = {
     } else if (foundItem.id === 'ticket_kick') {
       response += `💡 *Uso:* /usar ticket kick @usuario`;
     } else if (foundItem.id === 'bomba_dinero') {
-      response += `💡 *Uso:* /usar bomba dinero @usuario`;
+      response += `💡 *Uso:* /usar bomba dinero`;
     } else if (foundItem.id === 'escudo_robo') {
-      response += `💡 *Uso:* /usar escudo robo (se activa automáticamente)`;
+      response += `💡 *Uso:* /usar escudo robo`;
+    } else if (foundItem.id === 'escudo_antibombas') {
+      response += `💡 *Uso:* /usar escudo antibombas`;
+    } else if (foundItem.id === 'seguro_vida') {
+      response += `💡 *Uso:* /usar seguro vida`;
     } else if (foundItem.id === 'boost_exp_24h') {
       response += `💡 *Uso:* /usar boost exp`;
+    } else if (foundItem.id === 'doble_exp_permanente') {
+      response += `💡 *Uso:* /usar runa exp`;
+    } else if (foundItem.id === 'cofre_oro') {
+      response += `💡 *Uso:* /usar cofre oro`;
+    } else if (foundItem.id === 'pocion_suerte') {
+      response += `💡 *Uso:* /usar pocion suerte`;
     } else if (foundItem.id === 'cambio_nombre') {
       response += `💡 *Uso:* /usar cambio nombre [nuevo nombre]`;
     } else if (foundItem.id === 'reset_clase') {

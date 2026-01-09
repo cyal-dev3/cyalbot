@@ -13,7 +13,7 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, msToTime } from '../lib/utils.js';
-import { getRoleByLevel } from '../types/user.js';
+import { getRoleByLevel, calculateTotalStats } from '../types/user.js';
 import { ITEMS, CLASSES, type PlayerClass } from '../types/rpg.js';
 import {
   autoEventConfig,
@@ -340,6 +340,9 @@ export const rpgDarPlugin: PluginHandler = {
     let resourceName = '';
     let emoji = '';
 
+    // Calcular stats máximos reales (incluyendo clase y equipamiento)
+    const realMaxStats = calculateTotalStats(user, ITEMS, CLASSES);
+
     switch (type) {
       case 'dinero':
       case 'money':
@@ -356,7 +359,7 @@ export const rpgDarPlugin: PluginHandler = {
         emoji = '✨';
         break;
       case 'mana':
-        updates.mana = Math.min(user.maxMana, user.mana + amount);
+        updates.mana = Math.min(realMaxStats.maxMana, user.mana + amount);
         resourceName = 'maná';
         emoji = '💠';
         break;
@@ -370,14 +373,14 @@ export const rpgDarPlugin: PluginHandler = {
       case 'vida':
       case 'health':
       case 'hp':
-        updates.health = Math.min(user.maxHealth, user.health + amount);
+        updates.health = Math.min(realMaxStats.maxHealth, user.health + amount);
         resourceName = 'vida';
         emoji = '❤️';
         break;
       case 'stamina':
       case 'energia':
       case 'energy':
-        updates.stamina = Math.min(user.maxStamina, user.stamina + amount);
+        updates.stamina = Math.min(realMaxStats.maxStamina, user.stamina + amount);
         resourceName = 'energía';
         emoji = '⚡';
         break;
@@ -1035,40 +1038,40 @@ export const rpgResetCdPlugin: PluginHandler = {
 
     switch (type) {
       case 'work':
-        updates.lastwork = 0;
+        updates.lastWork = 0;
         break;
       case 'mine':
       case 'minar':
-        updates.lastmine = 0;
+        updates.lastMine = 0;
         break;
       case 'rob':
       case 'robar':
-        updates.lastrob = 0;
+        updates.lastRob = 0;
         break;
       case 'duel':
       case 'duelo':
-        updates.lastduel = 0;
+        updates.lastDuel = 0;
         break;
       case 'attack':
       case 'atacar':
-        updates.lastattack = 0;
+        updates.lastAttack = 0;
         break;
       case 'dungeon':
-        updates.lastdungeon = 0;
+        updates.lastDungeon = 0;
         break;
       case 'daily':
       case 'diario':
-        updates.lastclaim = 0;
+        updates.lastClaim = 0;
         break;
       case 'all':
       case 'todos':
-        updates.lastwork = 0;
-        updates.lastmine = 0;
-        updates.lastrob = 0;
-        updates.lastduel = 0;
-        updates.lastattack = 0;
-        updates.lastdungeon = 0;
-        updates.lastclaim = 0;
+        updates.lastWork = 0;
+        updates.lastMine = 0;
+        updates.lastRob = 0;
+        updates.lastDuel = 0;
+        updates.lastAttack = 0;
+        updates.lastDungeon = 0;
+        updates.lastClaim = 0;
         break;
       default:
         return m.reply(
@@ -1112,21 +1115,21 @@ export const rpgResetCdAllPlugin: PluginHandler = {
 
       switch (type) {
         case 'work':
-          updates.lastwork = 0;
+          updates.lastWork = 0;
           break;
         case 'rob':
         case 'robar':
-          updates.lastrob = 0;
+          updates.lastRob = 0;
           break;
         case 'all':
         case 'todos':
-          updates.lastwork = 0;
-          updates.lastmine = 0;
-          updates.lastrob = 0;
-          updates.lastduel = 0;
-          updates.lastattack = 0;
-          updates.lastdungeon = 0;
-          updates.lastclaim = 0;
+          updates.lastWork = 0;
+          updates.lastMine = 0;
+          updates.lastRob = 0;
+          updates.lastDuel = 0;
+          updates.lastAttack = 0;
+          updates.lastDungeon = 0;
+          updates.lastClaim = 0;
           break;
         default:
           if (type in user) {
@@ -1326,12 +1329,15 @@ export const rpgInfoPlugin: PluginHandler = {
     const classInfo = user.playerClass ? CLASSES[user.playerClass] : null;
     const now = Date.now();
 
+    // Calcular stats máximos reales (incluyendo clase y equipamiento)
+    const realMaxStats = calculateTotalStats(user, ITEMS, CLASSES);
+
     // Calcular cooldowns restantes
     const cooldowns = {
-      work: user.lastwork ? Math.max(0, (user.lastwork + 10 * 60 * 1000) - now) : 0,
-      mine: user.lastmine ? Math.max(0, (user.lastmine + 15 * 60 * 1000) - now) : 0,
-      rob: user.lastrob ? Math.max(0, (user.lastrob + 60 * 60 * 1000) - now) : 0,
-      daily: user.lastclaim ? Math.max(0, (user.lastclaim + 24 * 60 * 60 * 1000) - now) : 0
+      work: user.lastWork ? Math.max(0, (user.lastWork + 10 * 60 * 1000) - now) : 0,
+      mine: user.lastMine ? Math.max(0, (user.lastMine + 15 * 60 * 1000) - now) : 0,
+      rob: user.lastRob ? Math.max(0, (user.lastRob + 60 * 60 * 1000) - now) : 0,
+      daily: user.lastClaim ? Math.max(0, (user.lastClaim + 24 * 60 * 60 * 1000) - now) : 0
     };
 
     const info = `
@@ -1350,9 +1356,9 @@ export const rpgInfoPlugin: PluginHandler = {
 • Clase: ${classInfo ? `${classInfo.emoji} ${classInfo.name}` : 'Sin clase'}
 
 ❤️ *STATS:*
-• Vida: ${user.health}/${user.maxHealth}
-• Maná: ${user.mana}/${user.maxMana}
-• Energía: ${user.stamina}/${user.maxStamina}
+• Vida: ${user.health}/${realMaxStats.maxHealth}
+• Maná: ${user.mana}/${realMaxStats.maxMana}
+• Energía: ${user.stamina}/${realMaxStats.maxStamina}
 • Ataque: ${user.attack}
 • Defensa: ${user.defense}
 • Crítico: ${user.critChance}%

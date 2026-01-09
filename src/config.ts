@@ -18,7 +18,8 @@ export const CONFIG = {
   authFolder: 'CyaltronicSession',
 
   // 👑 Números de los dueños del bot (pueden ser números de teléfono o LIDs)
-  owners: ['5213314429560', '174912593502302'],
+  // Se pueden configurar via variable de entorno BOT_OWNERS (separados por coma)
+  owners: (process.env.BOT_OWNERS || '5213314429560,174912593502302').split(',').filter(Boolean),
 
   // ⏰ Cooldowns en milisegundos
   cooldowns: {

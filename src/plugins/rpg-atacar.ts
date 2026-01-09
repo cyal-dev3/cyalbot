@@ -7,15 +7,14 @@ import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
-import { MONSTERS, ITEMS, type Monster } from '../types/rpg.js';
+import { MONSTERS, ITEMS, CLASSES, type Monster } from '../types/rpg.js';
 import { calculateTotalStats } from '../types/user.js';
 import { globalModes, checkExpiredModes } from './owner-rpg.js';
 import { applyDeathPenalty, generateIMSSMessage } from './rpg-bombardear.js';
+import { PVP } from '../constants/rpg.js';
 
-/**
- * Cooldown de ataque: 3 minutos
- */
-const ATTACK_COOLDOWN = 3 * 60 * 1000;
+// Usar constantes centralizadas
+const ATTACK_COOLDOWN = PVP.ATTACK_COOLDOWN;
 
 /**
  * Selecciona un monstruo apropiado para el nivel del jugador
@@ -159,7 +158,7 @@ export const atacarPlugin: PluginHandler = {
 
     // Verificar cooldown
     const now = Date.now();
-    const lastAttack = user.lastattack || 0;
+    const lastAttack = user.lastAttack || 0;
 
     if (now - lastAttack < ATTACK_COOLDOWN) {
       const remaining = ATTACK_COOLDOWN - (now - lastAttack);
@@ -170,11 +169,14 @@ export const atacarPlugin: PluginHandler = {
       return;
     }
 
+    // Calcular stats del jugador con equipamiento y clase
+    const playerStats = calculateTotalStats(user, ITEMS, CLASSES);
+
     // Verificar salud
-    if (user.health < 20) {
+    if (user.health < PVP.MIN_HEALTH_COMBAT) {
       await m.reply(
         `${EMOJI.error} ¡Estás muy débil para combatir!\n\n` +
-        `❤️ Salud actual: *${user.health}/${user.maxHealth}*\n\n` +
+        `❤️ Salud actual: *${user.health}/${playerStats.maxHealth}*\n\n` +
         `💡 Usa una poción de salud o espera a regenerarte.`
       );
       return;
@@ -195,9 +197,6 @@ export const atacarPlugin: PluginHandler = {
     // Seleccionar monstruo
     const monster = selectMonster(user.level);
 
-    // Calcular stats del jugador con equipamiento
-    const playerStats = calculateTotalStats(user, ITEMS);
-
     // Simular combate
     const result = simulateCombat(
       playerStats,
@@ -208,7 +207,7 @@ export const atacarPlugin: PluginHandler = {
     // Aplicar cooldown y consumir stamina
     const staminaCost = 10;
     db.updateUser(m.sender, {
-      lastattack: now,
+      lastAttack: now,
       stamina: Math.max(0, user.stamina - staminaCost)
     });
 
@@ -313,7 +312,7 @@ export const atacarPlugin: PluginHandler = {
         victoryMsg += '\n';
       }
 
-      victoryMsg += `\n❤️ Salud restante: *${newHealth}/${user.maxHealth}*`;
+      victoryMsg += `\n❤️ Salud restante: *${newHealth}/${playerStats.maxHealth}*`;
       victoryMsg += `\n⏰ Próximo ataque: *3 minutos*`;
 
       await m.reply(victoryMsg);
@@ -337,7 +336,7 @@ export const atacarPlugin: PluginHandler = {
         defeatMsg += `   ${line}\n`;
       }
 
-      defeatMsg += `\n❤️ Salud restante: *1/${user.maxHealth}*\n`;
+      defeatMsg += `\n❤️ Salud restante: *1/${playerStats.maxHealth}*\n`;
 
       // Aplicar cuota del IMSS si murió
       if (playerDied) {

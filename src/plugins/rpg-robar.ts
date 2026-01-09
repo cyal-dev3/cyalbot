@@ -10,6 +10,7 @@ import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/uti
 import { updateQuestProgress } from './rpg-misiones.js';
 import { getRankBenefits, getRoleByLevel } from '../types/user.js';
 import { globalModes, checkExpiredModes } from './owner-rpg.js';
+import { ROB, PVP } from '../constants/rpg.js';
 
 /**
  * Tipos de recursos que se pueden robar
@@ -126,11 +127,19 @@ function calculateRobAttempt(
     // Robar entre 10 y 40 de maná (AUMENTADO + bonus rango)
     minSteal = Math.floor(10 * amountMultiplier);
     maxSteal = Math.min(Math.floor(40 * amountMultiplier), victimMana - 5);
-  } else {
-    // Fallback a dinero
+  } else if (victimMoney > 0) {
+    // Fallback a dinero solo si tiene algo
     resource = 'money';
     minSteal = Math.floor(victimMoney * 0.10 * amountMultiplier);
     maxSteal = Math.floor(victimMoney * 0.25 * amountMultiplier);
+  } else {
+    // Víctima no tiene nada que robar - retornar como fallo
+    return {
+      success: false,
+      resource: 'money',
+      amount: 0,
+      message: '🫗 ¡La víctima no tiene nada que robar! Sus bolsillos están vacíos.'
+    };
   }
 
   // Asegurar mínimos más altos
@@ -184,6 +193,17 @@ export const robarPlugin: PluginHandler = {
     const db = getDatabase();
     const thief = db.getUser(m.sender);
 
+    // Verificar nivel mínimo para PvP
+    if (thief.level < PVP.MIN_LEVEL_PVP) {
+      await m.reply(
+        `${EMOJI.error} ¡Necesitas más experiencia para robar!\n\n` +
+        `📊 Tu nivel: *${thief.level}*\n` +
+        `🎯 Nivel requerido: *${PVP.MIN_LEVEL_PVP}*\n\n` +
+        `💡 Sube de nivel atacando monstruos o trabajando.`
+      );
+      return;
+    }
+
     // Verificar modos globales activos
     checkExpiredModes();
     const isFreeRobMode = globalModes.freeRobMode.active;
@@ -198,7 +218,7 @@ export const robarPlugin: PluginHandler = {
     const baseCooldown = CONFIG.cooldowns.rob;
     const cooldownReduction = thiefRankBenefits.cooldownReduction / 100;
     const cooldown = Math.floor(baseCooldown * (1 - cooldownReduction));
-    const lastRob = thief.lastrob || 0;
+    const lastRob = thief.lastRob || 0;
 
     if (!isFreeRobMode && now - lastRob < cooldown) {
       const remaining = cooldown - (now - lastRob);
@@ -282,7 +302,7 @@ export const robarPlugin: PluginHandler = {
     );
 
     // Aplicar el cooldown
-    db.updateUser(m.sender, { lastrob: now });
+    db.updateUser(m.sender, { lastRob: now });
 
     // Calcular tiempo del próximo robo
     const nextRobMinutes = isFreeRobMode ? 0 : Math.floor(cooldown / 60000);
@@ -310,7 +330,7 @@ export const robarPlugin: PluginHandler = {
           db.updateUser(victimJid, { exp: Math.max(0, victim.exp - result.amount) });
           break;
         case 'mana':
-          db.updateUser(m.sender, { mana: Math.min(100, thief.mana + result.amount) });
+          db.updateUser(m.sender, { mana: Math.min(thief.maxMana, thief.mana + result.amount) });
           db.updateUser(victimJid, { mana: Math.max(0, victim.mana - result.amount) });
           break;
       }

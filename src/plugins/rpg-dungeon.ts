@@ -6,16 +6,15 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { EMOJI, msToTime, formatNumber, randomInt, pickRandom, matchesIgnoreAccents } from '../lib/utils.js';
-import { DUNGEONS, MONSTERS, ITEMS, type Dungeon, type Monster } from '../types/rpg.js';
+import { DUNGEONS, MONSTERS, ITEMS, CLASSES, type Dungeon, type Monster } from '../types/rpg.js';
 import { calculateTotalStats } from '../types/user.js';
 import { updateQuestProgress } from './rpg-misiones.js';
 import { globalModes, checkExpiredModes } from './owner-rpg.js';
 import { applyDeathPenalty, generateIMSSMessage } from './rpg-bombardear.js';
+import { PVP } from '../constants/rpg.js';
 
-/**
- * Cooldown de dungeon: 30 minutos
- */
-const DUNGEON_COOLDOWN = 30 * 60 * 1000;
+// Usar constantes centralizadas
+const DUNGEON_COOLDOWN = PVP.DUNGEON_COOLDOWN;
 
 /**
  * Calcula el daño en combate de dungeon
@@ -288,7 +287,7 @@ export const dungeonPlugin: PluginHandler = {
 
     // Verificar cooldown
     const now = Date.now();
-    const lastDungeon = user.lastdungeon || 0;
+    const lastDungeon = user.lastDungeon || 0;
 
     if (now - lastDungeon < DUNGEON_COOLDOWN) {
       const remaining = DUNGEON_COOLDOWN - (now - lastDungeon);
@@ -366,11 +365,14 @@ export const dungeonPlugin: PluginHandler = {
       return;
     }
 
+    // Calcular stats del jugador (incluyendo clase y equipamiento)
+    const playerStats = calculateTotalStats(user, ITEMS, CLASSES);
+
     // Verificar salud
-    if (user.health < 50) {
+    if (user.health < PVP.MIN_HEALTH_DUNGEON) {
       await m.reply(
         `${EMOJI.error} Estás muy débil para entrar a un dungeon.\n\n` +
-        `❤️ Salud: *${user.health}/${user.maxHealth}*\n\n` +
+        `❤️ Salud: *${user.health}/${playerStats.maxHealth}*\n\n` +
         `💡 Cúrate antes de entrar.`
       );
       return;
@@ -381,11 +383,8 @@ export const dungeonPlugin: PluginHandler = {
     // Consumir stamina y aplicar cooldown
     db.updateUser(m.sender, {
       stamina: user.stamina - selectedDungeon.staminaCost,
-      lastdungeon: now
+      lastDungeon: now
     });
-
-    // Calcular stats del jugador
-    const playerStats = calculateTotalStats(user, ITEMS);
 
     // Ejecutar dungeon
     const result = runDungeon(selectedDungeon, playerStats, user.health, user.level);
@@ -489,7 +488,7 @@ export const dungeonPlugin: PluginHandler = {
       response += modeMessages.map(msg => `   ${msg}`).join('\n') + '\n';
     }
 
-    response += `\n❤️ Salud: *${result.finalHealth}/${user.maxHealth}*\n`;
+    response += `\n❤️ Salud: *${result.finalHealth}/${playerStats.maxHealth}*\n`;
 
     // Si el jugador murió (finalHealth <= 0), aplicar cuota del IMSS
     if (result.finalHealth <= 0) {

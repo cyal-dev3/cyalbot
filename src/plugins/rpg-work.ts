@@ -79,7 +79,7 @@ export const workPlugin: PluginHandler = {
     const baseCooldown = CONFIG.cooldowns.work;
     const cooldownReduction = rankBenefits.cooldownReduction / 100;
     const cooldown = Math.floor(baseCooldown * (1 - cooldownReduction));
-    const timeSinceLastWork = now - user.lastwork;
+    const timeSinceLastWork = now - user.lastWork;
 
     if (timeSinceLastWork < cooldown) {
       const remaining = cooldown - timeSinceLastWork;
@@ -171,7 +171,7 @@ export const workPlugin: PluginHandler = {
     db.updateUser(m.sender, {
       exp: user.exp + expReward,
       money: user.money + bonusMoney,
-      lastwork: now
+      lastWork: now
     });
 
     // Verificar si puede subir de nivel

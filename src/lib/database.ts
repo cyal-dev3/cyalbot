@@ -117,6 +117,27 @@ export class Database {
         needsMigration = true;
       }
 
+      // Migrar timestamps de lowercase a camelCase
+      const timestampMigrations: [string, string][] = [
+        ['lastclaim', 'lastClaim'],
+        ['lastwork', 'lastWork'],
+        ['lastmine', 'lastMine'],
+        ['lastrob', 'lastRob'],
+        ['lastduel', 'lastDuel'],
+        ['lastattack', 'lastAttack'],
+        ['lastdungeon', 'lastDungeon'],
+        ['lastbomb', 'lastBomb']
+      ];
+
+      for (const [oldKey, newKey] of timestampMigrations) {
+        const userAny = user as unknown as Record<string, unknown>;
+        if (oldKey in userAny && !(newKey in userAny)) {
+          userAny[newKey] = userAny[oldKey];
+          delete userAny[oldKey];
+          needsMigration = true;
+        }
+      }
+
       // Asegurar valores numéricos válidos para stats máximos
       if (typeof user.maxHealth !== 'number' || isNaN(user.maxHealth) || user.maxHealth === null) {
         user.maxHealth = 100;

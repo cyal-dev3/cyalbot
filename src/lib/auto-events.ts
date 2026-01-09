@@ -7,7 +7,7 @@
 
 import type { WASocket } from 'baileys';
 import { globalModes } from '../plugins/owner-rpg.js';
-import { msToTime } from './utils.js';
+import { msToTime, pickRandom, randomInt, weightedRandom } from './utils.js';
 
 // ==================== CONFIGURACIÓN ====================
 
@@ -68,37 +68,6 @@ const DURATIONS = [
   { ms: 30 * 60 * 1000, name: '30 minutos', weight: 10 }    // 30m - 10% (RARO)
 ];
 
-// ==================== UTILIDADES ====================
-
-/**
- * Selecciona un elemento aleatorio basado en pesos
- */
-function weightedRandom<T extends { weight: number }>(items: T[]): T {
-  const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
-  let random = Math.random() * totalWeight;
-
-  for (const item of items) {
-    random -= item.weight;
-    if (random <= 0) return item;
-  }
-
-  return items[items.length - 1];
-}
-
-/**
- * Genera un número aleatorio entre min y max
- */
-function randomBetween(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-/**
- * Selecciona un elemento aleatorio de un array
- */
-function randomElement<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
 // ==================== GENERADOR DE EVENTOS ====================
 
 interface GeneratedEvent {
@@ -114,7 +83,7 @@ interface GeneratedEvent {
  * Genera un evento aleatorio
  */
 function generateRandomEvent(): GeneratedEvent {
-  const type = randomElement(EVENT_TYPES);
+  const type = pickRandom(EVENT_TYPES);
   const multiplierData = weightedRandom(MULTIPLIERS);
   const durationData = weightedRandom(DURATIONS);
 
@@ -281,7 +250,7 @@ function scheduleNextEvent(): void {
   if (!autoEventConfig.enabled) return;
 
   // Calcular tiempo aleatorio hasta el próximo evento
-  const nextEventIn = randomBetween(
+  const nextEventIn = randomInt(
     autoEventConfig.minInterval,
     autoEventConfig.maxInterval
   );

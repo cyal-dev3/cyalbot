@@ -6,6 +6,7 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import type { KissRecord } from '../types/user.js';
 import { getDatabase } from '../lib/database.js';
+import { LIMITS } from '../constants/rpg.js';
 
 // Tipos de besos con diferentes niveles de intensidad
 const KISS_TYPES = [
@@ -126,6 +127,12 @@ export const besoPlugin: PluginHandler = {
     if (!senderRecord) {
       senderRecord = { jid: targetJid, count: 0, lastKiss: 0 };
       senderData.kissStats.kissHistory.push(senderRecord);
+
+      // Limitar tamaño del historial (eliminar los más antiguos)
+      if (senderData.kissStats.kissHistory.length > LIMITS.MAX_KISS_HISTORY) {
+        senderData.kissStats.kissHistory.sort((a, b) => b.lastKiss - a.lastKiss);
+        senderData.kissStats.kissHistory = senderData.kissStats.kissHistory.slice(0, LIMITS.MAX_KISS_HISTORY);
+      }
     }
     senderRecord.count++;
     senderRecord.lastKiss = Date.now();
@@ -138,6 +145,12 @@ export const besoPlugin: PluginHandler = {
     if (!targetRecord) {
       targetRecord = { jid: m.sender, count: 0, lastKiss: 0 };
       targetData.kissStats.kissHistory.push(targetRecord);
+
+      // Limitar tamaño del historial (eliminar los más antiguos)
+      if (targetData.kissStats.kissHistory.length > LIMITS.MAX_KISS_HISTORY) {
+        targetData.kissStats.kissHistory.sort((a, b) => b.lastKiss - a.lastKiss);
+        targetData.kissStats.kissHistory = targetData.kissStats.kissHistory.slice(0, LIMITS.MAX_KISS_HISTORY);
+      }
     }
     // No incrementamos count aquí porque es beso recibido, no dado
 

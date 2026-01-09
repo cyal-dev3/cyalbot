@@ -61,6 +61,7 @@ import { pinterestPlugin } from './download-pinterest.js';
 // Importar plugins de herramientas
 import { translatePlugin } from './tools-translate.js';
 import { climaPlugin } from './tools-clima.js';
+import { bugPlugin, featPlugin } from './tools-github.js';
 
 // Importar plugins de diversión
 import { slotPlugin, slotInfoPlugin } from './game-slot.js';
@@ -275,7 +276,9 @@ export function loadPlugins(handler: MessageHandler): void {
   console.log('   🔧 Herramientas:');
   handler.registerPlugin('tools-translate', translatePlugin);
   handler.registerPlugin('tools-clima', climaPlugin);
-  console.log('      ✅ translate, clima');
+  handler.registerPlugin('tools-bug', bugPlugin);
+  handler.registerPlugin('tools-feat', featPlugin);
+  console.log('      ✅ translate, clima, bug, feat');
 
   // Cargar plugins de diversión
   console.log('');
@@ -339,7 +342,7 @@ export function loadPlugins(handler: MessageHandler): void {
     6 +                            // protección (antilink, antispam, warn, unwarn, listwarn, clearwarn)
     6 +                            // bienvenida (setwelcome, setbye, welcome, bye, tagall, hidetag)
     5 +                            // descargadores
-    2 +                            // herramientas (translate, clima)
+    4 +                            // herramientas (translate, clima, bug, feat)
     21 +                           // diversión (slot, slotinfo, blackjack x8, amor, gay, beso x3, ruleta x6)
     ownerRpgPlugins.length;        // owner RPG (22 comandos)
 

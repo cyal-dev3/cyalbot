@@ -13,7 +13,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const TMP_DIR = join(__dirname, '../../tmp');
 
 // Asegurar que el directorio tmp existe
-await fs.mkdir(TMP_DIR, { recursive: true }).catch(() => {});
+await fs.mkdir(TMP_DIR, { recursive: true }).catch(e => console.error('[Sticker] Error creando directorio tmp:', e.message));
 
 /**
  * Interfaz para metadatos del sticker
@@ -161,8 +161,8 @@ export async function imageToSticker(
     return stickerBuffer;
   } finally {
     // Limpiar archivos temporales
-    await fs.unlink(inputPath).catch(() => {});
-    await fs.unlink(outputPath).catch(() => {});
+    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
+    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
   }
 }
 
@@ -202,8 +202,8 @@ export async function videoToSticker(
 
     return stickerBuffer;
   } finally {
-    await fs.unlink(inputPath).catch(() => {});
-    await fs.unlink(outputPath).catch(() => {});
+    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
+    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
   }
 }
 
@@ -223,8 +223,8 @@ export async function stickerToImage(buffer: Buffer): Promise<Buffer> {
 
     return await fs.readFile(outputPath);
   } finally {
-    await fs.unlink(inputPath).catch(() => {});
-    await fs.unlink(outputPath).catch(() => {});
+    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
+    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
   }
 }
 
@@ -248,8 +248,8 @@ export async function stickerToVideo(buffer: Buffer): Promise<Buffer> {
 
     return await fs.readFile(outputPath);
   } finally {
-    await fs.unlink(inputPath).catch(() => {});
-    await fs.unlink(outputPath).catch(() => {});
+    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
+    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
   }
 }
 
@@ -270,8 +270,8 @@ export async function stickerToGif(buffer: Buffer): Promise<Buffer> {
 
     return await fs.readFile(outputPath);
   } finally {
-    await fs.unlink(inputPath).catch(() => {});
-    await fs.unlink(outputPath).catch(() => {});
+    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
+    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
   }
 }
 

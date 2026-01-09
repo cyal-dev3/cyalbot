@@ -3,7 +3,7 @@
  * Define la estructura de datos de cada jugador
  */
 
-import type { PlayerClass } from './rpg.js';
+import type { PlayerClass, ClassInfo } from './rpg.js';
 
 /**
  * Item en el inventario del jugador
@@ -111,13 +111,14 @@ export interface UserRPG {
   activeBuffs: ActiveBuff[];
 
   // ⏰ Cooldowns (timestamps)
-  lastclaim: number;
-  lastwork: number;
-  lastmine: number;
-  lastrob: number;
-  lastduel: number;
-  lastattack: number;
-  lastdungeon: number;
+  lastClaim: number;
+  lastWork: number;
+  lastMine: number;
+  lastRob: number;
+  lastDuel: number;
+  lastAttack: number;
+  lastDungeon: number;
+  lastBomb: number;
 
   // 🔄 Regeneración pasiva (timestamps)
   lastHealthRegen: number;
@@ -125,6 +126,11 @@ export interface UserRPG {
 
   // 💀 Sistema de deuda IMSS
   debt: number;  // Deuda por cuotas médicas del IMSS
+
+  // 🛡️ Protecciones activas (timestamps de expiracion)
+  shieldRobo: number;       // Proteccion anti-robo hasta timestamp
+  shieldBombas: number;     // Proteccion anti-bombas hasta timestamp
+  seguroVida: number;       // Seguro de vida (sin cuotas IMSS) hasta timestamp
 
   // 💋 Sistema de besos
   kissStats: KissStats;
@@ -220,13 +226,14 @@ export const DEFAULT_USER: UserRPG = {
   activeBuffs: [],
 
   // Cooldowns
-  lastclaim: 0,
-  lastwork: 0,
-  lastmine: 0,
-  lastrob: 0,
-  lastduel: 0,
-  lastattack: 0,
-  lastdungeon: 0,
+  lastClaim: 0,
+  lastWork: 0,
+  lastMine: 0,
+  lastRob: 0,
+  lastDuel: 0,
+  lastAttack: 0,
+  lastDungeon: 0,
+  lastBomb: 0,
 
   // Regeneración pasiva
   lastHealthRegen: 0,
@@ -234,6 +241,11 @@ export const DEFAULT_USER: UserRPG = {
 
   // Deuda IMSS
   debt: 0,
+
+  // Protecciones
+  shieldRobo: 0,
+  shieldBombas: 0,
+  seguroVida: 0,
 
   // Besos
   kissStats: {
@@ -622,9 +634,13 @@ export function formatRankBenefits(level: number): string {
 }
 
 /**
- * Calcula los stats totales del jugador incluyendo equipamiento
+ * Calcula los stats totales del jugador incluyendo clase y equipamiento
  */
-export function calculateTotalStats(user: UserRPG, items: Record<string, { stats?: { attack?: number; defense?: number; health?: number; mana?: number; stamina?: number; critChance?: number } }>): {
+export function calculateTotalStats(
+  user: UserRPG,
+  items: Record<string, { stats?: { attack?: number; defense?: number; health?: number; mana?: number; stamina?: number; critChance?: number } }>,
+  classes?: Record<string, ClassInfo>
+): {
   attack: number;
   defense: number;
   maxHealth: number;
@@ -638,6 +654,16 @@ export function calculateTotalStats(user: UserRPG, items: Record<string, { stats
   let totalMana = user.maxMana;
   let totalStamina = user.maxStamina;
   let totalCrit = user.critChance;
+
+  // Sumar bonus de clase si existe
+  if (classes && user.playerClass && classes[user.playerClass]) {
+    const classInfo = classes[user.playerClass];
+    totalHealth += classInfo.baseStats.healthBonus;
+    totalMana += classInfo.baseStats.manaBonus;
+    totalStamina += classInfo.baseStats.staminaBonus;
+    totalAttack += classInfo.baseStats.attackBonus;
+    totalDefense += classInfo.baseStats.defenseBonus;
+  }
 
   // Sumar stats del equipamiento
   const equipmentSlots = [user.equipment.weapon, user.equipment.armor, user.equipment.accessory];

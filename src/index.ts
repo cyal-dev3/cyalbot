@@ -3,7 +3,7 @@
  * Punto de entrada principal
  *
  * @author Cyal
- * @version 1.0.0
+ * @version 3.0.0
  */
 
 import chalk from 'chalk';
@@ -15,14 +15,15 @@ import { CONFIG } from './config.js';
 import { startAutoEvents } from './lib/auto-events.js';
 import { startAutoRegen } from './lib/auto-regen.js';
 import type { WASocket, proto, GroupMetadata } from 'baileys';
+import { LRUCache } from './lib/lru-cache.js';
 
 // Variables globales para reconexión
 let db: Database;
 let handler: MessageHandler;
 let isFirstConnection = true;
 
-// Caché de metadatos de grupos
-const groupMetadataCache = new Map<string, GroupMetadata>();
+// Caché de metadatos de grupos con límite de 1000 entradas (LRU)
+const groupMetadataCache = new LRUCache<string, GroupMetadata>(1000);
 
 /**
  * Muestra el banner de inicio

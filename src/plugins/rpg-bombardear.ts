@@ -7,23 +7,16 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
-import type { UserRPG } from '../types/user.js';
+import { calculateTotalStats, type UserRPG } from '../types/user.js';
+import { ITEMS, CLASSES } from '../types/rpg.js';
+import { PVP } from '../constants/rpg.js';
 
-/**
- * Cooldown de bombardeo: 5 minutos
- */
-const BOMB_COOLDOWN = 5 * 60 * 1000;
-
-/**
- * Probabilidad de que la bomba explote en tus manos (%)
- */
-const BACKFIRE_CHANCE = 35;
-
-/**
- * Daño base de la bomba
- */
-const BOMB_DAMAGE_MIN = 30;
-const BOMB_DAMAGE_MAX = 60;
+// Usar constantes centralizadas
+const BOMB_COOLDOWN = PVP.BOMB_COOLDOWN;
+const SHIELD_DURATION = PVP.SHIELD_DURATION;
+const BACKFIRE_CHANCE = PVP.BACKFIRE_CHANCE;
+const BOMB_DAMAGE_MIN = PVP.BOMB_DAMAGE.MIN;
+const BOMB_DAMAGE_MAX = PVP.BOMB_DAMAGE.MAX;
 
 /**
  * Mensajes de bombardeo exitoso
@@ -37,7 +30,7 @@ const SUCCESS_MESSAGES = [
 ];
 
 /**
- * Mensajes de backfire (bomba explota al atacante)
+ * Mensajes de backfire
  */
 const BACKFIRE_MESSAGES = [
   '💣💥 ¡OOPS! La bomba de *{attacker}* le explotó en la cara!',
@@ -79,7 +72,19 @@ export function applyDeathPenalty(
   db: ReturnType<typeof getDatabase>,
   userJid: string,
   user: UserRPG
-): { fee: number; tier: string; paid: boolean; newDebt: number } {
+): { fee: number; tier: string; paid: boolean; newDebt: number; insured: boolean } {
+  // Verificar si tiene seguro de vida activo
+  const now = Date.now();
+  if (user.seguroVida && user.seguroVida > now) {
+    return {
+      fee: 0,
+      tier: '📜 Seguro Premium',
+      paid: true,
+      newDebt: user.debt,
+      insured: true
+    };
+  }
+
   const { amount: fee, tier } = calculateIMSSFee();
 
   let tierEmoji = '🏥';
@@ -103,7 +108,8 @@ export function applyDeathPenalty(
       fee,
       tier: `${tierEmoji} ${tierName}`,
       paid: true,
-      newDebt: user.debt
+      newDebt: user.debt,
+      insured: false
     };
   } else {
     // No puede pagar - se agrega a la deuda
@@ -120,7 +126,8 @@ export function applyDeathPenalty(
       fee,
       tier: `${tierEmoji} ${tierName}`,
       paid: false,
-      newDebt: newTotalDebt
+      newDebt: newTotalDebt,
+      insured: false
     };
   }
 }
@@ -132,6 +139,16 @@ export function generateIMSSMessage(result: ReturnType<typeof applyDeathPenalty>
   let msg = `\n🏥 *CUOTA DEL IMSS*\n`;
   msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
   msg += `👤 Paciente: *${userName}*\n`;
+
+  // Si tiene seguro de vida
+  if (result.insured) {
+    msg += `📜 *SEGURO DE VIDA PREMIUM ACTIVO*\n\n`;
+    msg += `✅ *Cuota cubierta por tu seguro*\n`;
+    msg += `💵 Costo: *$0* (seguro activo)\n`;
+    msg += `_Tu seguro de vida te ha salvado de la deuda_`;
+    return msg;
+  }
+
   msg += `💊 Urgencia: ${result.tier}\n`;
   msg += `💵 Cuota médica: *$${formatNumber(result.fee)}*\n\n`;
 
@@ -180,9 +197,9 @@ export const bombardearPlugin: PluginHandler = {
     const db = getDatabase();
     const attacker = db.getUser(m.sender);
 
-    // Verificar cooldown (usar lastduel como cooldown compartido de PvP)
+    // Verificar cooldown de bombardeo
     const now = Date.now();
-    const lastBomb = attacker.lastduel || 0;
+    const lastBomb = attacker.lastBomb || 0;
 
     if (now - lastBomb < BOMB_COOLDOWN) {
       const remaining = BOMB_COOLDOWN - (now - lastBomb);
@@ -194,11 +211,14 @@ export const bombardearPlugin: PluginHandler = {
       return;
     }
 
+    // Calcular stats reales del atacante (incluyendo clase y equipamiento)
+    const attackerStats = calculateTotalStats(attacker, ITEMS, CLASSES);
+
     // Verificar salud del atacante
-    if (attacker.health < 20) {
+    if (attacker.health < PVP.MIN_HEALTH_COMBAT) {
       await m.reply(
         `${EMOJI.error} ¡Estás muy débil para manejar explosivos!\n\n` +
-        `❤️ Salud actual: *${attacker.health}/${attacker.maxHealth}*\n` +
+        `❤️ Salud actual: *${attacker.health}/${attackerStats.maxHealth}*\n` +
         `💡 Usa una poción para curarte.`
       );
       return;
@@ -228,10 +248,24 @@ export const bombardearPlugin: PluginHandler = {
       return;
     }
 
+    // Verificar si el objetivo tiene escudo antibombas activo
+    if (target.shieldBombas && target.shieldBombas > now) {
+      const remainingTime = target.shieldBombas - now;
+      const hoursLeft = Math.ceil(remainingTime / (60 * 60 * 1000));
+      await m.reply(
+        `🧱 *¡${target.name} tiene un Escudo Antibombas activo!*\n\n` +
+        `La bomba rebotó en el escudo y se desactivó.\n` +
+        `⏳ Protección restante: *${hoursLeft}h*\n\n` +
+        `💡 Intenta con otra víctima o espera a que expire.`
+      );
+      await m.react('🧱');
+      return;
+    }
+
     await m.react('💣');
 
     // Aplicar cooldown
-    db.updateUser(m.sender, { lastduel: now });
+    db.updateUser(m.sender, { lastBomb: now });
 
     // Calcular daño de la bomba
     const bombDamage = randomInt(BOMB_DAMAGE_MIN, BOMB_DAMAGE_MAX);
@@ -249,7 +283,7 @@ export const bombardearPlugin: PluginHandler = {
         .replace(/{attacker}/g, attacker.name);
 
       response += `\n\n💥 *Daño recibido:* ${bombDamage}\n`;
-      response += `❤️ *Salud:* ${newHealth}/${attacker.maxHealth}\n`;
+      response += `❤️ *Salud:* ${newHealth}/${attackerStats.maxHealth}\n`;
 
       if (isDead) {
         // El atacante murió - aplicar cuota IMSS
@@ -272,12 +306,15 @@ export const bombardearPlugin: PluginHandler = {
       const newTargetHealth = Math.max(0, target.health - bombDamage);
       const targetDied = newTargetHealth <= 0;
 
+      // Calcular stats reales del objetivo
+      const targetStats = calculateTotalStats(target, ITEMS, CLASSES);
+
       let response = pickRandom(SUCCESS_MESSAGES)
         .replace(/{attacker}/g, attacker.name)
         .replace(/{victim}/g, target.name);
 
       response += `\n\n💥 *Daño causado:* ${bombDamage}\n`;
-      response += `❤️ *Salud de ${target.name}:* ${newTargetHealth}/${target.maxHealth}\n`;
+      response += `❤️ *Salud de ${target.name}:* ${newTargetHealth}/${targetStats.maxHealth}\n`;
 
       if (targetDied) {
         // La víctima murió - aplicar cuota IMSS
