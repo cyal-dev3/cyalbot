@@ -43,7 +43,7 @@ export const gitPullPlugin: PluginHandler = {
   handler: async (ctx) => {
     await ctx.m.reply('📥 *Descargando cambios de GitHub...*');
 
-    const gitCommand = 'cd /home/dev3/cyalbot/CYALTRONIC && sudo -u dev3 git pull';
+    const gitCommand = 'cd /home/dev3/cyalbot/ && sudo -u dev3 git pull';
 
     exec(gitCommand, (error, stdout, stderr) => {
       if (error) {
