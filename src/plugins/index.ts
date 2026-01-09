@@ -16,7 +16,8 @@ import { robarPlugin } from './rpg-robar.js';
 
 // Importar plugins RPG avanzados
 import { atacarPlugin } from './rpg-atacar.js';
-import { dueloPlugin, aceptarPlugin, rechazarPlugin, atacarDueloPlugin, poderDueloPlugin, skillDetectorPlugin, rendirsePlugin } from './rpg-duelo.js';
+import { dueloPlugin, aceptarPlugin, rechazarPlugin, atacarDueloPlugin, bloquearDueloPlugin, poderDueloPlugin, skillDetectorPlugin, rendirsePlugin } from './rpg-duelo.js';
+import { bombardearPlugin, pagarDeudaPlugin, verDeudaPlugin } from './rpg-bombardear.js';
 import { registerInventoryPlugins } from './rpg-inventario.js';
 import { registerShopPlugins } from './rpg-tienda.js';
 import { clasePlugin, clasesPlugin, habilidadesPlugin } from './rpg-clase.js';
@@ -63,6 +64,8 @@ import { climaPlugin } from './tools-clima.js';
 
 // Importar plugins de diversión
 import { slotPlugin, slotInfoPlugin } from './game-slot.js';
+import { blackjackPlugin, jugarPlugin, pedirPlugin, plantarsePlugin, doblarPlugin, bjMesaPlugin, bjSalirPlugin, bjInfoPlugin } from './game-blackjack.js';
+import { ruletaPlugin, apostarPlugin, ruletaMesaPlugin, ruletaSalirPlugin, ruletaInfoPlugin, girarPlugin } from './game-roulette.js';
 import { amorPlugin, gayPlugin } from './fun-amor.js';
 
 // Importar plugins de owner
@@ -90,9 +93,13 @@ const rpgCombatPlugins = [
   { name: 'rpg-aceptar', plugin: aceptarPlugin },
   { name: 'rpg-rechazar', plugin: rechazarPlugin },
   { name: 'rpg-atacar-duelo', plugin: atacarDueloPlugin },
+  { name: 'rpg-bloquear-duelo', plugin: bloquearDueloPlugin },
   { name: 'rpg-poder-duelo', plugin: poderDueloPlugin },
   { name: 'rpg-skill-detector', plugin: skillDetectorPlugin },
-  { name: 'rpg-rendirse', plugin: rendirsePlugin }
+  { name: 'rpg-rendirse', plugin: rendirsePlugin },
+  { name: 'rpg-bombardear', plugin: bombardearPlugin },
+  { name: 'rpg-pagardeuda', plugin: pagarDeudaPlugin },
+  { name: 'rpg-verdeuda', plugin: verDeudaPlugin }
 ];
 
 /**
@@ -143,6 +150,7 @@ export function loadPlugins(handler: MessageHandler): void {
     handler.registerPlugin(name, plugin);
   }
   console.log('      ✅ atacar, duelo, aceptar, rechazar, habilidad, rendirse');
+  console.log('      ✅ bombardear, pagardeuda, deuda');
 
   // Cargar plugins de inventario y tienda
   console.log('');
@@ -273,9 +281,25 @@ export function loadPlugins(handler: MessageHandler): void {
   console.log('   🎮 Diversión:');
   handler.registerPlugin('game-slot', slotPlugin);
   handler.registerPlugin('game-slotinfo', slotInfoPlugin);
+  handler.registerPlugin('game-blackjack', blackjackPlugin);
+  handler.registerPlugin('game-bj-jugar', jugarPlugin);
+  handler.registerPlugin('game-bj-pedir', pedirPlugin);
+  handler.registerPlugin('game-bj-plantarse', plantarsePlugin);
+  handler.registerPlugin('game-bj-doblar', doblarPlugin);
+  handler.registerPlugin('game-bj-mesa', bjMesaPlugin);
+  handler.registerPlugin('game-bj-salir', bjSalirPlugin);
+  handler.registerPlugin('game-bj-info', bjInfoPlugin);
   handler.registerPlugin('fun-amor', amorPlugin);
   handler.registerPlugin('fun-gay', gayPlugin);
+  handler.registerPlugin('game-ruleta', ruletaPlugin);
+  handler.registerPlugin('game-apostar', apostarPlugin);
+  handler.registerPlugin('game-ruleta-mesa', ruletaMesaPlugin);
+  handler.registerPlugin('game-ruleta-salir', ruletaSalirPlugin);
+  handler.registerPlugin('game-ruleta-info', ruletaInfoPlugin);
+  handler.registerPlugin('game-girar', girarPlugin);
   console.log('      ✅ slot, slotinfo, amor, gay');
+  console.log('      ✅ blackjack, jugar, pedir, plantarse, doblar, bjmesa, bjsalir, bjinfo');
+  console.log('      ✅ ruleta, apostar, vermesa, ruletasalir, ruletainfo, girar');
 
   // Cargar plugins de owner RPG
   console.log('');
@@ -291,7 +315,7 @@ export function loadPlugins(handler: MessageHandler): void {
   // Calcular total de plugins
   const totalPlugins =
     rpgBasicPlugins.length +       // 7 - RPG básico
-    rpgCombatPlugins.length +      // 8 - RPG combate
+    rpgCombatPlugins.length +      // 11 - RPG combate (incluye bombardear, deuda)
     5 +                            // inventario
     3 +                            // tienda
     rpgClassPlugins.length +       // 3 - clases
@@ -312,7 +336,7 @@ export function loadPlugins(handler: MessageHandler): void {
     6 +                            // bienvenida (setwelcome, setbye, welcome, bye, tagall, hidetag)
     5 +                            // descargadores
     2 +                            // herramientas (translate, clima)
-    4 +                            // diversión (slot, slotinfo, amor, gay)
+    18 +                           // diversión (slot, slotinfo, blackjack x8, amor, gay, ruleta x6)
     ownerRpgPlugins.length;        // owner RPG (22 comandos)
 
   console.log('');

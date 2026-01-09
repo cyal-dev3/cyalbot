@@ -10,6 +10,7 @@ import { DUNGEONS, MONSTERS, ITEMS, type Dungeon, type Monster } from '../types/
 import { calculateTotalStats } from '../types/user.js';
 import { updateQuestProgress } from './rpg-misiones.js';
 import { globalModes, checkExpiredModes } from './owner-rpg.js';
+import { applyDeathPenalty, generateIMSSMessage } from './rpg-bombardear.js';
 
 /**
  * Cooldown de dungeon: 30 minutos
@@ -489,7 +490,18 @@ export const dungeonPlugin: PluginHandler = {
     }
 
     response += `\n❤️ Salud: *${result.finalHealth}/${user.maxHealth}*\n`;
-    response += `⏰ Próximo dungeon: *30 minutos*`;
+
+    // Si el jugador murió (finalHealth <= 0), aplicar cuota del IMSS
+    if (result.finalHealth <= 0) {
+      const freshUser = db.getUser(m.sender);
+      const imssResult = applyDeathPenalty(db, m.sender, freshUser);
+      response += generateIMSSMessage(imssResult, user.name);
+
+      // Actualizar salud a 1 (revivir)
+      db.updateUser(m.sender, { health: 1 });
+    }
+
+    response += `\n⏰ Próximo dungeon: *30 minutos*`;
 
     await m.reply(response);
     await m.react(result.completed ? '🏆' : '💀');

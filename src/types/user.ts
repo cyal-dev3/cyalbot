@@ -118,6 +118,34 @@ export interface UserRPG {
   lastduel: number;
   lastattack: number;
   lastdungeon: number;
+
+  // 🔄 Regeneración pasiva (timestamps)
+  lastHealthRegen: number;
+  lastStaminaRegen: number;
+
+  // 💀 Sistema de deuda IMSS
+  debt: number;  // Deuda por cuotas médicas del IMSS
+
+  // 💋 Sistema de besos
+  kissStats: KissStats;
+}
+
+/**
+ * Estadísticas de besos del usuario
+ */
+export interface KissStats {
+  totalGiven: number;           // Total de besos dados
+  totalReceived: number;        // Total de besos recibidos
+  kissHistory: KissRecord[];    // Historial de personas besadas
+}
+
+/**
+ * Registro de besos con una persona específica
+ */
+export interface KissRecord {
+  jid: string;                  // JID del usuario besado
+  count: number;                // Veces que se han besado
+  lastKiss: number;             // Timestamp del último beso
 }
 
 /**
@@ -133,7 +161,7 @@ export const DEFAULT_USER: UserRPG = {
   // Niveles
   level: 0,
   exp: 0,
-  role: '🌱 Novato',
+  role: 'Guerrero V',
 
   // Clase
   playerClass: null,
@@ -198,7 +226,21 @@ export const DEFAULT_USER: UserRPG = {
   lastrob: 0,
   lastduel: 0,
   lastattack: 0,
-  lastdungeon: 0
+  lastdungeon: 0,
+
+  // Regeneración pasiva
+  lastHealthRegen: 0,
+  lastStaminaRegen: 0,
+
+  // Deuda IMSS
+  debt: 0,
+
+  // Besos
+  kissStats: {
+    totalGiven: 0,
+    totalReceived: 0,
+    kissHistory: []
+  }
 };
 
 /**

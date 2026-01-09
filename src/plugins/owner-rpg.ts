@@ -15,6 +15,15 @@ import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, msToTime } from '../lib/utils.js';
 import { getRoleByLevel } from '../types/user.js';
 import { ITEMS, CLASSES, type PlayerClass } from '../types/rpg.js';
+import {
+  autoEventConfig,
+  toggleAutoEvents,
+  addAnnouncementGroup,
+  removeAnnouncementGroup,
+  setEventIntervals,
+  forceRandomEvent,
+  getAutoEventStatus
+} from '../lib/auto-events.js';
 
 // ==================== ESTADO GLOBAL DE MODOS ====================
 
@@ -267,6 +276,20 @@ ${modesStatus}
   _Da recursos a TODOS los registrados_
 • \`.rpglluviamoney\` [cantidad]
   _Lluvia de dinero aleatorio en el grupo_
+
+🎲 *EVENTOS AUTOMÁTICOS:*
+• \`.rpgautoevents\` [on/off]
+  _Activa/desactiva eventos aleatorios_
+• \`.rpgaddgrupo\`
+  _Agrega este grupo a los anuncios_
+• \`.rpgremovegrupo\`
+  _Remueve este grupo de los anuncios_
+• \`.rpgeventinterval\` [min] [max]
+  _Intervalo entre eventos (minutos)_
+• \`.rpgforceevent\`
+  _Fuerza un evento aleatorio ahora_
+• \`.rpgeventstatus\`
+  _Ver estado del sistema de eventos_
 
 ⚠️ *Tiempos válidos: 1s, 30m, 1h, 2h, 1d, etc.*
 `;
@@ -1621,6 +1644,204 @@ export const rpgTopPlugin: PluginHandler = {
   }
 };
 
+// ==================== EVENTOS AUTOMÁTICOS ====================
+
+/**
+ * Activar/Desactivar eventos automáticos
+ */
+export const rpgAutoEventsPlugin: PluginHandler = {
+  command: ['rpgautoevents', 'autoevents', 'autoeventos'],
+  tags: ['owner'],
+  help: ['rpgautoevents [on/off] - Activa/desactiva eventos aleatorios automáticos'],
+  owner: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m, args } = ctx;
+
+    const action = args[0]?.toLowerCase();
+
+    if (!action || !['on', 'off', 'activar', 'desactivar'].includes(action)) {
+      const status = getAutoEventStatus();
+      return m.reply(
+        `🎲 *EVENTOS AUTOMÁTICOS*\n\n` +
+        `Estado actual: ${status.enabled ? '✅ ACTIVADO' : '❌ DESACTIVADO'}\n\n` +
+        `Uso: \`.rpgautoevents [on/off]\``
+      );
+    }
+
+    const enable = action === 'on' || action === 'activar';
+    toggleAutoEvents(enable);
+
+    await m.reply(
+      `🎲 *EVENTOS AUTOMÁTICOS*\n\n` +
+      `${enable ? '✅ Sistema ACTIVADO' : '❌ Sistema DESACTIVADO'}\n\n` +
+      `${enable ? '_Los eventos aleatorios comenzarán a aparecer automáticamente._' : '_No habrá más eventos automáticos._'}`
+    );
+    await m.react(enable ? '✅' : '❌');
+  }
+};
+
+/**
+ * Agregar grupo a anuncios de eventos
+ */
+export const rpgAddGrupoPlugin: PluginHandler = {
+  command: ['rpgaddgrupo', 'rpgaddgroup', 'eventaddgroup'],
+  tags: ['owner'],
+  help: ['rpgaddgrupo - Agrega este grupo a los anuncios de eventos'],
+  owner: true,
+  group: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m } = ctx;
+    const groupId = m.chat;
+
+    const added = addAnnouncementGroup(groupId);
+
+    if (added) {
+      await m.reply(
+        `🎲 *GRUPO AGREGADO*\n\n` +
+        `✅ Este grupo ahora recibirá anuncios de eventos automáticos.\n\n` +
+        `📊 Total de grupos: *${autoEventConfig.announcementGroups.length}*`
+      );
+      await m.react('✅');
+    } else {
+      await m.reply(`${EMOJI.warning} Este grupo ya está en la lista de anuncios.`);
+    }
+  }
+};
+
+/**
+ * Remover grupo de anuncios de eventos
+ */
+export const rpgRemoveGrupoPlugin: PluginHandler = {
+  command: ['rpgremovegrupo', 'rpgremovegroup', 'eventremovegroup'],
+  tags: ['owner'],
+  help: ['rpgremovegrupo - Remueve este grupo de los anuncios de eventos'],
+  owner: true,
+  group: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m } = ctx;
+    const groupId = m.chat;
+
+    const removed = removeAnnouncementGroup(groupId);
+
+    if (removed) {
+      await m.reply(
+        `🎲 *GRUPO REMOVIDO*\n\n` +
+        `❌ Este grupo ya no recibirá anuncios de eventos automáticos.\n\n` +
+        `📊 Total de grupos: *${autoEventConfig.announcementGroups.length}*`
+      );
+      await m.react('✅');
+    } else {
+      await m.reply(`${EMOJI.warning} Este grupo no estaba en la lista de anuncios.`);
+    }
+  }
+};
+
+/**
+ * Configurar intervalo de eventos
+ */
+export const rpgEventIntervalPlugin: PluginHandler = {
+  command: ['rpgeventinterval', 'eventinterval', 'intervaloeventos'],
+  tags: ['owner'],
+  help: ['rpgeventinterval [min] [max] - Configura el intervalo entre eventos (en minutos)'],
+  owner: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m, args } = ctx;
+
+    const minMinutes = parseInt(args[0]);
+    const maxMinutes = parseInt(args[1]);
+
+    if (isNaN(minMinutes) || isNaN(maxMinutes) || minMinutes < 1 || maxMinutes < minMinutes) {
+      const status = getAutoEventStatus();
+      return m.reply(
+        `🎲 *INTERVALO DE EVENTOS*\n\n` +
+        `Intervalo actual: *${status.minInterval}* - *${status.maxInterval}*\n\n` +
+        `Uso: \`.rpgeventinterval [min] [max]\`\n` +
+        `Ejemplo: \`.rpgeventinterval 30 120\`\n` +
+        `_(eventos cada 30-120 minutos)_`
+      );
+    }
+
+    setEventIntervals(minMinutes, maxMinutes);
+
+    await m.reply(
+      `🎲 *INTERVALO ACTUALIZADO*\n\n` +
+      `⏰ Nuevo intervalo: *${minMinutes}* - *${maxMinutes}* minutos\n\n` +
+      `_Los eventos aparecerán aleatoriamente dentro de este rango._`
+    );
+    await m.react('✅');
+  }
+};
+
+/**
+ * Forzar evento aleatorio
+ */
+export const rpgForceEventPlugin: PluginHandler = {
+  command: ['rpgforceevent', 'forceevent', 'forzarevento'],
+  tags: ['owner'],
+  help: ['rpgforceevent - Fuerza un evento aleatorio inmediatamente'],
+  owner: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m } = ctx;
+
+    await m.reply(`🎲 *Generando evento aleatorio...*`);
+
+    const event = await forceRandomEvent();
+
+    const rarityText = event.isLegendary ? '🏆 LEGENDARIO' :
+                       event.isEpic ? '💎 ÉPICO' : '📢 Normal';
+
+    await m.reply(
+      `🎲 *EVENTO FORZADO*\n\n` +
+      `${event.type.emoji} *${event.type.name}*\n` +
+      `⚡ Multiplicador: *x${event.multiplier}*\n` +
+      `⏰ Duración: *${event.durationName}*\n` +
+      `✨ Rareza: *${rarityText}*\n\n` +
+      `_El evento ha sido anunciado en ${autoEventConfig.announcementGroups.length} grupos._`
+    );
+    await m.react('🎲');
+  }
+};
+
+/**
+ * Ver estado del sistema de eventos
+ */
+export const rpgEventStatusPlugin: PluginHandler = {
+  command: ['rpgeventstatus', 'eventstatus', 'estadoeventos'],
+  tags: ['owner'],
+  help: ['rpgeventstatus - Ver estado del sistema de eventos automáticos'],
+  owner: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m } = ctx;
+
+    const status = getAutoEventStatus();
+
+    await m.reply(
+      `🎲 *ESTADO DE EVENTOS AUTOMÁTICOS*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `📊 *Sistema:* ${status.enabled ? '✅ ACTIVADO' : '❌ DESACTIVADO'}\n\n` +
+      `⏰ *Intervalo:*\n` +
+      `   Mínimo: ${status.minInterval}\n` +
+      `   Máximo: ${status.maxInterval}\n\n` +
+      `📢 *Grupos de anuncio:* ${status.groups}\n\n` +
+      `🎯 *Próximo evento:* ${status.nextEventIn || 'No programado'}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `💡 *Multiplicadores posibles:*\n` +
+      `   x2 (30%), x3 (25%), x4 (18%)\n` +
+      `   x5 (12%), x6 (7%), x7 (4%)\n` +
+      `   x8 (2%), x10 (2% - ÉPICO)\n\n` +
+      `⏱️ *Duraciones posibles:*\n` +
+      `   1m (15%), 2m (20%), 5m (30%)\n` +
+      `   10m (25%), 30m (10% - RARO)`
+    );
+  }
+};
+
 // Exportar todos los plugins
 export default [
   ownerRpgMenuPlugin,
@@ -1644,5 +1865,12 @@ export default [
   rpgDarATodosPlugin,
   rpgLluviaMoneyPlugin,
   rpgBorrarPlugin,
-  rpgTopPlugin
+  rpgTopPlugin,
+  // Eventos automáticos
+  rpgAutoEventsPlugin,
+  rpgAddGrupoPlugin,
+  rpgRemoveGrupoPlugin,
+  rpgEventIntervalPlugin,
+  rpgForceEventPlugin,
+  rpgEventStatusPlugin
 ];

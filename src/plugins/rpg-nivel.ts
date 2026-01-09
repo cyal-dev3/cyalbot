@@ -70,6 +70,9 @@ export const nivelPlugin: PluginHandler = {
     user.mana = Math.min(100, user.mana + manaBonus);
     user.money += moneyBonus;
 
+    // Actualizar el rango en la base de datos
+    user.role = newRole;
+
     // Guardar cambios
     db.updateUser(m.sender, user);
 

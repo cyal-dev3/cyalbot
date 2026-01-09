@@ -93,6 +93,24 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['rob', 'steal', 'asaltar'],
         description: 'Robar a otro jugador',
         usage: '/robar @usuario'
+      },
+      {
+        cmd: 'bombardear',
+        aliases: ['bomba', 'bomb', 'granada'],
+        description: 'Lanzar bomba a jugador',
+        usage: '/bombardear @usuario'
+      },
+      {
+        cmd: 'deuda',
+        aliases: ['debt', 'imss'],
+        description: 'Ver tu deuda con el IMSS',
+        usage: '/deuda'
+      },
+      {
+        cmd: 'pagardeuda',
+        aliases: ['pagarimss', 'paydebt'],
+        description: 'Pagar tu deuda del IMSS',
+        usage: '/pagardeuda [cantidad]'
       }
     ]
   },
@@ -288,6 +306,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         usage: '/notify [mensaje]'
       },
       {
+        cmd: 'delete',
+        aliases: ['del', 'eliminar', 'borrar'],
+        description: 'Eliminar un mensaje',
+        usage: '/delete (responder a mensaje)'
+      },
+      {
         cmd: 'close',
         aliases: ['cerrar', 'cerrargrupo'],
         description: 'Cerrar grupo (solo admins escriben)',
@@ -450,6 +474,42 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['rpgitems'],
         description: 'Lista todos los items',
         usage: '/rpglistitems [categoria]'
+      },
+      {
+        cmd: 'rpgautoevents',
+        aliases: ['autoevents', 'autoeventos'],
+        description: 'Activar/desactivar eventos aleatorios',
+        usage: '/rpgautoevents [on/off]'
+      },
+      {
+        cmd: 'rpgaddgrupo',
+        aliases: ['rpgaddgroup', 'eventaddgroup'],
+        description: 'Agregar grupo a anuncios de eventos',
+        usage: '/rpgaddgrupo'
+      },
+      {
+        cmd: 'rpgremovegrupo',
+        aliases: ['rpgremovegroup', 'eventremovegroup'],
+        description: 'Remover grupo de anuncios',
+        usage: '/rpgremovegrupo'
+      },
+      {
+        cmd: 'rpgeventinterval',
+        aliases: ['eventinterval', 'intervaloeventos'],
+        description: 'Configurar intervalo entre eventos',
+        usage: '/rpgeventinterval [min] [max]'
+      },
+      {
+        cmd: 'rpgforceevent',
+        aliases: ['forceevent', 'forzarevento'],
+        description: 'Forzar evento aleatorio ahora',
+        usage: '/rpgforceevent'
+      },
+      {
+        cmd: 'rpgeventstatus',
+        aliases: ['eventstatus', 'estadoeventos'],
+        description: 'Ver estado de eventos automáticos',
+        usage: '/rpgeventstatus'
       }
     ]
   },
@@ -630,6 +690,115 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['gaytest'],
         description: 'Test de gayedad (broma)',
         usage: '/gay [@usuario]'
+      },
+      {
+        cmd: 'beso',
+        aliases: ['kiss', 'besito', 'muah'],
+        description: 'Dale un beso a alguien',
+        usage: '/beso @usuario'
+      },
+      {
+        cmd: 'misbesos',
+        aliases: ['mykisses', 'besostats'],
+        description: 'Ver tus estadísticas de besos',
+        usage: '/misbesos'
+      },
+      {
+        cmd: 'topbesos',
+        aliases: ['topkiss', 'besucones', 'rankingbesos'],
+        description: 'Ranking de besucones del grupo',
+        usage: '/topbesos'
+      }
+    ]
+  },
+  {
+    emoji: '🃏',
+    name: 'Casino',
+    description: 'Juegos de casino multiplayer',
+    commands: [
+      {
+        cmd: 'blackjack',
+        aliases: ['bj', 'mesa'],
+        description: 'Abrir mesa de Blackjack',
+        usage: '/blackjack [apuesta_min]'
+      },
+      {
+        cmd: 'jugar',
+        aliases: ['unirse', 'entrar'],
+        description: 'Unirse a mesa de Blackjack',
+        usage: '/jugar [apuesta]'
+      },
+      {
+        cmd: 'pedir',
+        aliases: ['hit', 'carta'],
+        description: 'Pedir carta en Blackjack',
+        usage: '/pedir'
+      },
+      {
+        cmd: 'plantarse',
+        aliases: ['stand', 'quedar'],
+        description: 'Plantarse en Blackjack',
+        usage: '/plantarse'
+      },
+      {
+        cmd: 'doblar',
+        aliases: ['double', 'dd'],
+        description: 'Doblar apuesta en Blackjack',
+        usage: '/doblar'
+      },
+      {
+        cmd: 'bjmesa',
+        aliases: ['vermesa', 'bjstatus'],
+        description: 'Ver estado de la mesa',
+        usage: '/bjmesa'
+      },
+      {
+        cmd: 'bjsalir',
+        aliases: ['salirmesa', 'bjleave'],
+        description: 'Salir de la mesa (en espera)',
+        usage: '/bjsalir'
+      },
+      {
+        cmd: 'bjinfo',
+        aliases: ['blackjackinfo', 'bjayuda'],
+        description: 'Info sobre Blackjack',
+        usage: '/bjinfo'
+      },
+      {
+        cmd: 'ruleta',
+        aliases: ['roulette', 'ruletamesa'],
+        description: 'Abrir mesa de Ruleta',
+        usage: '/ruleta [apuesta_min]'
+      },
+      {
+        cmd: 'apostar',
+        aliases: ['bet', 'ap'],
+        description: 'Apostar en la ruleta',
+        usage: '/apostar <tipo> <cantidad>'
+      },
+      {
+        cmd: 'girar',
+        aliases: ['spin', 'tirar'],
+        description: 'Girar ruleta (creador)',
+        usage: '/girar'
+      },
+      {
+        cmd: 'mesaruleta',
+        aliases: ['vermesa', 'ruletastatus'],
+        description: 'Ver estado de la ruleta',
+        usage: '/mesaruleta'
+      },
+      {
+        cmd: 'ruletasalir',
+        aliases: ['rsalir', 'cancelarapuesta'],
+        description: 'Cancelar tus apuestas',
+        usage: '/ruletasalir'
+      },
+      {
+        cmd: 'ruletainfo',
+        aliases: ['rouletteinfo', 'ruletaayuda'],
+        description: 'Info sobre la Ruleta',
+        usage: '/ruletainfo'
       }
     ]
   }

@@ -10,6 +10,7 @@ import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/uti
 import { MONSTERS, ITEMS, type Monster } from '../types/rpg.js';
 import { calculateTotalStats } from '../types/user.js';
 import { globalModes, checkExpiredModes } from './owner-rpg.js';
+import { applyDeathPenalty, generateIMSSMessage } from './rpg-bombardear.js';
 
 /**
  * Cooldown de ataque: 3 minutos
@@ -319,11 +320,11 @@ export const atacarPlugin: PluginHandler = {
       await m.react('🏆');
 
     } else {
-      // Derrota
-      const newHealth = Math.max(1, Math.floor(user.health * 0.3)); // Queda con 30% de vida mínimo
+      // Derrota - El jugador murió
+      const playerDied = user.health - result.playerDamageTaken <= 0;
 
       db.updateUser(m.sender, {
-        health: newHealth,
+        health: 1, // Revive con 1 HP
         combatStats: newCombatStats
       });
 
@@ -336,8 +337,16 @@ export const atacarPlugin: PluginHandler = {
         defeatMsg += `   ${line}\n`;
       }
 
-      defeatMsg += `\n❤️ Salud restante: *${newHealth}/${user.maxHealth}*\n\n`;
-      defeatMsg += `💡 _Sube de nivel, mejora tu equipo o elige una clase para ser más fuerte._`;
+      defeatMsg += `\n❤️ Salud restante: *1/${user.maxHealth}*\n`;
+
+      // Aplicar cuota del IMSS si murió
+      if (playerDied) {
+        const freshUser = db.getUser(m.sender);
+        const imssResult = applyDeathPenalty(db, m.sender, freshUser);
+        defeatMsg += generateIMSSMessage(imssResult, user.name);
+      }
+
+      defeatMsg += `\n💡 _Sube de nivel, mejora tu equipo o elige una clase para ser más fuerte._`;
 
       await m.reply(defeatMsg);
       await m.react('💀');

@@ -1,262 +1,159 @@
 /**
  * 📌 Plugin de Fijar Mensajes
- * Comando: pin - Fija un mensaje con duración opcional
- * Nota: WhatsApp Web/Baileys tiene soporte limitado para pin de mensajes
+ * Comando: pin - Fija un mensaje usando la API nativa de WhatsApp
  */
 
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { EMOJI } from '../lib/utils.js';
+import { proto } from 'baileys';
 
 /**
- * Almacén de mensajes fijados con temporizador
- * Estructura: Map<chatId, { messageKey, text, sender, timestamp, timeout?, duration? }>
+ * Duraciones permitidas por WhatsApp (en segundos)
  */
-interface PinnedMessage {
-  messageKey: string;
-  text: string;
-  sender: string;
-  pinnedBy: string;
-  timestamp: number;
-  duration?: number;
-  timeout?: NodeJS.Timeout;
-}
-
-const pinnedMessages = new Map<string, PinnedMessage>();
+const PIN_DURATIONS = {
+  '24h': 86400,
+  '7d': 604800,
+  '30d': 2592000
+} as const;
 
 /**
- * Parsea la duración del texto
- * Formatos soportados: 30s, 5m, 2h, 1d o combinaciones como "1h30m"
+ * Parsea la duración del texto y devuelve segundos
+ * WhatsApp solo permite: 24h, 7d, 30d
  */
-function parseDuration(text: string): number | null {
-  if (!text) return null;
+function parseDuration(text: string): number {
+  if (!text) return PIN_DURATIONS['24h']; // Por defecto 24h
 
-  const timeRegex = /(\d+)\s*(s|seg|segundo|segundos|m|min|minuto|minutos|h|hora|horas|d|dia|días|day|days)/gi;
-  let totalMs = 0;
-  let match;
+  const normalized = text.toLowerCase().trim();
 
-  while ((match = timeRegex.exec(text)) !== null) {
-    const value = parseInt(match[1]);
-    const unit = match[2].toLowerCase();
-
-    switch (unit) {
-      case 's':
-      case 'seg':
-      case 'segundo':
-      case 'segundos':
-        totalMs += value * 1000;
-        break;
-      case 'm':
-      case 'min':
-      case 'minuto':
-      case 'minutos':
-        totalMs += value * 60 * 1000;
-        break;
-      case 'h':
-      case 'hora':
-      case 'horas':
-        totalMs += value * 60 * 60 * 1000;
-        break;
-      case 'd':
-      case 'dia':
-      case 'días':
-      case 'day':
-      case 'days':
-        totalMs += value * 24 * 60 * 60 * 1000;
-        break;
-    }
+  // Buscar patrones comunes
+  if (/^(24\s*h|1\s*d|dia|day)/.test(normalized)) {
+    return PIN_DURATIONS['24h'];
+  }
+  if (/^(7\s*d|semana|week)/.test(normalized)) {
+    return PIN_DURATIONS['7d'];
+  }
+  if (/^(30\s*d|mes|month)/.test(normalized)) {
+    return PIN_DURATIONS['30d'];
   }
 
-  return totalMs > 0 ? totalMs : null;
+  // Por defecto 24h
+  return PIN_DURATIONS['24h'];
 }
 
 /**
- * Formatea milisegundos a texto legible
+ * Formatea segundos a texto legible
  */
-function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  const parts: string[] = [];
-
-  if (days > 0) parts.push(`${days} día${days > 1 ? 's' : ''}`);
-  if (hours % 24 > 0) parts.push(`${hours % 24} hora${hours % 24 > 1 ? 's' : ''}`);
-  if (minutes % 60 > 0) parts.push(`${minutes % 60} minuto${minutes % 60 > 1 ? 's' : ''}`);
-  if (seconds % 60 > 0 && days === 0 && hours === 0) {
-    parts.push(`${seconds % 60} segundo${seconds % 60 > 1 ? 's' : ''}`);
-  }
-
-  return parts.join(' ') || 'unos segundos';
+function formatDuration(seconds: number): string {
+  if (seconds === PIN_DURATIONS['24h']) return '24 horas';
+  if (seconds === PIN_DURATIONS['7d']) return '7 días';
+  if (seconds === PIN_DURATIONS['30d']) return '30 días';
+  return `${seconds} segundos`;
 }
 
 /**
- * Plugin: Pin - Fijar mensaje (simulado con almacenamiento local)
+ * Plugin: Pin - Fijar mensaje usando API nativa de WhatsApp
  */
 const pinPlugin: PluginHandler = {
   command: ['pin', 'fijar', 'anclar'],
   tags: ['grupo', 'admin'],
   help: [
     'pin [duración] - Fija el mensaje respondido',
-    'Duraciones: 30s, 5m, 2h, 1d',
-    'Ejemplos: /pin 30m, /pin 1h, /pin 2d',
-    'Sin duración = permanente',
-    'Usa /pinned para ver el mensaje fijado'
+    'Duraciones: 24h (defecto), 7d, 30d',
+    'Ejemplos: /pin, /pin 7d, /pin 30d'
   ],
   group: true,
   admin: true,
+  botAdmin: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { conn, m, text } = ctx;
 
     // Verificar que se responda a un mensaje
     if (!m.quoted) {
       await m.reply(
         `${EMOJI.error} Debes *responder* al mensaje que quieres fijar.\n\n` +
         `📝 *Uso:* Responde a un mensaje y escribe:\n` +
-        `   /pin - Fijar permanente\n` +
-        `   /pin 30m - Fijar por 30 minutos\n` +
-        `   /pin 2h - Fijar por 2 horas\n` +
-        `   /pin 1d - Fijar por 1 día\n\n` +
-        `💡 Usa */pinned* para ver el mensaje fijado.`
+        `   /pin - Fijar por 24 horas\n` +
+        `   /pin 7d - Fijar por 7 días\n` +
+        `   /pin 30d - Fijar por 30 días`
       );
       return;
     }
 
     const chatId = m.chat;
-    const quotedText = m.quoted.text || '[Mensaje sin texto]';
-    const quotedSender = m.quoted.sender;
-    const messageKey = m.quoted.key.id || '';
-
-    // Parsear duración si se proporciona
     const duration = parseDuration(text);
 
-    // Si ya hay un mensaje fijado con temporizador, cancelarlo
-    const existingPin = pinnedMessages.get(chatId);
-    if (existingPin?.timeout) {
-      clearTimeout(existingPin.timeout);
-    }
+    try {
+      // Usar la API nativa de WhatsApp para fijar el mensaje
+      await conn.sendMessage(chatId, {
+        pin: m.quoted.key,
+        type: proto.PinInChat.Type.PIN_FOR_ALL,
+        time: duration as 86400 | 604800 | 2592000
+      });
 
-    // Crear el nuevo pin
-    const newPin: PinnedMessage = {
-      messageKey,
-      text: quotedText.length > 500 ? quotedText.substring(0, 500) + '...' : quotedText,
-      sender: quotedSender,
-      pinnedBy: m.sender,
-      timestamp: Date.now(),
-      duration: duration ?? undefined
-    };
+      const senderName = m.quoted.sender.split('@')[0];
 
-    // Si hay duración, programar la eliminación
-    if (duration) {
-      newPin.timeout = setTimeout(() => {
-        pinnedMessages.delete(chatId);
-        // Notificar que se desfijó (opcional, se podría enviar mensaje)
-      }, duration);
-    }
-
-    pinnedMessages.set(chatId, newPin);
-
-    const senderName = quotedSender.split('@')[0];
-
-    if (duration) {
       await m.reply(
         `📌 *¡Mensaje fijado!*\n\n` +
         `👤 De: @${senderName}\n` +
-        `⏱️ Duración: *${formatDuration(duration)}*\n\n` +
-        `💬 _"${quotedText.substring(0, 100)}${quotedText.length > 100 ? '...' : ''}"_\n\n` +
-        `💡 Usa */pinned* para ver el mensaje completo.`
+        `⏱️ Duración: *${formatDuration(duration)}*`
       );
-    } else {
+
+      await m.react('📌');
+    } catch (error) {
+      console.error('Error al fijar mensaje:', error);
       await m.reply(
-        `📌 *¡Mensaje fijado permanentemente!*\n\n` +
-        `👤 De: @${senderName}\n\n` +
-        `💬 _"${quotedText.substring(0, 100)}${quotedText.length > 100 ? '...' : ''}"_\n\n` +
-        `💡 Usa */pinned* para ver el mensaje completo.`
+        `${EMOJI.error} No se pudo fijar el mensaje.\n\n` +
+        `Posibles causas:\n` +
+        `• El bot necesita ser admin\n` +
+        `• El mensaje es muy antiguo\n` +
+        `• Ya hay 3 mensajes fijados (límite de WhatsApp)`
       );
     }
-
-    await m.react('📌');
   }
 };
 
 /**
- * Plugin: Unpin - Desfijar mensaje
+ * Plugin: Unpin - Desfijar mensaje usando API nativa
  */
 const unpinPlugin: PluginHandler = {
   command: ['unpin', 'desfijar', 'desanclar'],
   tags: ['grupo', 'admin'],
-  help: ['unpin - Quita el mensaje fijado'],
+  help: ['unpin - Quita el pin del mensaje respondido'],
   group: true,
   admin: true,
+  botAdmin: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-    const chatId = m.chat;
+    const { conn, m } = ctx;
 
-    const existingPin = pinnedMessages.get(chatId);
-
-    if (!existingPin) {
-      await m.reply(`${EMOJI.warning} No hay ningún mensaje fijado en este grupo.`);
+    // Verificar que se responda a un mensaje
+    if (!m.quoted) {
+      await m.reply(
+        `${EMOJI.error} Debes *responder* al mensaje fijado que quieres desfijar.`
+      );
       return;
     }
 
-    // Cancelar temporizador si existe
-    if (existingPin.timeout) {
-      clearTimeout(existingPin.timeout);
-    }
-
-    pinnedMessages.delete(chatId);
-
-    await m.reply(`${EMOJI.success} *Mensaje desfijado correctamente.*`);
-    await m.react('✅');
-  }
-};
-
-/**
- * Plugin: Pinned - Ver mensaje fijado
- */
-const pinnedPlugin: PluginHandler = {
-  command: ['pinned', 'fijado', 'anclado', 'verpin'],
-  tags: ['grupo'],
-  help: ['pinned - Muestra el mensaje fijado actual'],
-  group: true,
-
-  handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
     const chatId = m.chat;
 
-    const pin = pinnedMessages.get(chatId);
+    try {
+      // Usar la API nativa de WhatsApp para desfijar
+      await conn.sendMessage(chatId, {
+        pin: m.quoted.key,
+        type: proto.PinInChat.Type.UNPIN_FOR_ALL
+      });
 
-    if (!pin) {
-      await m.reply(`${EMOJI.info} No hay ningún mensaje fijado en este grupo.`);
-      return;
+      await m.reply(`${EMOJI.success} *Mensaje desfijado correctamente.*`);
+      await m.react('✅');
+    } catch (error) {
+      console.error('Error al desfijar mensaje:', error);
+      await m.reply(
+        `${EMOJI.error} No se pudo desfijar el mensaje.\n\n` +
+        `Asegúrate de que el mensaje esté fijado actualmente.`
+      );
     }
-
-    const senderName = pin.sender.split('@')[0];
-    const pinnedByName = pin.pinnedBy.split('@')[0];
-    const timeAgo = Date.now() - pin.timestamp;
-    const timeAgoStr = formatDuration(timeAgo);
-
-    let response = `📌 *MENSAJE FIJADO*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    response += `💬 ${pin.text}\n\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `👤 *Autor:* @${senderName}\n`;
-    response += `📍 *Fijado por:* @${pinnedByName}\n`;
-    response += `⏰ *Hace:* ${timeAgoStr}\n`;
-
-    if (pin.duration) {
-      const remaining = pin.duration - timeAgo;
-      if (remaining > 0) {
-        response += `⏳ *Se desfija en:* ${formatDuration(remaining)}`;
-      }
-    } else {
-      response += `♾️ *Duración:* Permanente`;
-    }
-
-    await m.reply(response);
   }
 };
 
@@ -266,5 +163,4 @@ const pinnedPlugin: PluginHandler = {
 export function registerGroupPinPlugins(handler: MessageHandler): void {
   handler.registerPlugin('pin', pinPlugin);
   handler.registerPlugin('unpin', unpinPlugin);
-  handler.registerPlugin('pinned', pinnedPlugin);
 }

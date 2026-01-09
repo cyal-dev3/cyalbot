@@ -7,8 +7,8 @@ import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, matchesIgnoreAccents } from '../lib/utils.js';
-import { ITEMS, RARITY_COLORS, type Item, type ItemType } from '../types/rpg.js';
-import { calculateTotalStats } from '../types/user.js';
+import { ITEMS, RARITY_COLORS, CLASSES, type Item, type ItemType } from '../types/rpg.js';
+import { calculateTotalStats, type UserRPG } from '../types/user.js';
 
 /**
  * Obtiene el emoji de tipo de item
@@ -22,6 +22,37 @@ function getTypeEmoji(type: ItemType): string {
     material: '📦'
   };
   return emojis[type];
+}
+
+/**
+ * Calcula los stats máximos reales del jugador (incluyendo clase y equipamiento)
+ */
+function getRealMaxStats(user: UserRPG): { maxHealth: number; maxMana: number; maxStamina: number } {
+  // Stats base
+  let maxHealth = user.maxHealth;
+  let maxMana = user.maxMana;
+  let maxStamina = user.maxStamina;
+
+  // Bonus de clase
+  if (user.playerClass && CLASSES[user.playerClass]) {
+    const classInfo = CLASSES[user.playerClass];
+    maxHealth += classInfo.baseStats.healthBonus;
+    maxMana += classInfo.baseStats.manaBonus;
+    maxStamina += classInfo.baseStats.staminaBonus;
+  }
+
+  // Bonus de equipamiento
+  const equipmentSlots = [user.equipment.weapon, user.equipment.armor, user.equipment.accessory];
+  for (const itemId of equipmentSlots) {
+    if (itemId && ITEMS[itemId]?.stats) {
+      const stats = ITEMS[itemId].stats;
+      if (stats.health) maxHealth += stats.health;
+      if (stats.mana) maxMana += stats.mana;
+      if (stats.stamina) maxStamina += stats.stamina;
+    }
+  }
+
+  return { maxHealth, maxMana, maxStamina };
 }
 
 /**
@@ -380,29 +411,93 @@ const usarPlugin: PluginHandler = {
       return;
     }
 
+    // Calcular stats máximos reales (incluyendo clase y equipamiento)
+    const realMax = getRealMaxStats(user);
+
+    // Verificar si el consumible tendría algún efecto útil
+    const hasHealthEffect = effect.health && effect.health > 0;
+    const hasManaEffect = effect.mana && effect.mana > 0;
+    const hasStaminaEffect = effect.stamina && effect.stamina > 0;
+    const hasExpBoost = effect.expBoost && effect.duration;
+
+    const healthFull = user.health >= realMax.maxHealth;
+    const manaFull = user.mana >= realMax.maxMana;
+    const staminaFull = user.stamina >= realMax.maxStamina;
+
+    // Si solo restaura stats y todas están al máximo, no consumir
+    if (!hasExpBoost) {
+      const onlyHealthEffect = hasHealthEffect && !hasManaEffect && !hasStaminaEffect;
+      const onlyManaEffect = hasManaEffect && !hasHealthEffect && !hasStaminaEffect;
+      const onlyStaminaEffect = hasStaminaEffect && !hasHealthEffect && !hasManaEffect;
+
+      if (onlyHealthEffect && healthFull) {
+        await m.reply(
+          `${EMOJI.error} ¡Tu salud ya está al máximo!\n\n` +
+          `❤️ Salud: *${user.health}/${realMax.maxHealth}*\n\n` +
+          `💡 No necesitas usar *${foundItem.name}* ahora.`
+        );
+        return;
+      }
+
+      if (onlyManaEffect && manaFull) {
+        await m.reply(
+          `${EMOJI.error} ¡Tu maná ya está al máximo!\n\n` +
+          `💠 Maná: *${user.mana}/${realMax.maxMana}*\n\n` +
+          `💡 No necesitas usar *${foundItem.name}* ahora.`
+        );
+        return;
+      }
+
+      if (onlyStaminaEffect && staminaFull) {
+        await m.reply(
+          `${EMOJI.error} ¡Tu energía ya está al máximo!\n\n` +
+          `⚡ Energía: *${user.stamina}/${realMax.maxStamina}*\n\n` +
+          `💡 No necesitas usar *${foundItem.name}* ahora.`
+        );
+        return;
+      }
+
+      // Si restaura múltiples stats y todas están al máximo
+      const allStatsFull =
+        (!hasHealthEffect || healthFull) &&
+        (!hasManaEffect || manaFull) &&
+        (!hasStaminaEffect || staminaFull);
+
+      if (allStatsFull && (hasHealthEffect || hasManaEffect || hasStaminaEffect)) {
+        await m.reply(
+          `${EMOJI.error} ¡Todas tus estadísticas ya están al máximo!\n\n` +
+          `❤️ Salud: *${user.health}/${realMax.maxHealth}*\n` +
+          `💠 Maná: *${user.mana}/${realMax.maxMana}*\n` +
+          `⚡ Energía: *${user.stamina}/${realMax.maxStamina}*\n\n` +
+          `💡 No necesitas usar *${foundItem.name}* ahora.`
+        );
+        return;
+      }
+    }
+
     // Aplicar efectos
     const updates: Partial<typeof user> = {};
     let effectMsg = '';
 
     if (effect.health) {
-      const newHealth = Math.min(user.maxHealth, user.health + effect.health);
+      const newHealth = Math.min(realMax.maxHealth, user.health + effect.health);
       const healed = newHealth - user.health;
       updates.health = newHealth;
-      effectMsg += `❤️ +${healed} Salud (${newHealth}/${user.maxHealth})\n`;
+      effectMsg += `❤️ +${healed} Salud (${newHealth}/${realMax.maxHealth})\n`;
     }
 
     if (effect.mana) {
-      const newMana = Math.min(user.maxMana, user.mana + effect.mana);
+      const newMana = Math.min(realMax.maxMana, user.mana + effect.mana);
       const restored = newMana - user.mana;
       updates.mana = newMana;
-      effectMsg += `💠 +${restored} Maná (${newMana}/${user.maxMana})\n`;
+      effectMsg += `💠 +${restored} Maná (${newMana}/${realMax.maxMana})\n`;
     }
 
     if (effect.stamina) {
-      const newStamina = Math.min(user.maxStamina, user.stamina + effect.stamina);
+      const newStamina = Math.min(realMax.maxStamina, user.stamina + effect.stamina);
       const restored = newStamina - user.stamina;
       updates.stamina = newStamina;
-      effectMsg += `⚡ +${restored} Energía (${newStamina}/${user.maxStamina})\n`;
+      effectMsg += `⚡ +${restored} Energía (${newStamina}/${realMax.maxStamina})\n`;
     }
 
     if (effect.expBoost && effect.duration) {

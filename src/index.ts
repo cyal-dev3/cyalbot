@@ -12,6 +12,8 @@ import { MessageHandler } from './handler.js';
 import { initDatabase, type Database, getDatabase } from './lib/database.js';
 import { loadPlugins } from './plugins/index.js';
 import { CONFIG } from './config.js';
+import { startAutoEvents } from './lib/auto-events.js';
+import { startAutoRegen } from './lib/auto-regen.js';
 import type { WASocket, proto, GroupMetadata } from 'baileys';
 
 // Variables globales para reconexión
@@ -329,6 +331,12 @@ async function connectBot(): Promise<WASocket> {
     if (connection === 'open' && isFirstConnection) {
       isFirstConnection = false;
       showCommands();
+
+      // Iniciar sistema de eventos automáticos
+      startAutoEvents(conn);
+
+      // Iniciar sistema de regeneración pasiva
+      startAutoRegen();
     }
   });
 
