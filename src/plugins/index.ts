@@ -67,6 +67,7 @@ import { slotPlugin, slotInfoPlugin } from './game-slot.js';
 import { blackjackPlugin, jugarPlugin, pedirPlugin, plantarsePlugin, doblarPlugin, bjMesaPlugin, bjSalirPlugin, bjInfoPlugin } from './game-blackjack.js';
 import { ruletaPlugin, apostarPlugin, ruletaMesaPlugin, ruletaSalirPlugin, ruletaInfoPlugin, girarPlugin } from './game-roulette.js';
 import { amorPlugin, gayPlugin } from './fun-amor.js';
+import { besoPlugin, misbesosPlugin, topbesosPlugin } from './fun-beso.js';
 
 // Importar plugins de owner
 import ownerRpgPlugins from './owner-rpg.js';
@@ -291,13 +292,16 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('game-bj-info', bjInfoPlugin);
   handler.registerPlugin('fun-amor', amorPlugin);
   handler.registerPlugin('fun-gay', gayPlugin);
+  handler.registerPlugin('fun-beso', besoPlugin);
+  handler.registerPlugin('fun-misbesos', misbesosPlugin);
+  handler.registerPlugin('fun-topbesos', topbesosPlugin);
   handler.registerPlugin('game-ruleta', ruletaPlugin);
   handler.registerPlugin('game-apostar', apostarPlugin);
   handler.registerPlugin('game-ruleta-mesa', ruletaMesaPlugin);
   handler.registerPlugin('game-ruleta-salir', ruletaSalirPlugin);
   handler.registerPlugin('game-ruleta-info', ruletaInfoPlugin);
   handler.registerPlugin('game-girar', girarPlugin);
-  console.log('      ✅ slot, slotinfo, amor, gay');
+  console.log('      ✅ slot, slotinfo, amor, gay, beso, misbesos, topbesos');
   console.log('      ✅ blackjack, jugar, pedir, plantarse, doblar, bjmesa, bjsalir, bjinfo');
   console.log('      ✅ ruleta, apostar, vermesa, ruletasalir, ruletainfo, girar');
 
@@ -336,7 +340,7 @@ export function loadPlugins(handler: MessageHandler): void {
     6 +                            // bienvenida (setwelcome, setbye, welcome, bye, tagall, hidetag)
     5 +                            // descargadores
     2 +                            // herramientas (translate, clima)
-    18 +                           // diversión (slot, slotinfo, blackjack x8, amor, gay, ruleta x6)
+    21 +                           // diversión (slot, slotinfo, blackjack x8, amor, gay, beso x3, ruleta x6)
     ownerRpgPlugins.length;        // owner RPG (22 comandos)
 
   console.log('');
