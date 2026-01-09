@@ -6,6 +6,7 @@
  * @version 3.0.0
  */
 
+import 'dotenv/config';
 import chalk from 'chalk';
 import { startBot, shouldReconnect } from './main.js';
 import { MessageHandler } from './handler.js';
