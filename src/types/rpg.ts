@@ -255,6 +255,84 @@ export const ITEMS: Record<string, Item> = {
     requiredLevel: 12,
     requiredClass: ['arquero']
   },
+  // === ARMAS ADICIONALES ===
+  martillo_guerra: {
+    id: 'martillo_guerra',
+    name: 'Martillo de Guerra',
+    emoji: '🔨',
+    type: 'weapon',
+    rarity: 'raro',
+    description: 'Pesado pero devastador. Aplasta enemigos.',
+    price: 1800,
+    sellPrice: 900,
+    stats: { attack: 22, defense: 5 },
+    requiredLevel: 12,
+    requiredClass: ['guerrero']
+  },
+  katana_sombria: {
+    id: 'katana_sombria',
+    name: 'Katana Sombría',
+    emoji: '⚔️',
+    type: 'weapon',
+    rarity: 'epico',
+    description: 'Forjada en las sombras, corta el alma.',
+    price: 12000,
+    sellPrice: 6000,
+    stats: { attack: 40, critChance: 18 },
+    requiredLevel: 25,
+    requiredClass: ['ladron']
+  },
+  arco_elfico: {
+    id: 'arco_elfico',
+    name: 'Arco Élfico',
+    emoji: '🏹',
+    type: 'weapon',
+    rarity: 'epico',
+    description: 'Elaborado por elfos antiguos.',
+    price: 14000,
+    sellPrice: 7000,
+    stats: { attack: 38, critChance: 15, stamina: 20 },
+    requiredLevel: 28,
+    requiredClass: ['arquero']
+  },
+  baculo_tormenta: {
+    id: 'baculo_tormenta',
+    name: 'Báculo de la Tormenta',
+    emoji: '⛈️',
+    type: 'weapon',
+    rarity: 'epico',
+    description: 'Canaliza el poder de las tormentas.',
+    price: 16000,
+    sellPrice: 8000,
+    stats: { attack: 42, mana: 60, critChance: 8 },
+    requiredLevel: 30,
+    requiredClass: ['mago']
+  },
+  espada_titan: {
+    id: 'espada_titan',
+    name: 'Espada del Titán',
+    emoji: '🗡️',
+    type: 'weapon',
+    rarity: 'epico',
+    description: 'Una espada colosal de poder inmenso.',
+    price: 25000,
+    sellPrice: 12500,
+    stats: { attack: 55, health: 30 },
+    requiredLevel: 40,
+    requiredClass: ['guerrero']
+  },
+  guadana_muerte: {
+    id: 'guadana_muerte',
+    name: 'Guadaña de la Muerte',
+    emoji: '⚰️',
+    type: 'weapon',
+    rarity: 'legendario',
+    description: 'El arma del segador de almas.',
+    price: 80000,
+    sellPrice: 40000,
+    stats: { attack: 90, critChance: 25 },
+    requiredLevel: 60
+  },
 
   // === ARMADURAS NIVEL BAJO (1-10) ===
   ropa_andrajos: {
@@ -354,6 +432,71 @@ export const ITEMS: Record<string, Item> = {
     requiredLevel: 10,
     requiredClass: ['mago']
   },
+  // === ARMADURAS ADICIONALES ===
+  armadura_sombras: {
+    id: 'armadura_sombras',
+    name: 'Armadura de Sombras',
+    emoji: '🖤',
+    type: 'armor',
+    rarity: 'epico',
+    description: 'Ligera como las sombras, perfecta para sigilo.',
+    price: 8000,
+    sellPrice: 4000,
+    stats: { defense: 20, stamina: 40, critChance: 10 },
+    requiredLevel: 20,
+    requiredClass: ['ladron']
+  },
+  armadura_titan: {
+    id: 'armadura_titan',
+    name: 'Armadura del Titán',
+    emoji: '🛡️',
+    type: 'armor',
+    rarity: 'epico',
+    description: 'Forjada para gigantes, resistencia absoluta.',
+    price: 18000,
+    sellPrice: 9000,
+    stats: { defense: 45, health: 60 },
+    requiredLevel: 35,
+    requiredClass: ['guerrero']
+  },
+  tunica_archimago: {
+    id: 'tunica_archimago',
+    name: 'Túnica del Archimago',
+    emoji: '🔮',
+    type: 'armor',
+    rarity: 'epico',
+    description: 'Vestimenta de los magos más poderosos.',
+    price: 15000,
+    sellPrice: 7500,
+    stats: { defense: 25, mana: 100, health: 30 },
+    requiredLevel: 35,
+    requiredClass: ['mago']
+  },
+  capa_cazador: {
+    id: 'capa_cazador',
+    name: 'Capa del Cazador',
+    emoji: '🧣',
+    type: 'armor',
+    rarity: 'raro',
+    description: 'Camuflaje perfecto para el bosque.',
+    price: 3500,
+    sellPrice: 1750,
+    stats: { defense: 15, stamina: 25 },
+    requiredLevel: 15,
+    requiredClass: ['arquero']
+  },
+  armadura_obsidiana: {
+    id: 'armadura_obsidiana',
+    name: 'Armadura de Obsidiana',
+    emoji: '⬛',
+    type: 'armor',
+    rarity: 'legendario',
+    description: 'Negra como la noche, dura como el diamante.',
+    price: 45000,
+    sellPrice: 22500,
+    stats: { defense: 70, health: 80 },
+    requiredLevel: 50
+  },
 
   // === ACCESORIOS NIVEL BAJO (1-10) ===
   cuerda_vieja: {
@@ -451,6 +594,70 @@ export const ITEMS: Record<string, Item> = {
     sellPrice: 5000,
     stats: { critChance: 25 },
     requiredLevel: 30
+  },
+  // === ACCESORIOS ADICIONALES ===
+  anillo_vampiro: {
+    id: 'anillo_vampiro',
+    name: 'Anillo del Vampiro',
+    emoji: '🩸',
+    type: 'accessory',
+    rarity: 'epico',
+    description: 'Absorbe la esencia vital de los enemigos.',
+    price: 12000,
+    sellPrice: 6000,
+    stats: { attack: 20, health: 25, critChance: 8 },
+    requiredLevel: 25
+  },
+  amuleto_mana_infinito: {
+    id: 'amuleto_mana_infinito',
+    name: 'Amuleto de Maná Infinito',
+    emoji: '💫',
+    type: 'accessory',
+    rarity: 'epico',
+    description: 'Regenera maná constantemente.',
+    price: 15000,
+    sellPrice: 7500,
+    stats: { mana: 80, defense: 10 },
+    requiredLevel: 30,
+    requiredClass: ['mago']
+  },
+  cinturon_titan: {
+    id: 'cinturon_titan',
+    name: 'Cinturón del Titán',
+    emoji: '🥋',
+    type: 'accessory',
+    rarity: 'epico',
+    description: 'Otorga la fuerza de un titán.',
+    price: 18000,
+    sellPrice: 9000,
+    stats: { attack: 25, defense: 15, stamina: 30 },
+    requiredLevel: 35,
+    requiredClass: ['guerrero']
+  },
+  capa_invisibilidad: {
+    id: 'capa_invisibilidad',
+    name: 'Capa de Invisibilidad',
+    emoji: '👻',
+    type: 'accessory',
+    rarity: 'legendario',
+    description: 'Te vuelve prácticamente invisible.',
+    price: 35000,
+    sellPrice: 17500,
+    stats: { critChance: 30, stamina: 40 },
+    requiredLevel: 40,
+    requiredClass: ['ladron']
+  },
+  pendiente_dragon: {
+    id: 'pendiente_dragon',
+    name: 'Pendiente del Dragón',
+    emoji: '🐉',
+    type: 'accessory',
+    rarity: 'legendario',
+    description: 'Contiene la esencia de un dragón ancestral.',
+    price: 55000,
+    sellPrice: 27500,
+    stats: { attack: 35, defense: 35, health: 75, mana: 50 },
+    requiredLevel: 55
   },
 
   // === CONSUMIBLES (NIVEL BAJO) ===

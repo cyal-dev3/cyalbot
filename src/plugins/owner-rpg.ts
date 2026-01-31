@@ -1483,21 +1483,28 @@ export const rpgLluviaMoneyPlugin: PluginHandler = {
       return m.reply(`${EMOJI.error} No hay usuarios registrados en el grupo`);
     }
 
+    // Mezclar usuarios aleatoriamente para distribución justa (Fisher-Yates shuffle)
+    const shuffledUsers = [...registeredUsers];
+    for (let i = shuffledUsers.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffledUsers[i], shuffledUsers[j]] = [shuffledUsers[j], shuffledUsers[i]];
+    }
+
     // Distribuir dinero aleatoriamente
     const distributions: { jid: string; amount: number; name: string }[] = [];
     let remaining = totalAmount;
 
-    for (let i = 0; i < registeredUsers.length; i++) {
-      const jid = registeredUsers[i];
+    for (let i = 0; i < shuffledUsers.length; i++) {
+      const jid = shuffledUsers[i];
       const user = db.getUser(jid);
 
       let amount: number;
-      if (i === registeredUsers.length - 1) {
+      if (i === shuffledUsers.length - 1) {
         amount = remaining;
       } else {
-        // Dar cantidad aleatoria entre 10% y 30% del restante
-        const minShare = Math.floor(remaining * 0.1);
-        const maxShare = Math.floor(remaining * 0.3);
+        // Dar cantidad aleatoria entre 5% y 40% del restante para más variabilidad
+        const minShare = Math.floor(remaining * 0.05);
+        const maxShare = Math.floor(remaining * 0.4);
         amount = Math.floor(Math.random() * (maxShare - minShare + 1)) + minShare;
         amount = Math.min(amount, remaining);
       }

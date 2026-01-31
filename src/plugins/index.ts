@@ -70,6 +70,10 @@ import { blackjackPlugin, jugarPlugin, pedirPlugin, plantarsePlugin, doblarPlugi
 import { ruletaPlugin, apostarPlugin, ruletaMesaPlugin, ruletaSalirPlugin, ruletaInfoPlugin, girarPlugin } from './game-roulette.js';
 import { amorPlugin, gayPlugin } from './fun-amor.js';
 import { besoPlugin, misbesosPlugin, topbesosPlugin } from './fun-beso.js';
+import { abrazoPlugin, kissallPlugin, gudmorninPlugin, pokaPlugin, chingatumadrePlugin, hazanaPlugin } from './fun-social.js';
+
+// Importar plugins de economía avanzada
+import { bancoPlugin, transferirPlugin, esclavizarPlugin, liberarPlugin, esclavosPlugin, pasivoPlugin, estadoEconomiaPlugin } from './rpg-economia.js';
 
 // Importar plugins de owner
 import ownerRpgPlugins from './owner-rpg.js';
@@ -194,6 +198,19 @@ export function loadPlugins(handler: MessageHandler): void {
   }
   console.log('      ✅ misiones, reclamarmision');
 
+  // Cargar plugins de economía avanzada
+  console.log('');
+  console.log('   💰 RPG Economía:');
+  handler.registerPlugin('rpg-banco', bancoPlugin);
+  handler.registerPlugin('rpg-transferir', transferirPlugin);
+  handler.registerPlugin('rpg-esclavizar', esclavizarPlugin);
+  handler.registerPlugin('rpg-liberar', liberarPlugin);
+  handler.registerPlugin('rpg-esclavos', esclavosPlugin);
+  handler.registerPlugin('rpg-pasivo', pasivoPlugin);
+  handler.registerPlugin('rpg-economia', estadoEconomiaPlugin);
+  console.log('      ✅ banco, transferir, esclavizar, liberar, esclavos');
+  console.log('      ✅ pasivo, economia');
+
   // Cargar plugins de administración de grupos
   console.log('');
   console.log('   👑 Administración de Grupos:');
@@ -204,7 +221,7 @@ export function loadPlugins(handler: MessageHandler): void {
   console.log('      ✅ mute, unmute, automute, listmute');
 
   registerGroupDeletePlugins(handler);
-  console.log('      ✅ delete, clear');
+  console.log('      ✅ delete, clear, autoclear');
 
   registerGroupPinPlugins(handler);
   console.log('      ✅ pin, unpin, pinned');
@@ -300,6 +317,12 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('fun-beso', besoPlugin);
   handler.registerPlugin('fun-misbesos', misbesosPlugin);
   handler.registerPlugin('fun-topbesos', topbesosPlugin);
+  handler.registerPlugin('fun-abrazo', abrazoPlugin);
+  handler.registerPlugin('fun-kissall', kissallPlugin);
+  handler.registerPlugin('fun-gudmornin', gudmorninPlugin);
+  handler.registerPlugin('fun-poka', pokaPlugin);
+  handler.registerPlugin('fun-chingatumadre', chingatumadrePlugin);
+  handler.registerPlugin('fun-hazana', hazanaPlugin);
   handler.registerPlugin('game-ruleta', ruletaPlugin);
   handler.registerPlugin('game-apostar', apostarPlugin);
   handler.registerPlugin('game-ruleta-mesa', ruletaMesaPlugin);
@@ -307,6 +330,7 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('game-ruleta-info', ruletaInfoPlugin);
   handler.registerPlugin('game-girar', girarPlugin);
   console.log('      ✅ slot, slotinfo, amor, gay, beso, misbesos, topbesos');
+  console.log('      ✅ abrazo, kissall, gudmornin, poka, chingatumadre, hazana');
   console.log('      ✅ blackjack, jugar, pedir, plantarse, doblar, bjmesa, bjsalir, bjinfo');
   console.log('      ✅ ruleta, apostar, vermesa, ruletasalir, ruletainfo, girar');
 

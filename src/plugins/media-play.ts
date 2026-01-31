@@ -280,11 +280,12 @@ export const playPlugin: PluginHandler = {
 
       await m.react('🎵');
 
+      // Enviar como audio normal (mejor compatibilidad con iPhone usando audio/mp4)
       await conn.sendMessage(m.chat, {
         audio: buffer,
-        mimetype: 'audio/mpeg',
+        mimetype: 'audio/mp4',
         ptt: false,
-        fileName: `${title}.mp3`
+        fileName: `${title}.m4a`
       }, { quoted: m.key.id ? { key: m.key, message: {} } : undefined });
 
       await m.react('✅');

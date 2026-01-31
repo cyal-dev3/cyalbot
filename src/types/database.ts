@@ -26,6 +26,11 @@ export interface ChatSettings {
   sWelcome: string;
   sBye: string;
   warnings: UserWarning[];  // NUEVO: Advertencias del grupo
+  // Sistema de mute persistente
+  autoMuteEnabled: boolean;     // Si automute está activo
+  mutedUsers: string[];         // Lista de usuarios muteados (JIDs)
+  // Sistema de autoclear
+  autoClearEnabled: boolean;    // Si autoclear está activo (limpia mensajes del bot después de 3 min)
 }
 
 /**
@@ -69,7 +74,10 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   detect: true,
   sWelcome: '👋 ¡Bienvenido/a {user} a {group}!\n\n📝 Usa /verificar nombre.edad para registrarte.',
   sBye: '👋 {user} ha abandonado el grupo.',
-  warnings: []
+  warnings: [],
+  autoMuteEnabled: false,
+  mutedUsers: [],
+  autoClearEnabled: false
 };
 
 /**

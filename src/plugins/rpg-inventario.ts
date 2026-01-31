@@ -355,6 +355,8 @@ const usarPlugin: PluginHandler = {
   tags: ['rpg'],
   help: [
     'usar [nombre del item] - Usa un item consumible',
+    'usar [item] all - Usa todas las pociones de ese tipo',
+    'usar [item] [cantidad] - Usa una cantidad específica',
     'Restaura salud, maná o energía'
   ],
   register: true,
@@ -362,17 +364,40 @@ const usarPlugin: PluginHandler = {
   handler: async (ctx: MessageContext) => {
     const { m, text } = ctx;
     const db = getDatabase();
-    const user = db.getUser(m.sender);
+    let user = db.getUser(m.sender);
 
     if (!text.trim()) {
       await m.reply(
         `${EMOJI.error} Especifica qué item quieres usar.\n\n` +
-        `📝 *Uso:* /usar pocion de salud`
+        `📝 *Uso:* /usar pocion de salud\n` +
+        `📝 *Uso:* /usar pocion all (usa todas)\n` +
+        `📝 *Uso:* /usar pocion 5 (usa 5)`
       );
       return;
     }
 
-    const searchTerm = text.toLowerCase().trim();
+    // Detectar si quiere usar múltiples (all o número)
+    const parts = text.toLowerCase().trim().split(/\s+/);
+    let quantity = 1;
+    let useAll = false;
+    let searchTerm = text.toLowerCase().trim();
+
+    // Verificar si el último argumento es "all" o un número
+    const lastPart = parts[parts.length - 1];
+    if (lastPart === 'all' || lastPart === 'todo' || lastPart === 'todas' || lastPart === 'todos') {
+      useAll = true;
+      searchTerm = parts.slice(0, -1).join(' ');
+    } else if (!isNaN(parseInt(lastPart)) && parseInt(lastPart) > 0) {
+      quantity = parseInt(lastPart);
+      searchTerm = parts.slice(0, -1).join(' ');
+    }
+
+    // Si después de remover el modificador no queda nada, usar el texto original
+    if (!searchTerm.trim()) {
+      searchTerm = text.toLowerCase().trim();
+      useAll = false;
+      quantity = 1;
+    }
 
     // Buscar item en inventario (sin importar tildes)
     let foundItem: Item | null = null;
@@ -411,61 +436,30 @@ const usarPlugin: PluginHandler = {
       return;
     }
 
+    // Determinar cuántas pociones usar
+    const availableQuantity = user.inventory[foundInvIndex].quantity;
+    let toUse = useAll ? availableQuantity : Math.min(quantity, availableQuantity);
+
     // Calcular stats máximos reales (incluyendo clase y equipamiento)
     const realMax = getRealMaxStats(user);
 
-    // Verificar si el consumible tendría algún efecto útil
+    // Para items que restauran stats, calcular cuántos necesitamos realmente
     const hasHealthEffect = effect.health && effect.health > 0;
     const hasManaEffect = effect.mana && effect.mana > 0;
     const hasStaminaEffect = effect.stamina && effect.stamina > 0;
     const hasExpBoost = effect.expBoost && effect.duration;
 
-    const healthFull = user.health >= realMax.maxHealth;
-    const manaFull = user.mana >= realMax.maxMana;
-    const staminaFull = user.stamina >= realMax.maxStamina;
+    // Si solo restaura stats (no buffs), calcular cuántos necesitamos
+    if (!hasExpBoost && (hasHealthEffect || hasManaEffect || hasStaminaEffect)) {
+      // Calcular déficit de cada stat
+      const healthDeficit = hasHealthEffect ? realMax.maxHealth - user.health : 0;
+      const manaDeficit = hasManaEffect ? realMax.maxMana - user.mana : 0;
+      const staminaDeficit = hasStaminaEffect ? realMax.maxStamina - user.stamina : 0;
 
-    // Si solo restaura stats y todas están al máximo, no consumir
-    if (!hasExpBoost) {
-      const onlyHealthEffect = hasHealthEffect && !hasManaEffect && !hasStaminaEffect;
-      const onlyManaEffect = hasManaEffect && !hasHealthEffect && !hasStaminaEffect;
-      const onlyStaminaEffect = hasStaminaEffect && !hasHealthEffect && !hasManaEffect;
-
-      if (onlyHealthEffect && healthFull) {
+      // Si todas las stats están llenas, no consumir
+      if (healthDeficit <= 0 && manaDeficit <= 0 && staminaDeficit <= 0) {
         await m.reply(
-          `${EMOJI.error} ¡Tu salud ya está al máximo!\n\n` +
-          `❤️ Salud: *${user.health}/${realMax.maxHealth}*\n\n` +
-          `💡 No necesitas usar *${foundItem.name}* ahora.`
-        );
-        return;
-      }
-
-      if (onlyManaEffect && manaFull) {
-        await m.reply(
-          `${EMOJI.error} ¡Tu maná ya está al máximo!\n\n` +
-          `💠 Maná: *${user.mana}/${realMax.maxMana}*\n\n` +
-          `💡 No necesitas usar *${foundItem.name}* ahora.`
-        );
-        return;
-      }
-
-      if (onlyStaminaEffect && staminaFull) {
-        await m.reply(
-          `${EMOJI.error} ¡Tu energía ya está al máximo!\n\n` +
-          `⚡ Energía: *${user.stamina}/${realMax.maxStamina}*\n\n` +
-          `💡 No necesitas usar *${foundItem.name}* ahora.`
-        );
-        return;
-      }
-
-      // Si restaura múltiples stats y todas están al máximo
-      const allStatsFull =
-        (!hasHealthEffect || healthFull) &&
-        (!hasManaEffect || manaFull) &&
-        (!hasStaminaEffect || staminaFull);
-
-      if (allStatsFull && (hasHealthEffect || hasManaEffect || hasStaminaEffect)) {
-        await m.reply(
-          `${EMOJI.error} ¡Todas tus estadísticas ya están al máximo!\n\n` +
+          `${EMOJI.error} ¡Tus estadísticas ya están al máximo!\n\n` +
           `❤️ Salud: *${user.health}/${realMax.maxHealth}*\n` +
           `💠 Maná: *${user.mana}/${realMax.maxMana}*\n` +
           `⚡ Energía: *${user.stamina}/${realMax.maxStamina}*\n\n` +
@@ -473,31 +467,68 @@ const usarPlugin: PluginHandler = {
         );
         return;
       }
+
+      // Si es "all", calcular cuántos realmente necesitamos para llenar
+      if (useAll) {
+        let needed = 0;
+        if (hasHealthEffect && healthDeficit > 0) {
+          needed = Math.max(needed, Math.ceil(healthDeficit / effect.health!));
+        }
+        if (hasManaEffect && manaDeficit > 0) {
+          needed = Math.max(needed, Math.ceil(manaDeficit / effect.mana!));
+        }
+        if (hasStaminaEffect && staminaDeficit > 0) {
+          needed = Math.max(needed, Math.ceil(staminaDeficit / effect.stamina!));
+        }
+        toUse = Math.min(needed, availableQuantity);
+      }
     }
 
-    // Aplicar efectos
+    // Para buffs de exp, solo usar 1
+    if (hasExpBoost) {
+      toUse = 1;
+    }
+
+    if (toUse <= 0) {
+      await m.reply(`${EMOJI.error} No hay nada que restaurar.`);
+      return;
+    }
+
+    // Aplicar efectos multiplicados por la cantidad
     const updates: Partial<typeof user> = {};
     let effectMsg = '';
+    let totalHealthHealed = 0;
+    let totalManaRestored = 0;
+    let totalStaminaRestored = 0;
 
     if (effect.health) {
-      const newHealth = Math.min(realMax.maxHealth, user.health + effect.health);
-      const healed = newHealth - user.health;
+      const totalHeal = effect.health * toUse;
+      const newHealth = Math.min(realMax.maxHealth, user.health + totalHeal);
+      totalHealthHealed = newHealth - user.health;
       updates.health = newHealth;
-      effectMsg += `❤️ +${healed} Salud (${newHealth}/${realMax.maxHealth})\n`;
+      if (totalHealthHealed > 0) {
+        effectMsg += `❤️ +${totalHealthHealed} Salud (${newHealth}/${realMax.maxHealth})\n`;
+      }
     }
 
     if (effect.mana) {
-      const newMana = Math.min(realMax.maxMana, user.mana + effect.mana);
-      const restored = newMana - user.mana;
+      const totalMana = effect.mana * toUse;
+      const newMana = Math.min(realMax.maxMana, user.mana + totalMana);
+      totalManaRestored = newMana - user.mana;
       updates.mana = newMana;
-      effectMsg += `💠 +${restored} Maná (${newMana}/${realMax.maxMana})\n`;
+      if (totalManaRestored > 0) {
+        effectMsg += `💠 +${totalManaRestored} Maná (${newMana}/${realMax.maxMana})\n`;
+      }
     }
 
     if (effect.stamina) {
-      const newStamina = Math.min(realMax.maxStamina, user.stamina + effect.stamina);
-      const restored = newStamina - user.stamina;
+      const totalStamina = effect.stamina * toUse;
+      const newStamina = Math.min(realMax.maxStamina, user.stamina + totalStamina);
+      totalStaminaRestored = newStamina - user.stamina;
       updates.stamina = newStamina;
-      effectMsg += `⚡ +${restored} Energía (${newStamina}/${realMax.maxStamina})\n`;
+      if (totalStaminaRestored > 0) {
+        effectMsg += `⚡ +${totalStaminaRestored} Energía (${newStamina}/${realMax.maxStamina})\n`;
+      }
     }
 
     if (effect.expBoost && effect.duration) {
@@ -514,7 +545,7 @@ const usarPlugin: PluginHandler = {
     }
 
     // Reducir cantidad del item
-    user.inventory[foundInvIndex].quantity--;
+    user.inventory[foundInvIndex].quantity -= toUse;
     if (user.inventory[foundInvIndex].quantity <= 0) {
       user.inventory.splice(foundInvIndex, 1);
     }
@@ -522,9 +553,20 @@ const usarPlugin: PluginHandler = {
 
     db.updateUser(m.sender, updates);
 
-    let response = `${EMOJI.success} Usaste *${foundItem.emoji} ${foundItem.name}*\n\n`;
+    let response = `${EMOJI.success} Usaste *${foundItem.emoji} ${foundItem.name}*`;
+    if (toUse > 1) {
+      response += ` x${toUse}`;
+    }
+    response += `\n\n`;
     response += `✨ *Efectos:*\n`;
     response += effectMsg;
+
+    const remaining = user.inventory[foundInvIndex]?.quantity || 0;
+    if (remaining > 0) {
+      response += `\n📦 Restantes: *${remaining}*`;
+    } else {
+      response += `\n📦 _No te quedan más de este item_`;
+    }
 
     await m.reply(response);
     await m.react('✨');

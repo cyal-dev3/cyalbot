@@ -5,6 +5,23 @@
 
 import type { proto, WASocket, GroupMetadata } from 'baileys';
 
+// Forward declaration para evitar dependencia circular
+export interface MessageHandlerInterface {
+  getTrackedMessages(chatId: string): { key: proto.IMessageKey; timestamp: number; isCommand?: boolean }[];
+  clearTrackedMessages(chatId: string): void;
+  trackMessage(chatId: string, key: proto.IMessageKey, isCommand?: boolean): void;
+  isAutoMuteEnabled(groupId: string): boolean;
+  setAutoMute(groupId: string, enabled: boolean): void;
+  muteUser(groupId: string, userId: string): void;
+  unmuteUser(groupId: string, userId: string): boolean;
+  isUserMuted(groupId: string, userId: string): boolean;
+  getMuteRegistry(): MuteRegistry;
+  // Autoclear
+  isAutoClearEnabled(chatId: string): boolean;
+  setAutoClear(chatId: string, enabled: boolean): void;
+  makeMessageInvisible(chatId: string, key: proto.IMessageKey): Promise<boolean>;
+}
+
 /**
  * Contexto que recibe cada plugin al ejecutarse
  */
@@ -22,6 +39,8 @@ export interface MessageContext {
   groupMetadata?: GroupMetadata;
   participants?: string[];
   groupAdmins?: string[];
+  /** Handler de mensajes para acceso a funciones avanzadas */
+  handler: MessageHandlerInterface;
 }
 
 /**

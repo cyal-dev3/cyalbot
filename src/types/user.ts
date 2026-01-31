@@ -134,6 +134,31 @@ export interface UserRPG {
 
   // 💋 Sistema de besos
   kissStats: KissStats;
+
+  // 🏦 Sistema de banco
+  bank: number;             // Dinero en el banco
+  bankDepositTime: number;  // Timestamp de cuando se depositó (para expiración)
+
+  // 🕊️ Modo pasivo
+  passiveMode: boolean;           // Si está en modo pasivo
+  passiveModeUntil: number;       // Hasta cuando no puede cambiar el modo
+  passiveModeChangedAt: number;   // Cuando se cambió por última vez
+
+  // ⛓️ Sistema de esclavitud
+  slaveMaster: string | null;     // JID del dueño (si es esclavo)
+  slaveUntil: number;             // Hasta cuando es esclavo
+  slaves: string[];               // Lista de JIDs de esclavos
+
+  // 💸 Sistema de deuda mejorado
+  debtCreatedAt: number;          // Cuando se creó la deuda (para intereses)
+  debtInterestApplied: number;    // Última vez que se aplicaron intereses
+
+  // 🤗 Sistema de abrazos
+  hugStats: {
+    totalGiven: number;
+    totalReceived: number;
+    hugHistory: { jid: string; count: number; lastHug: number }[];
+  };
 }
 
 /**
@@ -252,6 +277,31 @@ export const DEFAULT_USER: UserRPG = {
     totalGiven: 0,
     totalReceived: 0,
     kissHistory: []
+  },
+
+  // Banco
+  bank: 0,
+  bankDepositTime: 0,
+
+  // Modo pasivo
+  passiveMode: false,
+  passiveModeUntil: 0,
+  passiveModeChangedAt: 0,
+
+  // Esclavitud
+  slaveMaster: null,
+  slaveUntil: 0,
+  slaves: [],
+
+  // Deuda mejorada
+  debtCreatedAt: 0,
+  debtInterestApplied: 0,
+
+  // Abrazos
+  hugStats: {
+    totalGiven: 0,
+    totalReceived: 0,
+    hugHistory: []
   }
 };
 

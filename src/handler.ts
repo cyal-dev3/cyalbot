@@ -14,19 +14,186 @@ const DUEL_COMMANDS_NO_PREFIX = ['g', 'golpe', 'golpear', 'hit', 'rendirse', 'su
 // Patrones de habilidades de clase que funcionan sin prefijo en duelos
 const SKILL_PATTERNS_NO_PREFIX = /^(golpe.?brutal|escudo.?defensor|grito.?guerra|bola.?fuego|rayo.?arcano|escudo.?magico|ataque.?furtivo|evadir|robo.?vital|disparo.?preciso|lluvia.?flechas|trampa.?cazador|fuego|rayo|brutal|furtivo|flechas|trampa)$/i;
 
+// Estructura para rastrear mensajes para el comando .clear
+interface TrackedMessage {
+  key: proto.IMessageKey;
+  timestamp: number;
+  isCommand?: boolean; // Si es un mensaje de comando (del usuario)
+}
+
+// Carácter invisible para "limpiar" mensajes
+const INVISIBLE_CHAR = '\u200B'; // Zero-width space
+
 /**
  * Clase principal para manejar mensajes
  */
 export class MessageHandler {
   private plugins: PluginRegistry = new Map();
   private muteRegistry: MuteRegistry = new Map();
-  private autoMuteEnabled: Map<string, boolean> = new Map(); // Grupos con automute activado
   private spamTracker: Map<string, number[]> = new Map(); // Rastreo de spam por usuario
+  // Rastreo de mensajes del bot y comandos para .clear (por grupo)
+  private messageTracker: Map<string, TrackedMessage[]> = new Map();
+  private readonly MAX_TRACKED_MESSAGES = 100; // Máximo de mensajes a rastrear por grupo
+  private readonly MESSAGE_EXPIRY = 30 * 60 * 1000; // 30 minutos de expiración
+  private readonly AUTOCLEAR_DELAY = 3 * 60 * 1000; // 3 minutos para autoclear
 
   constructor(
     private conn: WASocket,
     private db: Database
-  ) {}
+  ) {
+    // Cargar datos de mute desde la base de datos al iniciar
+    this.loadMuteDataFromDB();
+
+    // Limpiar mensajes viejos cada 5 minutos
+    setInterval(() => this.cleanupOldMessages(), 5 * 60 * 1000);
+
+    // Ejecutar autoclear cada 30 segundos
+    setInterval(() => this.processAutoClear(), 30 * 1000);
+  }
+
+  /**
+   * Rastrea un mensaje para poder eliminarlo después con .clear
+   */
+  trackMessage(chatId: string, key: proto.IMessageKey, isCommand: boolean = false): void {
+    if (!this.messageTracker.has(chatId)) {
+      this.messageTracker.set(chatId, []);
+    }
+
+    const messages = this.messageTracker.get(chatId)!;
+    messages.push({ key, timestamp: Date.now(), isCommand });
+
+    // Limitar cantidad de mensajes rastreados
+    if (messages.length > this.MAX_TRACKED_MESSAGES) {
+      messages.shift();
+    }
+  }
+
+  /**
+   * Obtiene los mensajes rastreados de un grupo
+   */
+  getTrackedMessages(chatId: string): TrackedMessage[] {
+    return this.messageTracker.get(chatId) || [];
+  }
+
+  /**
+   * Limpia los mensajes rastreados de un grupo
+   */
+  clearTrackedMessages(chatId: string): void {
+    this.messageTracker.set(chatId, []);
+  }
+
+  /**
+   * Limpia mensajes viejos de todos los grupos
+   */
+  private cleanupOldMessages(): void {
+    const now = Date.now();
+    for (const [chatId, messages] of this.messageTracker.entries()) {
+      const filtered = messages.filter(m => now - m.timestamp < this.MESSAGE_EXPIRY);
+      this.messageTracker.set(chatId, filtered);
+    }
+  }
+
+  /**
+   * Verifica si autoclear está habilitado en un grupo
+   */
+  isAutoClearEnabled(chatId: string): boolean {
+    const settings = this.db.getChatSettings(chatId);
+    return settings.autoClearEnabled || false;
+  }
+
+  /**
+   * Activa/desactiva autoclear en un grupo
+   */
+  setAutoClear(chatId: string, enabled: boolean): void {
+    this.db.updateChatSettings(chatId, { autoClearEnabled: enabled });
+  }
+
+  /**
+   * Edita un mensaje para hacerlo "invisible"
+   */
+  async makeMessageInvisible(chatId: string, key: proto.IMessageKey): Promise<boolean> {
+    try {
+      // Editar el mensaje con un carácter invisible
+      await this.conn.sendMessage(chatId, {
+        text: INVISIBLE_CHAR,
+        edit: key
+      });
+      return true;
+    } catch (error) {
+      // Si falla la edición, intentar eliminar
+      try {
+        await this.conn.sendMessage(chatId, { delete: key });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  /**
+   * Procesa autoclear para todos los grupos que lo tienen habilitado
+   */
+  private async processAutoClear(): Promise<void> {
+    const now = Date.now();
+
+    for (const [chatId, messages] of this.messageTracker.entries()) {
+      // Solo procesar si autoclear está habilitado
+      if (!this.isAutoClearEnabled(chatId)) continue;
+
+      // Filtrar mensajes que tienen más de 3 minutos
+      const messagesToClear = messages.filter(m => now - m.timestamp >= this.AUTOCLEAR_DELAY);
+
+      if (messagesToClear.length === 0) continue;
+
+      // Procesar cada mensaje
+      for (const tracked of messagesToClear) {
+        try {
+          if (tracked.isCommand) {
+            // Para comandos de usuarios, intentar eliminar
+            await this.conn.sendMessage(chatId, { delete: tracked.key });
+          } else {
+            // Para mensajes del bot, editar a invisible
+            await this.makeMessageInvisible(chatId, tracked.key);
+          }
+          // Pequeña pausa para evitar rate limiting
+          await new Promise(resolve => setTimeout(resolve, 200));
+        } catch {
+          // Ignorar errores individuales
+        }
+      }
+
+      // Remover mensajes procesados del tracker
+      const remaining = messages.filter(m => now - m.timestamp < this.AUTOCLEAR_DELAY);
+      this.messageTracker.set(chatId, remaining);
+    }
+  }
+
+  /**
+   * Carga los datos de mute desde la base de datos
+   */
+  private loadMuteDataFromDB(): void {
+    const chats = this.db.data.chats;
+    for (const [chatId, settings] of Object.entries(chats)) {
+      if (settings.mutedUsers && settings.mutedUsers.length > 0) {
+        this.muteRegistry.set(chatId, {
+          enabled: true,
+          mutedUsers: new Set(settings.mutedUsers)
+        });
+      }
+    }
+    console.log('🔇 Datos de mute cargados desde la base de datos');
+  }
+
+  /**
+   * Guarda los datos de mute en la base de datos
+   */
+  private saveMuteToDB(groupId: string): void {
+    const config = this.muteRegistry.get(groupId);
+    const chatSettings = this.db.getChatSettings(groupId);
+
+    chatSettings.mutedUsers = config ? Array.from(config.mutedUsers) : [];
+    this.db.updateChatSettings(groupId, { mutedUsers: chatSettings.mutedUsers });
+  }
 
   /**
    * Registra un plugin/comando
@@ -50,21 +217,22 @@ export class MessageHandler {
   }
 
   /**
-   * Verifica si automute está activado en un grupo
+   * Verifica si automute está activado en un grupo (persistido en DB)
    */
   isAutoMuteEnabled(groupId: string): boolean {
-    return this.autoMuteEnabled.get(groupId) || false;
+    const chatSettings = this.db.getChatSettings(groupId);
+    return chatSettings.autoMuteEnabled || false;
   }
 
   /**
-   * Activa/desactiva automute en un grupo
+   * Activa/desactiva automute en un grupo (persistido en DB)
    */
   setAutoMute(groupId: string, enabled: boolean): void {
-    this.autoMuteEnabled.set(groupId, enabled);
+    this.db.updateChatSettings(groupId, { autoMuteEnabled: enabled });
   }
 
   /**
-   * Agrega un usuario a la lista de mute
+   * Agrega un usuario a la lista de mute (persistido en DB)
    */
   muteUser(groupId: string, userId: string): void {
     if (!this.muteRegistry.has(groupId)) {
@@ -74,15 +242,18 @@ export class MessageHandler {
       });
     }
     this.muteRegistry.get(groupId)!.mutedUsers.add(userId);
+    this.saveMuteToDB(groupId);
   }
 
   /**
-   * Quita un usuario de la lista de mute
+   * Quita un usuario de la lista de mute (persistido en DB)
    */
   unmuteUser(groupId: string, userId: string): boolean {
     const config = this.muteRegistry.get(groupId);
     if (config) {
-      return config.mutedUsers.delete(userId);
+      const result = config.mutedUsers.delete(userId);
+      this.saveMuteToDB(groupId);
+      return result;
     }
     return false;
   }
@@ -192,9 +363,14 @@ export class MessageHandler {
       quoted,
       rawMessage: m,
 
-      // Método para responder
+      // Método para responder (con tracking para .clear)
       reply: async (replyText: string) => {
-        return this.conn.sendMessage(key.remoteJid!, { text: replyText }, { quoted: m });
+        const result = await this.conn.sendMessage(key.remoteJid!, { text: replyText }, { quoted: m });
+        // Rastrear mensaje para poder eliminarlo con .clear
+        if (result?.key) {
+          this.trackMessage(key.remoteJid!, result.key);
+        }
+        return result;
       },
 
       // Método para reaccionar
@@ -486,8 +662,15 @@ export class MessageHandler {
           isGroup: m.isGroup,
           groupMetadata,
           participants,
-          groupAdmins
+          groupAdmins,
+          handler: this
         };
+
+        // Rastrear el mensaje del comando para .clear (excepto el propio .clear y .autoclear)
+        const cmdLower = command.toLowerCase();
+        if (cmdLower !== 'clear' && cmdLower !== 'limpiar' && cmdLower !== 'clean' && cmdLower !== 'autoclear') {
+          this.trackMessage(m.chat, m.key, true); // true = es comando de usuario
+        }
 
         // Ejecutar plugin
         try {

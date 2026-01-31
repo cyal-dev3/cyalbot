@@ -60,44 +60,63 @@ async function searchPinterest(query: string): Promise<{
 }
 
 /**
- * Método alternativo de búsqueda en Pinterest
+ * Método alternativo de búsqueda en Pinterest usando múltiples APIs
  */
 async function searchPinterestAlternative(query: string): Promise<{
   success: boolean;
   images?: string[];
   error?: string;
 }> {
-  try {
-    // Usar una API pública alternativa
-    const apiUrl = `https://api.lolhuman.xyz/api/pinterest?apikey=free&query=${encodeURIComponent(query)}`;
-
-    const response = await fetch(apiUrl, {
+  // Lista de APIs alternativas para intentar
+  const apis = [
+    {
+      name: 'RapidAPI Pinterest',
+      url: `https://pinterest-scraper2.p.rapidapi.com/search/pins?query=${encodeURIComponent(query)}&limit=5`,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      parseResult: (data: unknown) => {
+        const d = data as { data?: Array<{ images?: { original?: { url?: string } } }> };
+        return d.data?.map(p => p.images?.original?.url).filter((u): u is string => !!u) || [];
       }
-    });
-
-    const data = await response.json() as {
-      status?: number;
-      result?: string[];
-    };
-
-    if (data.status !== 200 || !data.result || data.result.length === 0) {
-      // Último intento: usar Google Images como fallback
-      return {
-        success: false,
-        error: 'No se encontraron imágenes para esta búsqueda'
-      };
+    },
+    {
+      name: 'BotSailor',
+      url: `https://api.botsailor.com/tools/pinterest?query=${encodeURIComponent(query)}`,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      parseResult: (data: unknown) => {
+        const d = data as { status?: boolean; data?: string[] };
+        return d.status && d.data ? d.data.slice(0, 5) : [];
+      }
     }
+  ];
 
-    return {
-      success: true,
-      images: data.result.slice(0, 5)
-    };
-  } catch (error) {
-    console.error('Error en Pinterest alternativo:', error);
-    return { success: false, error: 'Error al buscar imágenes' };
+  for (const api of apis) {
+    try {
+      console.log(`🔍 Intentando ${api.name}...`);
+      const response = await fetch(api.url, {
+        headers: api.headers,
+        signal: AbortSignal.timeout(10000) // 10 segundos timeout
+      });
+
+      if (!response.ok) continue;
+
+      const data = await response.json();
+      const images = api.parseResult(data);
+
+      if (images.length > 0) {
+        console.log(`✅ ${api.name} exitoso con ${images.length} imágenes`);
+        return { success: true, images };
+      }
+    } catch (error) {
+      console.log(`❌ ${api.name} falló:`, (error as Error).message);
+      continue;
+    }
   }
+
+  return { success: false, error: 'No se encontraron imágenes para esta búsqueda' };
 }
 
 /**
