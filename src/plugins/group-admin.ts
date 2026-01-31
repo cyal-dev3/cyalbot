@@ -70,11 +70,20 @@ const promotePlugin: PluginHandler = {
 
     try {
       await ctx.conn.groupParticipantsUpdate(ctx.m.chat, [targetUser], 'promote');
-      const userName = targetUser.split('@')[0];
-      await ctx.m.reply(`✅ @${userName} ahora es administrador del grupo! 👑`);
+
+      // Modo compacto: solo reacción
+      if (ctx.handler.isCompactMode(ctx.m.chat)) {
+        await ctx.m.react('👑');
+      } else {
+        const userName = targetUser.split('@')[0];
+        await ctx.m.reply(`✅ @${userName} ahora es administrador del grupo! 👑`);
+      }
     } catch (error) {
       console.error('Error en promote:', error);
-      await ctx.m.reply('❌ No pude hacer admin a ese usuario. Verifica que tengo permisos.');
+      await ctx.m.react('❌');
+      if (!ctx.handler.isCompactMode(ctx.m.chat)) {
+        await ctx.m.reply('❌ No pude hacer admin a ese usuario. Verifica que tengo permisos.');
+      }
     }
   }
 };
@@ -112,11 +121,20 @@ const demotePlugin: PluginHandler = {
 
     try {
       await ctx.conn.groupParticipantsUpdate(ctx.m.chat, [targetUser], 'demote');
-      const userName = targetUser.split('@')[0];
-      await ctx.m.reply(`✅ @${userName} ya no es administrador. 📉`);
+
+      // Modo compacto: solo reacción
+      if (ctx.handler.isCompactMode(ctx.m.chat)) {
+        await ctx.m.react('📉');
+      } else {
+        const userName = targetUser.split('@')[0];
+        await ctx.m.reply(`✅ @${userName} ya no es administrador. 📉`);
+      }
     } catch (error) {
       console.error('Error en demote:', error);
-      await ctx.m.reply('❌ No pude quitar admin a ese usuario. Verifica que tengo permisos.');
+      await ctx.m.react('❌');
+      if (!ctx.handler.isCompactMode(ctx.m.chat)) {
+        await ctx.m.reply('❌ No pude quitar admin a ese usuario. Verifica que tengo permisos.');
+      }
     }
   }
 };
@@ -160,11 +178,20 @@ const kickPlugin: PluginHandler = {
 
     try {
       await ctx.conn.groupParticipantsUpdate(ctx.m.chat, [targetUser], 'remove');
-      const userName = targetUser.split('@')[0];
-      await ctx.m.reply(`✅ @${userName} ha sido expulsado del grupo. 🚪`);
+
+      // Modo compacto: solo reacción
+      if (ctx.handler.isCompactMode(ctx.m.chat)) {
+        await ctx.m.react('🚪');
+      } else {
+        const userName = targetUser.split('@')[0];
+        await ctx.m.reply(`✅ @${userName} ha sido expulsado del grupo. 🚪`);
+      }
     } catch (error) {
       console.error('Error en kick:', error);
-      await ctx.m.reply('❌ No pude expulsar a ese usuario. Verifica que tengo permisos.');
+      await ctx.m.react('❌');
+      if (!ctx.handler.isCompactMode(ctx.m.chat)) {
+        await ctx.m.reply('❌ No pude expulsar a ese usuario. Verifica que tengo permisos.');
+      }
     }
   }
 };

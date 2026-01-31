@@ -33,9 +33,9 @@ export class MessageHandler {
   private spamTracker: Map<string, number[]> = new Map(); // Rastreo de spam por usuario
   // Rastreo de mensajes del bot y comandos para .clear (por grupo)
   private messageTracker: Map<string, TrackedMessage[]> = new Map();
-  private readonly MAX_TRACKED_MESSAGES = 100; // Máximo de mensajes a rastrear por grupo
-  private readonly MESSAGE_EXPIRY = 30 * 60 * 1000; // 30 minutos de expiración
-  private readonly AUTOCLEAR_DELAY = 3 * 60 * 1000; // 3 minutos para autoclear
+  private readonly MAX_TRACKED_MESSAGES = 150; // Máximo de mensajes a rastrear por grupo
+  private readonly MESSAGE_EXPIRY = 60 * 60 * 1000; // 1 hora de expiración (límite de WhatsApp)
+  private readonly AUTOCLEAR_DELAY = 2 * 60 * 1000; // 2 minutos para autoclear
 
   constructor(
     private conn: WASocket,
@@ -109,20 +109,35 @@ export class MessageHandler {
   }
 
   /**
-   * Edita un mensaje para hacerlo "invisible"
+   * Verifica si el modo compacto está habilitado en un grupo
+   */
+  isCompactMode(chatId: string): boolean {
+    const settings = this.db.getChatSettings(chatId);
+    return settings.compactMode || false;
+  }
+
+  /**
+   * Activa/desactiva modo compacto en un grupo
+   */
+  setCompactMode(chatId: string, enabled: boolean): void {
+    this.db.updateChatSettings(chatId, { compactMode: enabled });
+  }
+
+  /**
+   * Elimina un mensaje del bot (intenta eliminar directamente, es más confiable)
    */
   async makeMessageInvisible(chatId: string, key: proto.IMessageKey): Promise<boolean> {
     try {
-      // Editar el mensaje con un carácter invisible
-      await this.conn.sendMessage(chatId, {
-        text: INVISIBLE_CHAR,
-        edit: key
-      });
+      // Intentar eliminar directamente (funciona con cualquier tipo de mensaje)
+      await this.conn.sendMessage(chatId, { delete: key });
       return true;
     } catch (error) {
-      // Si falla la edición, intentar eliminar
+      // Si falla eliminar, intentar editar a invisible (solo funciona con texto)
       try {
-        await this.conn.sendMessage(chatId, { delete: key });
+        await this.conn.sendMessage(chatId, {
+          text: INVISIBLE_CHAR,
+          edit: key
+        });
         return true;
       } catch {
         return false;
@@ -134,36 +149,43 @@ export class MessageHandler {
    * Procesa autoclear para todos los grupos que lo tienen habilitado
    */
   private async processAutoClear(): Promise<void> {
-    const now = Date.now();
-
     for (const [chatId, messages] of this.messageTracker.entries()) {
       // Solo procesar si autoclear está habilitado
       if (!this.isAutoClearEnabled(chatId)) continue;
 
-      // Filtrar mensajes que tienen más de 3 minutos
+      const now = Date.now();
+
+      // Filtrar mensajes que tienen más del tiempo configurado
       const messagesToClear = messages.filter(m => now - m.timestamp >= this.AUTOCLEAR_DELAY);
 
       if (messagesToClear.length === 0) continue;
 
+      // IDs de mensajes procesados exitosamente
+      const processedIds = new Set<string>();
+
       // Procesar cada mensaje
       for (const tracked of messagesToClear) {
         try {
-          if (tracked.isCommand) {
-            // Para comandos de usuarios, intentar eliminar
-            await this.conn.sendMessage(chatId, { delete: tracked.key });
-          } else {
-            // Para mensajes del bot, editar a invisible
-            await this.makeMessageInvisible(chatId, tracked.key);
+          // Eliminar cualquier tipo de mensaje
+          await this.conn.sendMessage(chatId, { delete: tracked.key });
+
+          // Marcar como procesado
+          if (tracked.key.id) {
+            processedIds.add(tracked.key.id);
           }
-          // Pequeña pausa para evitar rate limiting
-          await new Promise(resolve => setTimeout(resolve, 200));
+
+          // Pausa más larga para evitar rate limiting (300ms)
+          await new Promise(resolve => setTimeout(resolve, 300));
         } catch {
-          // Ignorar errores individuales
+          // Si falla, igual marcarlo para no reintentar infinitamente
+          if (tracked.key.id) {
+            processedIds.add(tracked.key.id);
+          }
         }
       }
 
       // Remover mensajes procesados del tracker
-      const remaining = messages.filter(m => now - m.timestamp < this.AUTOCLEAR_DELAY);
+      const remaining = messages.filter(m => !m.key.id || !processedIds.has(m.key.id));
       this.messageTracker.set(chatId, remaining);
     }
   }

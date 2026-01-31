@@ -447,13 +447,13 @@ const MENU_CATEGORIES: MenuCategory[] = [
       {
         cmd: 'clear',
         aliases: ['limpiar', 'clean'],
-        description: '🆕 Eliminar múltiples mensajes',
+        description: '🆕 Eliminar mensajes del bot y comandos',
         usage: '/clear [cantidad]'
       },
       {
         cmd: 'autoclear',
         aliases: ['autolimpiar', 'autoclean'],
-        description: '🆕 Auto-eliminar mensajes del bot',
+        description: '🆕 Auto-eliminar después de 2 min',
         usage: '/autoclear on/off'
       },
       {
@@ -479,6 +479,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: [],
         description: '🆕 Activar/desactivar despedidas',
         usage: '/bye on/off'
+      },
+      {
+        cmd: 'compacto',
+        aliases: ['compact', 'silencioso', 'quiet'],
+        description: '🆕 Modo compacto (menos spam)',
+        usage: '/compacto on/off'
       }
     ]
   },

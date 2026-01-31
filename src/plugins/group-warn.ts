@@ -54,23 +54,42 @@ export const warnPlugin: PluginHandler = {
 
     const targetNumber = targetUser.split('@')[0];
 
+    const isCompact = ctx.handler.isCompactMode(m.chat);
+
     // Verificar si alcanzó el máximo
     if (warningCount >= CONFIG.protection.maxWarnings) {
       try {
         await conn.groupParticipantsUpdate(m.chat, [targetUser], 'remove');
+        // Siempre notificar expulsiones (importante)
         await conn.sendMessage(m.chat, {
-          text: `🚫 *USUARIO EXPULSADO*\n\n@${targetNumber} ha sido expulsado por acumular ${CONFIG.protection.maxWarnings} advertencias.`,
+          text: `🚫 @${targetNumber} expulsado (${CONFIG.protection.maxWarnings} warns)`,
           mentions: [targetUser]
         });
         db.clearWarnings(m.chat, targetUser);
       } catch (error) {
-        await m.reply('❌ Error al expulsar al usuario. Verifica que el bot tenga permisos.');
+        await m.react('❌');
       }
     } else {
-      await conn.sendMessage(m.chat, {
-        text: `⚠️ *ADVERTENCIA ${warningCount}/${CONFIG.protection.maxWarnings}*\n\n👤 Usuario: @${targetNumber}\n📝 Razón: ${reason || 'Sin razón especificada'}\n\n⚡ ${CONFIG.protection.maxWarnings - warningCount} advertencia(s) más y será expulsado.`,
-        mentions: [targetUser]
-      });
+      // Modo compacto: reacción + número de warns
+      if (isCompact) {
+        await m.react(`⚠️`);
+        // Mensaje breve que se auto-elimina
+        const briefMsg = await conn.sendMessage(m.chat, {
+          text: `⚠️ @${targetNumber} ${warningCount}/${CONFIG.protection.maxWarnings}`,
+          mentions: [targetUser]
+        });
+        // Auto-eliminar en 5 segundos
+        if (briefMsg?.key) {
+          setTimeout(async () => {
+            try { await conn.sendMessage(m.chat, { delete: briefMsg.key }); } catch {}
+          }, 5000);
+        }
+      } else {
+        await conn.sendMessage(m.chat, {
+          text: `⚠️ *ADVERTENCIA ${warningCount}/${CONFIG.protection.maxWarnings}*\n\n👤 Usuario: @${targetNumber}\n📝 Razón: ${reason || 'Sin razón especificada'}\n\n⚡ ${CONFIG.protection.maxWarnings - warningCount} advertencia(s) más y será expulsado.`,
+          mentions: [targetUser]
+        });
+      }
     }
   }
 };
@@ -105,18 +124,20 @@ export const unwarnPlugin: PluginHandler = {
 
     const removed = db.removeWarning(m.chat, targetUser);
     const remainingWarnings = db.getWarnings(m.chat, targetUser).length;
-    const targetNumber = targetUser.split('@')[0];
+    const isCompact = ctx.handler.isCompactMode(m.chat);
 
     if (removed) {
-      await conn.sendMessage(m.chat, {
-        text: `✅ Se quitó una advertencia a @${targetNumber}\n\n📊 Advertencias restantes: ${remainingWarnings}/${CONFIG.protection.maxWarnings}`,
-        mentions: [targetUser]
-      });
+      if (isCompact) {
+        await m.react('✅');
+      } else {
+        const targetNumber = targetUser.split('@')[0];
+        await conn.sendMessage(m.chat, {
+          text: `✅ Se quitó una advertencia a @${targetNumber}\n\n📊 Advertencias restantes: ${remainingWarnings}/${CONFIG.protection.maxWarnings}`,
+          mentions: [targetUser]
+        });
+      }
     } else {
-      await conn.sendMessage(m.chat, {
-        text: `ℹ️ @${targetNumber} no tiene advertencias.`,
-        mentions: [targetUser]
-      });
+      await m.react('ℹ️');
     }
   }
 };
@@ -194,18 +215,20 @@ export const clearWarnPlugin: PluginHandler = {
     }
 
     const removed = db.clearWarnings(m.chat, targetUser);
-    const targetNumber = targetUser.split('@')[0];
+    const isCompact = ctx.handler.isCompactMode(m.chat);
 
     if (removed > 0) {
-      await conn.sendMessage(m.chat, {
-        text: `✅ Se eliminaron ${removed} advertencia(s) de @${targetNumber}`,
-        mentions: [targetUser]
-      });
+      if (isCompact) {
+        await m.react('🧹');
+      } else {
+        const targetNumber = targetUser.split('@')[0];
+        await conn.sendMessage(m.chat, {
+          text: `✅ Se eliminaron ${removed} advertencia(s) de @${targetNumber}`,
+          mentions: [targetUser]
+        });
+      }
     } else {
-      await conn.sendMessage(m.chat, {
-        text: `ℹ️ @${targetNumber} no tenía advertencias.`,
-        mentions: [targetUser]
-      });
+      await m.react('ℹ️');
     }
   }
 };

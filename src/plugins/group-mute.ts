@@ -85,9 +85,14 @@ const mutePlugin: PluginHandler = {
 
     // Mutear al usuario
     handlerRef.muteUser(ctx.m.chat, targetUser);
-    const userName = targetUser.split('@')[0];
 
-    await ctx.m.reply(`🔇 @${userName} ha sido silenciado.\n\n⚠️ Sus mensajes serán eliminados automáticamente hasta que se le quite el mute.`);
+    // Modo compacto: solo reacción
+    if (ctx.handler.isCompactMode(ctx.m.chat)) {
+      await ctx.m.react('🔇');
+    } else {
+      const userName = targetUser.split('@')[0];
+      await ctx.m.reply(`🔇 @${userName} ha sido silenciado.\n\n⚠️ Sus mensajes serán eliminados automáticamente hasta que se le quite el mute.`);
+    }
   }
 };
 
@@ -117,12 +122,17 @@ const unmutePlugin: PluginHandler = {
 
     // Quitar mute
     const removed = handlerRef.unmuteUser(ctx.m.chat, targetUser);
-    const userName = targetUser.split('@')[0];
 
     if (removed) {
-      await ctx.m.reply(`🔊 @${userName} ya puede hablar de nuevo.`);
+      // Modo compacto: solo reacción
+      if (ctx.handler.isCompactMode(ctx.m.chat)) {
+        await ctx.m.react('🔊');
+      } else {
+        const userName = targetUser.split('@')[0];
+        await ctx.m.reply(`🔊 @${userName} ya puede hablar de nuevo.`);
+      }
     } else {
-      await ctx.m.reply('❌ No pude quitar el silencio a ese usuario.');
+      await ctx.m.react('❌');
     }
   }
 };

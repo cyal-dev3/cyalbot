@@ -31,6 +31,7 @@ import { registerGroupMutePlugins } from './group-mute.js';
 import { registerGroupDeletePlugins } from './group-delete.js';
 import { registerGroupPinPlugins } from './group-pin.js';
 import { registerGroupLockPlugins } from './group-lock.js';
+import { registerGroupCompactPlugin } from './group-compact.js';
 import { notifyPlugin } from './admin-notify.js';
 import { restartPlugin, gitPullPlugin } from './admin-restart.js';
 
@@ -222,6 +223,9 @@ export function loadPlugins(handler: MessageHandler): void {
 
   registerGroupDeletePlugins(handler);
   console.log('      ✅ delete, clear, autoclear');
+
+  registerGroupCompactPlugin(handler);
+  console.log('      ✅ compacto (compact, silencioso, quiet)');
 
   registerGroupPinPlugins(handler);
   console.log('      ✅ pin, unpin, pinned');

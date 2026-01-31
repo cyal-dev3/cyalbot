@@ -30,7 +30,9 @@ export interface ChatSettings {
   autoMuteEnabled: boolean;     // Si automute está activo
   mutedUsers: string[];         // Lista de usuarios muteados (JIDs)
   // Sistema de autoclear
-  autoClearEnabled: boolean;    // Si autoclear está activo (limpia mensajes del bot después de 3 min)
+  autoClearEnabled: boolean;    // Si autoclear está activo (limpia mensajes del bot después de 2 min)
+  // Modo compacto - reduce spam del bot
+  compactMode: boolean;         // Si está activo, usa reacciones en lugar de mensajes
 }
 
 /**
@@ -77,7 +79,8 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   warnings: [],
   autoMuteEnabled: false,
   mutedUsers: [],
-  autoClearEnabled: false
+  autoClearEnabled: false,
+  compactMode: false
 };
 
 /**

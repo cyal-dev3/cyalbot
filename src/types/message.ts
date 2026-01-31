@@ -20,6 +20,9 @@ export interface MessageHandlerInterface {
   isAutoClearEnabled(chatId: string): boolean;
   setAutoClear(chatId: string, enabled: boolean): void;
   makeMessageInvisible(chatId: string, key: proto.IMessageKey): Promise<boolean>;
+  // Modo compacto
+  isCompactMode(chatId: string): boolean;
+  setCompactMode(chatId: string, enabled: boolean): void;
 }
 
 /**
