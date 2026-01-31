@@ -89,6 +89,42 @@ const MENU_CATEGORIES: MenuCategory[] = [
         usage: '/duelo @usuario [apuesta]'
       },
       {
+        cmd: 'aceptar',
+        aliases: ['accept', 'si'],
+        description: '🆕 Aceptar desafío de duelo',
+        usage: '/aceptar'
+      },
+      {
+        cmd: 'rechazar',
+        aliases: ['decline', 'no', 'negar'],
+        description: '🆕 Rechazar desafío de duelo',
+        usage: '/rechazar'
+      },
+      {
+        cmd: 'golpe',
+        aliases: ['golpear', 'hit', 'g'],
+        description: '🆕 Atacar en duelo',
+        usage: '/golpe'
+      },
+      {
+        cmd: 'bloquear',
+        aliases: ['block', 'defender', 'b'],
+        description: '🆕 Bloquear ataque en duelo',
+        usage: '/bloquear'
+      },
+      {
+        cmd: 'poder',
+        aliases: ['habilidad', 'skill', 'p'],
+        description: '🆕 Usar habilidad especial en duelo',
+        usage: '/poder'
+      },
+      {
+        cmd: 'rendirse',
+        aliases: ['surrender', 'abandonar', 'huir'],
+        description: '🆕 Abandonar duelo',
+        usage: '/rendirse'
+      },
+      {
         cmd: 'robar',
         aliases: ['rob', 'steal', 'asaltar'],
         description: 'Robar a otro jugador',
@@ -157,6 +193,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         usage: '/equipar [nombre item]'
       },
       {
+        cmd: 'desequipar',
+        aliases: ['unequip', 'quitar', 'remove'],
+        description: '🆕 Quitar item equipado',
+        usage: '/desequipar [nombre item]'
+      },
+      {
         cmd: 'usar',
         aliases: ['use', 'consumir', 'beber'],
         description: 'Usar consumible',
@@ -192,6 +234,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['sell'],
         description: 'Vender items',
         usage: '/vender [item] [cantidad]'
+      },
+      {
+        cmd: 'comprard',
+        aliases: ['buyd', 'comprardiamantes', 'buydiamonds'],
+        description: '🆕 Comprar diamantes con dinero',
+        usage: '/comprard [cantidad]'
       }
     ]
   },
@@ -232,6 +280,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         usage: '/logros'
       },
       {
+        cmd: 'reclamarlogro',
+        aliases: ['claimachievement', 'reclamar'],
+        description: '🆕 Reclamar recompensa de logro',
+        usage: '/reclamarlogro'
+      },
+      {
         cmd: 'stats',
         aliases: ['estadisticas'],
         description: 'Estadísticas detalladas',
@@ -265,6 +319,55 @@ const MENU_CATEGORIES: MenuCategory[] = [
     ]
   },
   {
+    emoji: '💰',
+    name: 'Economía',
+    description: '🆕 Sistema económico avanzado',
+    commands: [
+      {
+        cmd: 'economia',
+        aliases: ['economy', 'mieconomia', 'wallet'],
+        description: '🆕 Ver estado económico completo',
+        usage: '/economia'
+      },
+      {
+        cmd: 'banco',
+        aliases: ['bank', 'depositar'],
+        description: '🆕 Depositar dinero al banco',
+        usage: '/banco [cantidad]'
+      },
+      {
+        cmd: 'transferir',
+        aliases: ['transfer', 'enviar', 'pay'],
+        description: '🆕 Transferir dinero a otro',
+        usage: '/transferir @usuario [cantidad]'
+      },
+      {
+        cmd: 'esclavizar',
+        aliases: ['enslave', 'slave'],
+        description: '🆕 Esclavizar a otro usuario',
+        usage: '/esclavizar @usuario'
+      },
+      {
+        cmd: 'liberar',
+        aliases: ['free', 'liberarse', 'libertad'],
+        description: '🆕 Liberar a un esclavo',
+        usage: '/liberar @usuario'
+      },
+      {
+        cmd: 'esclavos',
+        aliases: ['slaves', 'misesclavos'],
+        description: '🆕 Ver tus esclavos',
+        usage: '/esclavos'
+      },
+      {
+        cmd: 'pasivo',
+        aliases: ['passive', 'pacifico', 'paz'],
+        description: '🆕 Modo pasivo (sin robo)',
+        usage: '/pasivo on/off'
+      }
+    ]
+  },
+  {
     emoji: '👑',
     name: 'Admin',
     description: 'Comandos de administración',
@@ -294,10 +397,34 @@ const MENU_CATEGORIES: MenuCategory[] = [
         usage: '/mute @usuario'
       },
       {
+        cmd: 'unmute',
+        aliases: ['desilenciar', 'hablar'],
+        description: '🆕 Quitar silencio a usuario',
+        usage: '/unmute @usuario'
+      },
+      {
+        cmd: 'automute',
+        aliases: ['autosilencio'],
+        description: '🆕 Auto-silenciar nuevos miembros',
+        usage: '/automute on/off'
+      },
+      {
+        cmd: 'listmute',
+        aliases: ['mutelist', 'silenciados'],
+        description: '🆕 Ver usuarios silenciados',
+        usage: '/listmute'
+      },
+      {
         cmd: 'pin',
         aliases: ['fijar'],
         description: 'Fijar mensaje',
         usage: '/pin [duración]'
+      },
+      {
+        cmd: 'unpin',
+        aliases: ['desfijar', 'desanclar'],
+        description: '🆕 Desfijar mensaje',
+        usage: '/unpin (responder a mensaje)'
       },
       {
         cmd: 'notify',
@@ -306,10 +433,28 @@ const MENU_CATEGORIES: MenuCategory[] = [
         usage: '/notify [mensaje]'
       },
       {
+        cmd: 'hidetag',
+        aliases: ['ht', 'notificar'],
+        description: '🆕 Mencionar a todos sin mostrar lista',
+        usage: '/hidetag [mensaje]'
+      },
+      {
         cmd: 'delete',
         aliases: ['del', 'eliminar', 'borrar'],
         description: 'Eliminar un mensaje',
         usage: '/delete (responder a mensaje)'
+      },
+      {
+        cmd: 'clear',
+        aliases: ['limpiar', 'clean'],
+        description: '🆕 Eliminar múltiples mensajes',
+        usage: '/clear [cantidad]'
+      },
+      {
+        cmd: 'autoclear',
+        aliases: ['autolimpiar', 'autoclean'],
+        description: '🆕 Auto-eliminar mensajes del bot',
+        usage: '/autoclear on/off'
       },
       {
         cmd: 'close',
@@ -322,6 +467,18 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['abrir', 'abrirgrupo'],
         description: 'Abrir grupo (todos escriben)',
         usage: '/open'
+      },
+      {
+        cmd: 'welcome',
+        aliases: [],
+        description: '🆕 Activar/desactivar bienvenidas',
+        usage: '/welcome on/off'
+      },
+      {
+        cmd: 'bye',
+        aliases: [],
+        description: '🆕 Activar/desactivar despedidas',
+        usage: '/bye on/off'
       }
     ]
   },
@@ -420,6 +577,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['resetcooldown'],
         description: 'Resetear cooldowns',
         usage: '/rpgresetcd @user [tipo]'
+      },
+      {
+        cmd: 'rpgresetcdall',
+        aliases: ['resetcdall'],
+        description: '🆕 Resetear cooldowns de todos',
+        usage: '/rpgresetcdall [tipo]'
       },
       {
         cmd: 'rpgsetclase',
@@ -593,6 +756,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         usage: '/listwarn'
       },
       {
+        cmd: 'clearwarn',
+        aliases: ['limpiarwarn'],
+        description: '🆕 Limpiar todas las advertencias',
+        usage: '/clearwarn @usuario'
+      },
+      {
         cmd: 'setwelcome',
         aliases: ['bienvenida'],
         description: 'Configurar mensaje de bienvenida',
@@ -665,6 +834,24 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['weather', 'tiempo'],
         description: 'Ver clima de una ciudad',
         usage: '/clima <ciudad>'
+      },
+      {
+        cmd: 'id',
+        aliases: ['chatid', 'groupid'],
+        description: '🆕 Ver ID del chat/grupo',
+        usage: '/id'
+      },
+      {
+        cmd: 'bug',
+        aliases: ['reportar', 'reporte'],
+        description: '🆕 Reportar un bug',
+        usage: '/bug <descripción>'
+      },
+      {
+        cmd: 'feat',
+        aliases: ['feature', 'sugerencia', 'idea'],
+        description: '🆕 Sugerir una función',
+        usage: '/feat <descripción>'
       }
     ]
   },
@@ -678,6 +865,12 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['tragamonedas', 'casino'],
         description: 'Jugar tragamonedas',
         usage: '/slot [apuesta]'
+      },
+      {
+        cmd: 'slotinfo',
+        aliases: ['slotayuda'],
+        description: '🆕 Info sobre la tragamonedas',
+        usage: '/slotinfo'
       },
       {
         cmd: 'amor',
@@ -708,6 +901,42 @@ const MENU_CATEGORIES: MenuCategory[] = [
         aliases: ['topkiss', 'besucones', 'rankingbesos'],
         description: 'Ranking de besucones del grupo',
         usage: '/topbesos'
+      },
+      {
+        cmd: 'abrazo',
+        aliases: ['hug', 'abrazar', 'apapacho'],
+        description: '🆕 Dale un abrazo a alguien',
+        usage: '/abrazo @usuario'
+      },
+      {
+        cmd: 'kissall',
+        aliases: ['besartodos', 'besoatodos'],
+        description: '🆕 Besar a todos del grupo',
+        usage: '/kissall'
+      },
+      {
+        cmd: 'gudmornin',
+        aliases: ['buenosdias', 'gm', 'goodmorning'],
+        description: '🆕 Buenos días a alguien',
+        usage: '/gudmornin @usuario'
+      },
+      {
+        cmd: 'poka',
+        aliases: ['limosna', 'pobre'],
+        description: '🆕 Pedir limosna con estilo',
+        usage: '/poka'
+      },
+      {
+        cmd: 'chingatumadre',
+        aliases: ['ctm', 'fuck', 'insultar'],
+        description: '🆕 Insultar en 5 idiomas',
+        usage: '/chingatumadre @usuario'
+      },
+      {
+        cmd: 'hazana',
+        aliases: ['hazaña', 'carlitos', 'feria'],
+        description: '🆕 Sticker de Carlitos',
+        usage: '/hazana'
       }
     ]
   },
