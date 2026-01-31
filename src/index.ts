@@ -15,6 +15,7 @@ import { loadPlugins } from './plugins/index.js';
 import { CONFIG } from './config.js';
 import { startAutoEvents } from './lib/auto-events.js';
 import { startAutoRegen } from './lib/auto-regen.js';
+import { startTelegramBridge, stopTelegramBridge } from './lib/telegram-bridge.js';
 import type { WASocket, proto, GroupMetadata } from 'baileys';
 import { LRUCache } from './lib/lru-cache.js';
 
@@ -339,6 +340,11 @@ async function connectBot(): Promise<WASocket> {
 
       // Iniciar sistema de regeneración pasiva
       startAutoRegen();
+
+      // Iniciar puente de Telegram (en paralelo, no bloquea)
+      startTelegramBridge(conn).catch((err) => {
+        console.error(chalk.red('❌ Error en Telegram Bridge:'), err);
+      });
     }
   });
 
@@ -380,11 +386,13 @@ process.on('unhandledRejection', (reason) => {
 // Manejar cierre graceful
 process.on('SIGINT', async () => {
   console.log(chalk.yellow('\n\n👋 Cerrando CYALTRONIC...\n'));
+  await stopTelegramBridge();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.log(chalk.yellow('\n\n👋 Cerrando CYALTRONIC...\n'));
+  await stopTelegramBridge();
   process.exit(0);
 });
 

@@ -62,6 +62,7 @@ import { pinterestPlugin } from './download-pinterest.js';
 import { translatePlugin } from './tools-translate.js';
 import { climaPlugin } from './tools-clima.js';
 import { bugPlugin, featPlugin } from './tools-github.js';
+import { idPlugin } from './tools-id.js';
 
 // Importar plugins de diversión
 import { slotPlugin, slotInfoPlugin } from './game-slot.js';
@@ -278,7 +279,8 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('tools-clima', climaPlugin);
   handler.registerPlugin('tools-bug', bugPlugin);
   handler.registerPlugin('tools-feat', featPlugin);
-  console.log('      ✅ translate, clima, bug, feat');
+  handler.registerPlugin('tools-id', idPlugin);
+  console.log('      ✅ translate, clima, bug, feat, id');
 
   // Cargar plugins de diversión
   console.log('');
