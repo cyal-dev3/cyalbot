@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "qr": "node dist/index.js --method=qr",
-    "code": "node dist/index.js --method=code"
+    "code": "node dist/index.js --method=code",
+    "telegram:session": "tsx src/generate-session.ts"
   },
   "keywords": [
     "whatsapp",
@@ -26,12 +27,14 @@
     "baileys": "^6.7.16",
     "chalk": "^5.3.0",
     "dotenv": "^17.2.3",
+    "input": "^1.0.1",
     "lowdb": "^7.0.1",
     "node-cache": "^5.1.2",
     "node-webpmux": "^3.2.1",
     "pino": "^9.5.0",
     "play-dl": "^1.9.7",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "telegram": "^2.26.22"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
