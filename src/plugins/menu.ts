@@ -250,15 +250,51 @@ const MENU_CATEGORIES: MenuCategory[] = [
     commands: [
       {
         cmd: 'dungeons',
-        aliases: ['mazmorras'],
+        aliases: ['mazmorras', 'exploraciones'],
         description: 'Ver dungeons disponibles',
         usage: '/dungeons'
       },
       {
         cmd: 'dungeon',
-        aliases: ['mazmorra', 'explorar', 'd'],
-        description: 'Entrar a un dungeon',
+        aliases: ['mazmorra', 'explorar'],
+        description: '🆕 Entrar a dungeon INTERACTIVO',
         usage: '/dungeon [nombre]'
+      },
+      {
+        cmd: 'a',
+        aliases: ['atacar', 'attack', 'atk'],
+        description: '🆕 Atacar monstruo (en dungeon)',
+        usage: '/a'
+      },
+      {
+        cmd: 'd',
+        aliases: ['defender', 'defend', 'def'],
+        description: '🆕 Defenderse (-50% daño, +maná)',
+        usage: '/d'
+      },
+      {
+        cmd: 'h',
+        aliases: ['habilidad', 'skill', 'poder'],
+        description: '🆕 Usar habilidad de clase',
+        usage: '/h [número/nombre]'
+      },
+      {
+        cmd: 'i',
+        aliases: ['item', 'pocion', 'usar'],
+        description: '🆕 Usar item/poción',
+        usage: '/i [número/nombre]'
+      },
+      {
+        cmd: 'huir',
+        aliases: ['escapar', 'flee', 'salir'],
+        description: '🆕 Escapar del dungeon',
+        usage: '/huir'
+      },
+      {
+        cmd: 'estado',
+        aliases: ['status', 'st'],
+        description: '🆕 Ver estado del combate',
+        usage: '/estado'
       }
     ]
   },

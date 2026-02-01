@@ -22,6 +22,16 @@ import { registerInventoryPlugins } from './rpg-inventario.js';
 import { registerShopPlugins } from './rpg-tienda.js';
 import { clasePlugin, clasesPlugin, habilidadesPlugin } from './rpg-clase.js';
 import { dungeonPlugin, dungeonsPlugin } from './rpg-dungeon.js';
+import {
+  dungeonsInteractivoPlugin,
+  dungeonInteractivoPlugin,
+  atacarDungeonPlugin,
+  defenderDungeonPlugin,
+  habilidadDungeonPlugin,
+  itemDungeonPlugin,
+  huirDungeonPlugin,
+  estadoDungeonPlugin
+} from './rpg-dungeon-interactivo.js';
 import { registerRankingPlugins } from './rpg-ranking.js';
 import { misionesPlugin, reclamarMisionPlugin } from './rpg-misiones.js';
 
@@ -128,6 +138,20 @@ const rpgDungeonPlugins = [
 ];
 
 /**
+ * Lista de plugins RPG de dungeon interactivo
+ */
+const rpgDungeonInteractivoPlugins = [
+  { name: 'rpg-dungeons-interactivo', plugin: dungeonsInteractivoPlugin },
+  { name: 'rpg-dungeon-interactivo', plugin: dungeonInteractivoPlugin },
+  { name: 'rpg-dungeon-atacar', plugin: atacarDungeonPlugin },
+  { name: 'rpg-dungeon-defender', plugin: defenderDungeonPlugin },
+  { name: 'rpg-dungeon-habilidad', plugin: habilidadDungeonPlugin },
+  { name: 'rpg-dungeon-item', plugin: itemDungeonPlugin },
+  { name: 'rpg-dungeon-huir', plugin: huirDungeonPlugin },
+  { name: 'rpg-dungeon-estado', plugin: estadoDungeonPlugin }
+];
+
+/**
  * Lista de plugins RPG de misiones
  */
 const rpgQuestPlugins = [
@@ -184,6 +208,14 @@ export function loadPlugins(handler: MessageHandler): void {
     handler.registerPlugin(name, plugin);
   }
   console.log('      ✅ dungeon, dungeons');
+
+  // Cargar plugins de dungeon interactivo
+  console.log('');
+  console.log('   ⚔️ RPG Dungeons Interactivos:');
+  for (const { name, plugin } of rpgDungeonInteractivoPlugins) {
+    handler.registerPlugin(name, plugin);
+  }
+  console.log('      ✅ dungeon interactivo (a, d, h, i, huir, estado)');
 
   // Cargar plugins de ranking y logros
   console.log('');
@@ -357,6 +389,7 @@ export function loadPlugins(handler: MessageHandler): void {
     3 +                            // tienda
     rpgClassPlugins.length +       // 3 - clases
     rpgDungeonPlugins.length +     // 2 - dungeons
+    rpgDungeonInteractivoPlugins.length + // 8 - dungeons interactivos
     5 +                            // ranking
     rpgQuestPlugins.length +       // 2 - misiones
     3 +                            // group admin

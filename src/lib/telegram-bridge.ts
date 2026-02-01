@@ -19,6 +19,129 @@ interface TelegramBridgeConfig {
   whatsappGroupId: string;
 }
 
+// ============================================================================
+// Cola de mensajes para procesamiento secuencial
+// ============================================================================
+
+interface QueuedMessage {
+  event: NewMessageEvent;
+  client: TelegramClient;
+  sock: WASocket;
+  config: TelegramBridgeConfig;
+  retries: number;
+}
+
+class MessageQueue {
+  private queue: QueuedMessage[] = [];
+  private isProcessing = false;
+  private readonly maxRetries = 3;
+  private readonly delayBetweenMessages = 1000; // 1 segundo entre mensajes
+  private readonly retryDelays = [2000, 5000, 10000]; // Backoff exponencial
+
+  /**
+   * Agrega un mensaje a la cola para procesamiento
+   */
+  enqueue(item: Omit<QueuedMessage, 'retries'>): void {
+    this.queue.push({ ...item, retries: 0 });
+    console.log(
+      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+      chalk.cyan(`📥 Mensaje en cola (${this.queue.length} pendientes)`)
+    );
+    this.processQueue();
+  }
+
+  /**
+   * Procesa la cola de mensajes secuencialmente
+   */
+  private async processQueue(): Promise<void> {
+    if (this.isProcessing || this.queue.length === 0) return;
+
+    this.isProcessing = true;
+
+    while (this.queue.length > 0) {
+      const item = this.queue.shift()!;
+
+      try {
+        await this.processMessage(item);
+        // Delay entre mensajes para evitar rate limiting
+        if (this.queue.length > 0) {
+          await this.delay(this.delayBetweenMessages);
+        }
+      } catch (error) {
+        await this.handleError(item, error);
+      }
+    }
+
+    this.isProcessing = false;
+  }
+
+  /**
+   * Procesa un mensaje individual con manejo de errores
+   */
+  private async processMessage(item: QueuedMessage): Promise<void> {
+    await processMessageInternal(item.event, item.client, item.sock, item.config);
+  }
+
+  /**
+   * Maneja errores con reintentos y backoff exponencial
+   */
+  private async handleError(item: QueuedMessage, error: unknown): Promise<void> {
+    const isConnectionError = this.isConnectionError(error);
+
+    if (isConnectionError && item.retries < this.maxRetries) {
+      item.retries++;
+      const delay = this.retryDelays[item.retries - 1] || this.retryDelays[this.retryDelays.length - 1];
+
+      console.log(
+        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+        chalk.yellow(`⏳ Reintento ${item.retries}/${this.maxRetries} en ${delay/1000}s...`)
+      );
+
+      await this.delay(delay);
+      // Re-agregar al frente de la cola para reintentar
+      this.queue.unshift(item);
+    } else {
+      console.error(
+        chalk.red(`❌ Error procesando mensaje (sin más reintentos):`),
+        error instanceof Error ? error.message : error
+      );
+    }
+  }
+
+  /**
+   * Detecta si es un error de conexión que se puede reintentar
+   */
+  private isConnectionError(error: unknown): boolean {
+    if (error instanceof Error) {
+      const message = error.message.toLowerCase();
+      return message.includes('connection closed') ||
+             message.includes('connection lost') ||
+             message.includes('timed out') ||
+             message.includes('socket hang up') ||
+             message.includes('econnreset') ||
+             message.includes('network');
+    }
+    return false;
+  }
+
+  /**
+   * Utilidad de delay
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Obtiene el número de mensajes pendientes
+   */
+  get pendingCount(): number {
+    return this.queue.length;
+  }
+}
+
+// Instancia global de la cola
+const messageQueue = new MessageQueue();
+
 let telegramClient: TelegramClient | null = null;
 
 /**
@@ -90,92 +213,97 @@ async function getSenderName(client: TelegramClient, event: NewMessageEvent): Pr
 }
 
 /**
- * Maneja un mensaje nuevo de Telegram
+ * Maneja un mensaje nuevo de Telegram - Encola el mensaje para procesamiento secuencial
  */
-async function handleTelegramMessage(
+function handleTelegramMessage(
+  event: NewMessageEvent,
+  client: TelegramClient,
+  sock: WASocket,
+  config: TelegramBridgeConfig
+): void {
+  const message = event.message;
+
+  // Ignorar mensajes propios
+  if (message.out) return;
+
+  // Verificar que el mensaje viene de uno de los grupos configurados
+  const chatId = message.chatId?.toString();
+  if (!chatId) return;
+
+  // Normalizar el ID (puede venir con o sin el prefijo -100)
+  const normalizedChatId = chatId.startsWith('-100') ? chatId : `-100${chatId}`;
+  const isFromConfiguredGroup = config.telegramGroupIds.some(id => {
+    const normalizedConfigId = id.startsWith('-100') ? id : `-100${id}`;
+    return normalizedConfigId === normalizedChatId || id === chatId;
+  });
+
+  if (!isFromConfiguredGroup) return;
+
+  // Encolar el mensaje para procesamiento secuencial
+  messageQueue.enqueue({ event, client, sock, config });
+}
+
+/**
+ * Procesa el mensaje internamente (llamado desde la cola)
+ */
+async function processMessageInternal(
   event: NewMessageEvent,
   client: TelegramClient,
   sock: WASocket,
   config: TelegramBridgeConfig
 ): Promise<void> {
-  try {
-    const message = event.message;
+  const message = event.message;
+  const senderName = await getSenderName(client, event);
+  const text = message.text || message.message || '';
 
-    // Ignorar mensajes propios
-    if (message.out) return;
+  // Log del mensaje recibido
+  console.log(
+    chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+    chalk.blue(`[Telegram] `) +
+    chalk.green(`${senderName}: `) +
+    chalk.white(text.substring(0, 100) + (text.length > 100 ? '...' : ''))
+  );
 
-    // Verificar que el mensaje viene de uno de los grupos configurados
-    const chatId = message.chatId?.toString();
-    if (!chatId) return;
+  // Verificar si tiene media (foto o video)
+  if (message.photo || message.video) {
+    // Descargar el media como Buffer
+    const buffer = await client.downloadMedia(message, {}) as Buffer;
 
-    // Normalizar el ID (puede venir con o sin el prefijo -100)
-    const normalizedChatId = chatId.startsWith('-100') ? chatId : `-100${chatId}`;
-    const isFromConfiguredGroup = config.telegramGroupIds.some(id => {
-      const normalizedConfigId = id.startsWith('-100') ? id : `-100${id}`;
-      return normalizedConfigId === normalizedChatId || id === chatId;
-    });
+    if (buffer) {
+      const caption = formatMessage(senderName, text || '');
 
-    if (!isFromConfiguredGroup) return;
-
-    const senderName = await getSenderName(client, event);
-    const text = message.text || message.message || '';
-
-    // Log del mensaje recibido
-    console.log(
-      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-      chalk.blue(`[Telegram] `) +
-      chalk.green(`${senderName}: `) +
-      chalk.white(text.substring(0, 100) + (text.length > 100 ? '...' : ''))
-    );
-
-    // Verificar si tiene media (foto o video)
-    if (message.photo || message.video) {
-      try {
-        // Descargar el media como Buffer
-        const buffer = await client.downloadMedia(message, {}) as Buffer;
-
-        if (buffer) {
-          const caption = formatMessage(senderName, text || '');
-
-          if (message.photo) {
-            await sock.sendMessage(config.whatsappGroupId, {
-              image: buffer,
-              caption: caption,
-            });
-          } else if (message.video) {
-            await sock.sendMessage(config.whatsappGroupId, {
-              video: buffer,
-              caption: caption,
-            });
-          }
-
-          console.log(
-            chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-            chalk.green(`✅ Media reenviado a WhatsApp`)
-          );
-          return;
-        }
-      } catch (mediaError) {
-        console.error(chalk.red('❌ Error descargando media de Telegram:'), mediaError);
-        // Si falla la descarga de media, enviar solo el texto
+      if (message.photo) {
+        await sock.sendMessage(config.whatsappGroupId, {
+          image: buffer,
+          caption: caption,
+        });
+      } else if (message.video) {
+        await sock.sendMessage(config.whatsappGroupId, {
+          video: buffer,
+          caption: caption,
+        });
       }
-    }
-
-    // Enviar mensaje de texto
-    if (text) {
-      const formattedText = formatMessage(senderName, text);
-
-      await sock.sendMessage(config.whatsappGroupId, {
-        text: formattedText,
-      });
 
       console.log(
         chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.green(`✅ Mensaje reenviado a WhatsApp`)
+        chalk.green(`✅ Media reenviado a WhatsApp`)
       );
+      return;
     }
-  } catch (error) {
-    console.error(chalk.red('❌ Error procesando mensaje de Telegram:'), error);
+  }
+
+  // Enviar mensaje de texto
+  if (text) {
+    const formattedText = formatMessage(senderName, text);
+
+    await sock.sendMessage(config.whatsappGroupId, {
+      text: formattedText,
+    });
+
+    console.log(
+      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+      chalk.green(`✅ Mensaje reenviado a WhatsApp`)
+    );
   }
 }
 
@@ -214,6 +342,7 @@ export async function startTelegramBridge(sock: WASocket): Promise<TelegramClien
 
     console.log(chalk.green(`   ✅ Escuchando ${config.telegramGroupIds.length} grupo(s) de Telegram`));
     console.log(chalk.green(`   ✅ Reenviando a: ${config.whatsappGroupId}`));
+    console.log(chalk.green(`   ✅ Cola de mensajes habilitada (procesamiento secuencial)`));
 
     return telegramClient;
   } catch (error) {
@@ -238,4 +367,11 @@ export async function stopTelegramBridge(): Promise<void> {
  */
 export function getTelegramClient(): TelegramClient | null {
   return telegramClient;
+}
+
+/**
+ * Obtiene el número de mensajes pendientes en la cola
+ */
+export function getPendingMessagesCount(): number {
+  return messageQueue.pendingCount;
 }
