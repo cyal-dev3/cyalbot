@@ -203,21 +203,22 @@ export function loadPlugins(handler: MessageHandler): void {
   }
   console.log('      ✅ clase, clases, habilidades');
 
-  // Cargar plugins de dungeon
-  console.log('');
-  console.log('   🏰 RPG Dungeons:');
-  for (const { name, plugin } of rpgDungeonPlugins) {
-    handler.registerPlugin(name, plugin);
-  }
-  console.log('      ✅ dungeon, dungeons');
-
-  // Cargar plugins de dungeon interactivo
+  // Cargar plugins de dungeon interactivo (principal)
   console.log('');
   console.log('   ⚔️ RPG Dungeons Interactivos:');
   for (const { name, plugin } of rpgDungeonInteractivoPlugins) {
     handler.registerPlugin(name, plugin);
   }
-  console.log('      ✅ dungeon interactivo (a, d, h, i, huir, estado)');
+  console.log('      ✅ dungeon, dungeons (modo interactivo por turnos)');
+  console.log('      ✅ acciones: a, d, h, i, huir, estado');
+
+  // Cargar plugins de dungeon rápido (automático)
+  console.log('');
+  console.log('   🏰 RPG Dungeons Rápido:');
+  for (const { name, plugin } of rpgDungeonPlugins) {
+    handler.registerPlugin(name, plugin);
+  }
+  console.log('      ✅ dr, dungeonrapido (modo automático)');
 
   // Cargar plugins de ranking y logros
   console.log('');

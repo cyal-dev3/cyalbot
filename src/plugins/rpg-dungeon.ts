@@ -224,14 +224,14 @@ function runDungeon(
 }
 
 /**
- * Plugin: Dungeons - Ver dungeons disponibles
+ * Plugin: Dungeons Rápido - Ver dungeons disponibles (modo automático)
  */
 export const dungeonsPlugin: PluginHandler = {
-  command: ['dungeons', 'mazmorras', 'exploraciones'],
+  command: ['dungeonsrapido', 'dungeons-rapido', 'mazmorrasrapido'],
   tags: ['rpg'],
   help: [
-    'dungeons - Ver todas las mazmorras disponibles',
-    'Cada dungeon tiene diferentes dificultades y recompensas'
+    'dungeonsrapido - Ver mazmorras (modo automático/rápido)',
+    'Simula el dungeon completo automáticamente'
   ],
   register: true,
 
@@ -240,7 +240,7 @@ export const dungeonsPlugin: PluginHandler = {
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
-    let response = `🏰 *DUNGEONS DISPONIBLES*\n`;
+    let response = `🏰 *DUNGEONS DISPONIBLES (MODO RÁPIDO)*\n`;
     response += `━━━━━━━━━━━━━━━━━━━━━\n`;
     response += `📊 Tu nivel: *${user.level}*\n`;
     response += `⚡ Tu energía: *${user.stamina}/${user.maxStamina}*\n\n`;
@@ -257,7 +257,8 @@ export const dungeonsPlugin: PluginHandler = {
     }
 
     response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📝 */dungeon [nombre]* - Entrar a un dungeon\n`;
+    response += `📝 */dr [nombre]* - Dungeon automático\n`;
+    response += `📝 */dungeon [nombre]* - Dungeon interactivo\n`;
     response += `⏰ Cooldown: 30 minutos`;
 
     await m.reply(response);
@@ -265,15 +266,15 @@ export const dungeonsPlugin: PluginHandler = {
 };
 
 /**
- * Plugin: Dungeon - Entrar a un dungeon
+ * Plugin: Dungeon Rápido - Entrar a un dungeon (modo automático)
  */
 export const dungeonPlugin: PluginHandler = {
-  command: ['dungeon', 'mazmorra', 'explorar', 'd'],
+  command: ['dungeonrapido', 'dungeon-rapido', 'dr', 'mazmorrarapida'],
   tags: ['rpg'],
   help: [
-    'dungeon [nombre] - Entra a una mazmorra',
-    'Combate monstruos y un boss final',
-    'Gana XP, dinero y items únicos'
+    'dr [nombre] - Dungeon automático/rápido',
+    'Simula el combate completo automáticamente',
+    'Usa /dungeon para modo interactivo'
   ],
   register: true,
 
@@ -309,7 +310,7 @@ export const dungeonPlugin: PluginHandler = {
       }
 
       let response = `${EMOJI.error} Especifica a qué dungeon quieres entrar.\n\n`;
-      response += `📝 *Uso:* /dungeon cueva slimes\n\n`;
+      response += `📝 *Uso:* /dr cueva slimes\n\n`;
       response += `🏰 *Dungeons disponibles:*\n`;
 
       for (const dungeon of Object.values(DUNGEONS)) {
@@ -320,6 +321,8 @@ export const dungeonPlugin: PluginHandler = {
       if (recommendedDungeon) {
         response += `\n💡 *Recomendado:* ${recommendedDungeon.name}`;
       }
+
+      response += `\n\n⚔️ */dungeon* - Modo interactivo por turnos`;
 
       await m.reply(response);
       return;
@@ -340,7 +343,7 @@ export const dungeonPlugin: PluginHandler = {
     if (!selectedDungeon) {
       await m.reply(
         `${EMOJI.error} Dungeon no encontrado.\n\n` +
-        `💡 Usa */dungeons* para ver las mazmorras disponibles.`
+        `💡 Usa */dungeonsrapido* para ver las mazmorras disponibles.`
       );
       return;
     }
@@ -459,7 +462,8 @@ export const dungeonPlugin: PluginHandler = {
     });
 
     // Construir mensaje de resultado
-    let response = `${selectedDungeon.emoji} *${selectedDungeon.name.toUpperCase()}*\n`;
+    let response = `⚡ *MODO RÁPIDO*\n`;
+    response += `${selectedDungeon.emoji} *${selectedDungeon.name.toUpperCase()}*\n`;
     response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
     // Log de combate (resumido)

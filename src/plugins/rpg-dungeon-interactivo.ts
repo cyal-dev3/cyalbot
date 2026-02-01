@@ -75,6 +75,25 @@ interface DungeonSession {
 // Sesiones activas de dungeons
 const activeDungeons = new Map<string, DungeonSession>();
 
+// Tiempo máximo de inactividad antes de limpiar sesión (10 minutos)
+const SESSION_INACTIVITY_TIMEOUT = 10 * 60 * 1000;
+
+/**
+ * Limpia sesiones inactivas (más de 10 minutos sin actividad)
+ */
+function cleanupInactiveSessions() {
+  const now = Date.now();
+  for (const [jid, session] of activeDungeons.entries()) {
+    if (now - session.lastActionTime > SESSION_INACTIVITY_TIMEOUT) {
+      if (session.actionTimeout) clearTimeout(session.actionTimeout);
+      activeDungeons.delete(jid);
+    }
+  }
+}
+
+// Limpiar sesiones inactivas cada 5 minutos
+setInterval(cleanupInactiveSessions, 5 * 60 * 1000);
+
 // ==================== UTILIDADES ====================
 
 /**
@@ -139,7 +158,7 @@ function generateCombatStatus(session: DungeonSession): string {
   const encounterNum = session.isBossFight
     ? '👹 BOSS FINAL'
     : `⚔️ Encuentro ${session.currentEncounterIndex + 1}/${dungeon.monsters.length}`;
-  msg += `${encounterNum}\n\n`;
+  msg += `${encounterNum} | 🔄 Turno ${session.currentTurn}\n\n`;
 
   // Monstruo
   msg += `${monster.emoji} *${monster.name}* ${session.monsterIsEnhanced ? '👑' : ''}\n`;
@@ -198,11 +217,20 @@ function generateCombatStatus(session: DungeonSession): string {
  * Genera el menú de habilidades
  */
 function generateSkillsMenu(session: DungeonSession): string {
-  const skills = getAvailableSkills(session);
   const classInfo = session.playerClass ? CLASSES[session.playerClass as keyof typeof CLASSES] : null;
 
   let msg = `✨ *HABILIDADES*${classInfo ? ` (${classInfo.emoji} ${classInfo.name})` : ''}\n`;
   msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  // Verificar si tiene clase
+  if (!session.playerClass || !classInfo) {
+    msg += `❌ No tienes una clase asignada.\n\n`;
+    msg += `💡 Usa */clases* para ver las clases disponibles\n`;
+    msg += `💡 Usa */clase [nombre]* para elegir una clase`;
+    return msg;
+  }
+
+  const skills = getAvailableSkills(session);
 
   if (skills.length === 0) {
     msg += `❌ No tienes habilidades disponibles.\n`;
@@ -327,7 +355,8 @@ async function processMonsterTurn(session: DungeonSession, ctx: MessageContext) 
   let finalDamage = result.damage;
 
   // Reducir daño si está defendiendo
-  if (session.playerDefending) {
+  const wasDefending = session.playerDefending;
+  if (wasDefending) {
     finalDamage = Math.floor(finalDamage * DEFEND_DAMAGE_REDUCTION);
     session.playerDefending = false;
   }
@@ -337,7 +366,7 @@ async function processMonsterTurn(session: DungeonSession, ctx: MessageContext) 
   // Log del ataque
   let attackLog = `${monster.emoji} ${monster.name} ataca → *${finalDamage}*`;
   if (result.isCrit) attackLog += ' 💥CRIT';
-  if (session.playerDefending) attackLog += ' 🛡️';
+  if (wasDefending) attackLog += ' 🛡️';
   session.combatLog.push(attackLog);
 
   // Verificar muerte del jugador
@@ -722,8 +751,8 @@ export const dungeonsInteractivoPlugin: PluginHandler = {
     }
 
     response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📝 */dungeon [nombre]* - Entrar a un dungeon\n`;
-    response += `⚔️ ¡Sistema interactivo con decisiones!\n`;
+    response += `📝 */dungeon [nombre]* - Modo interactivo ⚔️\n`;
+    response += `📝 */dr [nombre]* - Modo rápido/automático ⚡\n`;
     response += `⏰ Cooldown: 30 minutos`;
 
     await m.reply(response);
@@ -734,12 +763,12 @@ export const dungeonsInteractivoPlugin: PluginHandler = {
  * Plugin: Dungeon Interactivo - Entrar a un dungeon
  */
 export const dungeonInteractivoPlugin: PluginHandler = {
-  command: ['dungeon', 'mazmorra', 'explorar', 'd'],
+  command: ['dungeon', 'mazmorra', 'explorar'],
   tags: ['rpg'],
   help: [
     'dungeon [nombre] - Entra a una mazmorra interactiva',
     'Combate por turnos con decisiones estratégicas',
-    'Gana XP, dinero y items únicos'
+    'Usa /dr para modo automático rápido'
   ],
   register: true,
 
@@ -747,6 +776,9 @@ export const dungeonInteractivoPlugin: PluginHandler = {
     const { m, text } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
+
+    // Limpiar sesiones inactivas antes de verificar
+    cleanupInactiveSessions();
 
     // Verificar si ya tiene un dungeon activo
     if (activeDungeons.has(m.sender)) {
@@ -801,6 +833,8 @@ export const dungeonInteractivoPlugin: PluginHandler = {
       if (recommendedDungeon) {
         response += `\n💡 *Recomendado:* ${recommendedDungeon.name}`;
       }
+
+      response += `\n\n⚡ */dr* - Modo rápido (automático)`;
 
       await m.reply(response);
       return;
@@ -1308,6 +1342,9 @@ export const itemDungeonPlugin: PluginHandler = {
     // Mostrar estado de combate
     const statusMsg = generateCombatStatus(session);
     await m.reply(statusMsg);
+
+    // Reiniciar timeout (usar item no gasta turno pero reinicia el tiempo)
+    startActionTimeout(session, ctx);
   }
 };
 
