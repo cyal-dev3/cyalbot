@@ -1,180 +1,111 @@
 /**
- * 📌 Plugin de Búsqueda en Pinterest
+ * 📌 Plugin de Descarga/Búsqueda en Pinterest
  * Comando: /pinterest
+ * Usa múltiples APIs con fallback para máxima confiabilidad
  */
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
+import { downloadPinterest, searchPinterest } from '../lib/downloaders.js';
+
+const PINTEREST_URL_REGEX = /(?:https?:\/\/)?(?:www\.)?(?:pinterest\.com\/pin\/\d+|pin\.it\/[a-zA-Z0-9]+)/i;
 
 /**
- * Busca imágenes en Pinterest
- */
-async function searchPinterest(query: string): Promise<{
-  success: boolean;
-  images?: string[];
-  error?: string;
-}> {
-  try {
-    // Usar API de Pinterest (scraping)
-    const searchUrl = `https://www.pinterest.com/resource/BaseSearchResource/get/?source_url=/search/pins/?q=${encodeURIComponent(query)}&data={"options":{"query":"${query}","scope":"pins"},"context":{}}`;
-
-    const response = await fetch(searchUrl, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json'
-      }
-    });
-
-    const data = await response.json() as {
-      resource_response?: {
-        data?: {
-          results?: Array<{
-            images?: {
-              orig?: { url?: string };
-              '736x'?: { url?: string };
-            };
-          }>;
-        };
-      };
-    };
-
-    const results = data.resource_response?.data?.results;
-    if (!results || results.length === 0) {
-      // Método alternativo: usar API simple
-      return await searchPinterestAlternative(query);
-    }
-
-    const images: string[] = [];
-    for (const pin of results) {
-      const imgUrl = pin.images?.orig?.url || pin.images?.['736x']?.url;
-      if (imgUrl && !images.includes(imgUrl)) {
-        images.push(imgUrl);
-      }
-      if (images.length >= 5) break;
-    }
-
-    return { success: true, images };
-  } catch {
-    return await searchPinterestAlternative(query);
-  }
-}
-
-/**
- * Método alternativo de búsqueda en Pinterest usando múltiples APIs
- */
-async function searchPinterestAlternative(query: string): Promise<{
-  success: boolean;
-  images?: string[];
-  error?: string;
-}> {
-  // Lista de APIs alternativas para intentar
-  const apis = [
-    {
-      name: 'RapidAPI Pinterest',
-      url: `https://pinterest-scraper2.p.rapidapi.com/search/pins?query=${encodeURIComponent(query)}&limit=5`,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      parseResult: (data: unknown) => {
-        const d = data as { data?: Array<{ images?: { original?: { url?: string } } }> };
-        return d.data?.map(p => p.images?.original?.url).filter((u): u is string => !!u) || [];
-      }
-    },
-    {
-      name: 'BotSailor',
-      url: `https://api.botsailor.com/tools/pinterest?query=${encodeURIComponent(query)}`,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      parseResult: (data: unknown) => {
-        const d = data as { status?: boolean; data?: string[] };
-        return d.status && d.data ? d.data.slice(0, 5) : [];
-      }
-    }
-  ];
-
-  for (const api of apis) {
-    try {
-      console.log(`🔍 Intentando ${api.name}...`);
-      const response = await fetch(api.url, {
-        headers: api.headers,
-        signal: AbortSignal.timeout(10000) // 10 segundos timeout
-      });
-
-      if (!response.ok) continue;
-
-      const data = await response.json();
-      const images = api.parseResult(data);
-
-      if (images.length > 0) {
-        console.log(`✅ ${api.name} exitoso con ${images.length} imágenes`);
-        return { success: true, images };
-      }
-    } catch (error) {
-      console.log(`❌ ${api.name} falló:`, (error as Error).message);
-      continue;
-    }
-  }
-
-  return { success: false, error: 'No se encontraron imágenes para esta búsqueda' };
-}
-
-/**
- * Comando /pinterest - Buscar imágenes en Pinterest
+ * Comando /pinterest - Buscar imágenes o descargar pin específico
  */
 export const pinterestPlugin: PluginHandler = {
   command: ['pinterest', 'pin'],
-  description: 'Buscar imágenes en Pinterest',
+  description: 'Buscar imágenes en Pinterest o descargar un pin específico',
   category: 'download',
 
   async handler(ctx: MessageContext) {
     const { m, text, conn } = ctx;
 
-    if (!text.trim()) {
-      await m.reply('📌 *BUSCAR EN PINTEREST*\n\n📝 Uso: /pinterest <búsqueda>\n\n📌 Ejemplo:\n/pinterest paisajes hermosos\n/pinterest anime wallpaper');
+    const input = text.trim();
+
+    if (!input) {
+      await m.reply('📌 *PINTEREST*\n\n📝 Uso:\n• /pinterest <búsqueda> - Buscar imágenes\n• /pinterest <url> - Descargar pin específico\n\n📌 Ejemplos:\n/pinterest paisajes hermosos\n/pinterest https://pin.it/xxx');
       return;
     }
 
     await m.react('⏳');
 
-    const result = await searchPinterest(text.trim());
+    // Determinar si es URL o búsqueda
+    const isUrl = PINTEREST_URL_REGEX.test(input);
 
-    if (!result.success || !result.images || result.images.length === 0) {
-      await m.react('❌');
-      await m.reply(`❌ ${result.error || 'No se encontraron imágenes'}`);
-      return;
-    }
+    if (isUrl) {
+      // Descargar pin específico
+      const result = await downloadPinterest(input);
 
-    try {
-      // Enviar primera imagen con caption
-      const firstResponse = await fetch(result.images[0]);
-      const firstBuffer = Buffer.from(await firstResponse.arrayBuffer());
-
-      await conn.sendMessage(m.chat, {
-        image: firstBuffer,
-        caption: `📌 *Pinterest*\n\n🔎 Búsqueda: ${text.trim()}\n📦 ${result.images.length} imagen(es) encontrada(s)`
-      }, { quoted: m.rawMessage });
-
-      // Enviar el resto de imágenes
-      for (let i = 1; i < result.images.length; i++) {
-        try {
-          const response = await fetch(result.images[i]);
-          const buffer = Buffer.from(await response.arrayBuffer());
-
-          await conn.sendMessage(m.chat, {
-            image: buffer
-          });
-        } catch {
-          // Ignorar errores individuales
-          continue;
-        }
+      if (!result.success || !result.medias || result.medias.length === 0) {
+        await m.react('❌');
+        await m.reply(`❌ ${result.error || 'No se pudo descargar el pin'}`);
+        return;
       }
 
-      await m.react('✅');
-    } catch (error) {
-      console.error('Error enviando imágenes Pinterest:', error);
-      await m.react('❌');
-      await m.reply('❌ Error al enviar las imágenes. Intenta de nuevo.');
+      try {
+        for (let i = 0; i < result.medias.length && i < 5; i++) {
+          const media = result.medias[i];
+          const response = await fetch(media.url);
+          const buffer = Buffer.from(await response.arrayBuffer());
+
+          if (media.type === 'video') {
+            await conn.sendMessage(m.chat, {
+              video: buffer,
+              caption: i === 0 ? `📌 *Pinterest Download*` : undefined,
+              mimetype: 'video/mp4'
+            }, { quoted: m.rawMessage });
+          } else {
+            await conn.sendMessage(m.chat, {
+              image: buffer,
+              caption: i === 0 ? `📌 *Pinterest Download*` : undefined
+            }, { quoted: m.rawMessage });
+          }
+        }
+
+        await m.react('✅');
+      } catch (error) {
+        console.error('Error enviando media Pinterest:', error);
+        await m.react('❌');
+        await m.reply('❌ Error al enviar el contenido. Intenta de nuevo.');
+      }
+    } else {
+      // Búsqueda de imágenes
+      const result = await searchPinterest(input);
+
+      if (!result.success || !result.medias || result.medias.length === 0) {
+        await m.react('❌');
+        await m.reply(`❌ ${result.error || 'No se encontraron imágenes'}`);
+        return;
+      }
+
+      try {
+        // Enviar primera imagen con caption
+        const firstResponse = await fetch(result.medias[0].url);
+        const firstBuffer = Buffer.from(await firstResponse.arrayBuffer());
+
+        await conn.sendMessage(m.chat, {
+          image: firstBuffer,
+          caption: `📌 *Pinterest*\n\n🔎 Búsqueda: ${input}\n📦 ${result.medias.length} imagen(es) encontrada(s)`
+        }, { quoted: m.rawMessage });
+
+        // Enviar el resto de imágenes
+        for (let i = 1; i < result.medias.length; i++) {
+          try {
+            const response = await fetch(result.medias[i].url);
+            const buffer = Buffer.from(await response.arrayBuffer());
+
+            await conn.sendMessage(m.chat, { image: buffer });
+          } catch {
+            continue;
+          }
+        }
+
+        await m.react('✅');
+      } catch (error) {
+        console.error('Error enviando imágenes Pinterest:', error);
+        await m.react('❌');
+        await m.reply('❌ Error al enviar las imágenes. Intenta de nuevo.');
+      }
     }
   }
 };

@@ -3,10 +3,12 @@
  * Procesa mensajes entrantes y ejecuta comandos
  */
 
-import type { WASocket, proto, GroupMetadata } from 'baileys';
+import { downloadMediaMessage, type WASocket, type proto, type GroupMetadata } from 'baileys';
 import type { MessageContext, SerializedMessage, PluginHandler, PluginRegistry, MuteRegistry } from './types/message.js';
 import type { Database } from './lib/database.js';
 import { CONFIG } from './config.js';
+import { createSticker } from './lib/sticker.js';
+import { downloadAuto, detectPlatform, type Platform } from './lib/downloaders.js';
 
 // Comandos de duelo que funcionan sin prefijo
 const DUEL_COMMANDS_NO_PREFIX = ['g', 'golpe', 'golpear', 'hit', 'rendirse', 'surrender', 'abandonar', 'huir'];
@@ -404,6 +406,87 @@ export class MessageHandler {
     };
   }
 
+  // Regex para detectar URLs en mensajes
+  private static readonly URL_REGEX = /https?:\/\/[^\s]+/i;
+
+  // Nombres de plataformas para logging
+  private static readonly PLATFORM_NAMES: Record<Platform, string> = {
+    tiktok: 'TikTok',
+    instagram: 'Instagram',
+    facebook: 'Facebook',
+    twitter: 'Twitter/X',
+    pinterest: 'Pinterest',
+    threads: 'Threads',
+    youtube: 'YouTube',
+    unknown: 'Desconocido'
+  };
+
+  /**
+   * Maneja auto-descarga de URLs detectadas usando la librería universal
+   */
+  private async handleAutoDownload(m: SerializedMessage, rawMessage: proto.IWebMessageInfo): Promise<void> {
+    try {
+      const urlMatch = m.text.match(MessageHandler.URL_REGEX);
+      if (!urlMatch) return;
+
+      const url = urlMatch[0];
+      const platform = detectPlatform(url);
+
+      // Solo procesar plataformas conocidas
+      if (platform === 'unknown') return;
+
+      const platformName = MessageHandler.PLATFORM_NAMES[platform];
+      console.log(`📥 AutoDownload: ${platformName} detectado de ${m.sender}`);
+
+      // Usar la librería universal de descargadores
+      const result = await downloadAuto(url);
+
+      if (!result.success || !result.medias || result.medias.length === 0) {
+        console.log(`❌ AutoDownload: No se pudo descargar de ${platformName}`);
+        return;
+      }
+
+      // Construir caption
+      let caption = `📥 *${platformName}*`;
+      if (result.author) caption += ` | ${result.author}`;
+      if (result.title) caption += `\n${result.title.substring(0, 100)}`;
+
+      // Enviar cada media (máximo 5 para autodownload)
+      for (let i = 0; i < result.medias.length && i < 5; i++) {
+        const media = result.medias[i];
+
+        try {
+          const response = await fetch(media.url);
+          const buffer = Buffer.from(await response.arrayBuffer());
+
+          if (media.type === 'video') {
+            await this.conn.sendMessage(m.chat, {
+              video: buffer,
+              caption: i === 0 ? caption : undefined,
+              mimetype: 'video/mp4'
+            }, { quoted: rawMessage });
+          } else if (media.type === 'audio') {
+            await this.conn.sendMessage(m.chat, {
+              audio: buffer,
+              mimetype: 'audio/mpeg'
+            }, { quoted: rawMessage });
+          } else {
+            await this.conn.sendMessage(m.chat, {
+              image: buffer,
+              caption: i === 0 ? caption : undefined
+            }, { quoted: rawMessage });
+          }
+        } catch (mediaError) {
+          console.error(`❌ AutoDownload: Error enviando media ${i + 1}:`, mediaError);
+        }
+      }
+
+      console.log(`✅ AutoDownload: ${platformName} completado (${result.medias.length} archivos)`);
+    } catch (error) {
+      console.error('❌ Error en auto-download:', error);
+    }
+  }
+
   /**
    * Procesa un lote de mensajes entrantes
    */
@@ -427,6 +510,20 @@ export class MessageHandler {
 
     // Ignorar mensajes propios
     if (m.fromMe) return;
+
+    // 🔒 MODE CHECK: Verificar modo del bot
+    const botSettings = this.db.getSettings();
+    const botMode = botSettings.botMode || 'public';
+    if (botMode !== 'public') {
+      const senderNum = m.sender.split('@')[0].replace(/[^0-9]/g, '');
+      const isOwnerMode = CONFIG.owners.some(owner =>
+        senderNum.includes(owner) || owner.includes(senderNum)
+      );
+
+      if (botMode === 'private' && !isOwnerMode) return;
+      if (botMode === 'group' && !m.isGroup) return;
+      if (botMode === 'inbox' && m.isGroup) return;
+    }
 
     // Inicializar usuario en DB
     this.db.getUser(m.sender);
@@ -575,6 +672,73 @@ export class MessageHandler {
               return;
             }
           }
+
+          // 🚫 ANTI-BAD WORDS: Detectar groserías
+          if (chatSettings.antiBad && m.text) {
+            const badWords = chatSettings.badWords || [];
+            if (badWords.length > 0) {
+              const textLower = m.text.toLowerCase();
+              const foundWord = badWords.find(word => {
+                // Buscar la palabra como palabra completa o parte de palabra
+                const regex = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                return regex.test(textLower) || textLower.includes(word);
+              });
+
+              if (foundWord) {
+                await this.deleteMessage(m.chat, m.key);
+                await this.conn.sendMessage(m.chat, {
+                  text: `⚠️ @${m.sender.split('@')[0]} las groserías no están permitidas aquí.`,
+                  mentions: [m.sender]
+                });
+                console.log(`🚫 AntiBad: Grosería detectada de ${m.sender}: ${foundWord}`);
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 🎨 AUTO-STICKER: Convertir imágenes automáticamente a stickers
+    if (m.isGroup && rawMessage.message?.imageMessage) {
+      const autoStickerSettings = this.db.getChatSettings(m.chat);
+      if (autoStickerSettings.autoSticker) {
+        // Solo si no es un comando (no empieza con prefijo)
+        const hasPrefix = m.text && CONFIG.prefix.test(m.text);
+        if (!hasPrefix) {
+          try {
+            const mediaBuffer = await downloadMediaMessage(
+              rawMessage,
+              'buffer',
+              {},
+              {
+                logger: console as any,
+                reuploadRequest: this.conn.updateMediaMessage
+              }
+            ) as Buffer;
+
+            const stickerBuffer = await createSticker(mediaBuffer, {
+              packname: 'CYALTRONIC',
+              author: m.pushName || 'User',
+              categories: ['🎨']
+            });
+
+            await this.conn.sendMessage(m.chat, { sticker: stickerBuffer });
+            console.log(`🎨 AutoSticker: Imagen convertida de ${m.sender}`);
+          } catch (error) {
+            console.error('❌ Error en auto-sticker:', error);
+          }
+        }
+      }
+    }
+
+    // 📥 AUTO-DOWNLOADER: Detectar URLs y descargar automáticamente
+    if (m.isGroup && m.text) {
+      const autoDownloadSettings = this.db.getChatSettings(m.chat);
+      if (autoDownloadSettings.autoDownload) {
+        const hasPrefix = CONFIG.prefix.test(m.text);
+        if (!hasPrefix) {
+          await this.handleAutoDownload(m, rawMessage);
         }
       }
     }

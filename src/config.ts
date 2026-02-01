@@ -53,6 +53,15 @@ export const CONFIG = {
     telegramRegex: /t\.me\/[a-zA-Z0-9_]+/gi
   },
 
+  // 🚫 Lista default de palabras prohibidas (español)
+  defaultBadWords: [
+    'puta', 'puto', 'pendejo', 'pendeja', 'cabron', 'cabrón', 'chingar', 'chingada',
+    'verga', 'mamón', 'mamona', 'culero', 'culera', 'joto', 'jota', 'marica',
+    'pinche', 'mierda', 'culo', 'coño', 'idiota', 'estupido', 'estúpido',
+    'imbecil', 'imbécil', 'hdp', 'hp', 'ctm', 'ptm', 'hijueputa', 'malparido',
+    'gonorrea', 'huevon', 'huevón', 'webón', 'webon', 'chucha', 'conchetumare'
+  ],
+
   // 🎮 Configuración del RPG
   rpg: {
     // Bonificación al registrarse

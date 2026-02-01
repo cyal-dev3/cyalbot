@@ -27,6 +27,10 @@ let isFirstConnection = true;
 // Caché de metadatos de grupos con límite de 1000 entradas (LRU)
 const groupMetadataCache = new LRUCache<string, GroupMetadata>(1000);
 
+// 🗑️ Caché de mensajes recientes para anti-delete (por grupo, últimos 200 mensajes)
+const messageCache = new Map<string, Map<string, proto.IWebMessageInfo>>();
+const MAX_CACHED_PER_CHAT = 200;
+
 /**
  * Muestra el banner de inicio
  */
@@ -295,15 +299,114 @@ async function connectBot(): Promise<WASocket> {
   conn.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
-    // Loguear mensajes
+    // Cachear mensajes para anti-delete y loguear
     for (const msg of messages) {
-      if (!msg.key.fromMe) {
+      if (!msg.key.fromMe && msg.key.remoteJid && msg.key.id && msg.message) {
+        const chatId = msg.key.remoteJid;
+
+        // Solo cachear en grupos con anti-delete activo
+        if (chatId.endsWith('@g.us')) {
+          if (!messageCache.has(chatId)) {
+            messageCache.set(chatId, new Map());
+          }
+          const chatCache = messageCache.get(chatId)!;
+          chatCache.set(msg.key.id, msg);
+
+          // Limitar tamaño del caché
+          if (chatCache.size > MAX_CACHED_PER_CHAT) {
+            const firstKey = chatCache.keys().next().value;
+            if (firstKey) chatCache.delete(firstKey);
+          }
+        }
+
         await logMessage(conn, msg);
       }
     }
 
     // Procesar comandos
     await handler.handle(messages);
+  });
+
+  // 🗑️ Escuchar eliminación de mensajes (anti-delete)
+  conn.ev.on('messages.update', async (updates) => {
+    for (const update of updates) {
+      try {
+        // Detectar mensaje eliminado (messageStubType 1 = REVOKE)
+        if (update.update?.messageStubType === 1 || update.update?.message === null) {
+          const chatId = update.key?.remoteJid;
+          const msgId = update.key?.id;
+          if (!chatId || !msgId || !chatId.endsWith('@g.us')) continue;
+
+          // Verificar si anti-delete está activo
+          const currentDb = getDatabase();
+          const chatSettings = currentDb.getChatSettings(chatId);
+          if (!chatSettings.antiDelete) continue;
+
+          // Buscar mensaje en caché
+          const chatCache = messageCache.get(chatId);
+          if (!chatCache) continue;
+
+          const cachedMsg = chatCache.get(msgId);
+          if (!cachedMsg) continue;
+
+          // Extraer contenido del mensaje eliminado
+          const sender = cachedMsg.key.participant || cachedMsg.key.remoteJid || 'Desconocido';
+          const senderNumber = sender.split('@')[0];
+          const pushName = cachedMsg.pushName || senderNumber;
+
+          const content = cachedMsg.message;
+          if (!content) continue;
+
+          const msgText =
+            content.conversation ||
+            content.extendedTextMessage?.text ||
+            content.imageMessage?.caption ||
+            content.videoMessage?.caption ||
+            '';
+
+          // Construir mensaje de reenvío
+          let antiDeleteText = `🗑️ *Mensaje eliminado*\n\n👤 *${pushName}* (@${senderNumber}) eliminó:\n`;
+
+          if (msgText) {
+            antiDeleteText += `\n💬 ${msgText}`;
+          }
+
+          if (content.imageMessage) {
+            antiDeleteText += '\n📷 [Imagen]';
+          } else if (content.videoMessage) {
+            antiDeleteText += '\n🎥 [Video]';
+          } else if (content.audioMessage) {
+            antiDeleteText += '\n🎵 [Audio]';
+          } else if (content.stickerMessage) {
+            antiDeleteText += '\n🎨 [Sticker]';
+          } else if (content.documentMessage) {
+            antiDeleteText += '\n📄 [Documento]';
+          } else if (content.contactMessage) {
+            antiDeleteText += '\n👤 [Contacto]';
+          } else if (content.locationMessage) {
+            antiDeleteText += '\n📍 [Ubicación]';
+          }
+
+          if (!msgText && !content.imageMessage && !content.videoMessage && !content.audioMessage &&
+              !content.stickerMessage && !content.documentMessage && !content.contactMessage &&
+              !content.locationMessage) {
+            antiDeleteText += '\n📝 [Contenido no disponible]';
+          }
+
+          await conn.sendMessage(chatId, {
+            text: antiDeleteText,
+            mentions: [sender]
+          });
+
+          console.log(`🗑️ AntiDelete: Mensaje de ${pushName} reenviado en ${chatId}`);
+
+          // Limpiar del caché
+          chatCache.delete(msgId);
+        }
+      } catch (error) {
+        console.error('❌ Error en anti-delete:', error);
+      }
+    }
   });
 
   // Escuchar cambios de participantes (promote, demote, add, remove)

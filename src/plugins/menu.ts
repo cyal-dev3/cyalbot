@@ -66,15 +66,18 @@ const QUICK_COMMANDS = [
  * Comandos NUEVOS (categoría especial)
  */
 const NEW_COMMANDS: CommandDetail[] = [
-  { cmd: 'forja', aliases: ['forge', 'herreria'], desc: 'Craftea armas, armaduras y mejora equipo', usage: '/forja [recetas|craftear|mejorar|materiales|fundir]' },
-  { cmd: 'fumar', aliases: ['smoke', 'piedra'], desc: 'Fuma piedra - 50% bueno, 50% malo', usage: '/fumar ($100)' },
-  { cmd: 'logs', aliases: ['errorlogs'], desc: 'Ver logs de errores del servidor', usage: '/logs [cantidad]' },
-  { cmd: 'addpoka', aliases: [], desc: 'Agregar frase personalizada de poka', usage: '/addpoka <frase con {name}>' },
-  { cmd: 'listpoka', aliases: [], desc: 'Ver frases de poka del grupo', usage: '/listpoka' },
-  { cmd: 'delpoka', aliases: [], desc: 'Eliminar frase de poka', usage: '/delpoka <número>' },
-  { cmd: 'addctm', aliases: [], desc: 'Agregar frase personalizada de ctm', usage: '/addctm <frase con {name}>' },
-  { cmd: 'listctm', aliases: [], desc: 'Ver frases de ctm del grupo', usage: '/listctm' },
-  { cmd: 'delctm', aliases: [], desc: 'Eliminar frase de ctm', usage: '/delctm <número>' }
+  { cmd: 'dl', aliases: ['download', 'descargar'], desc: 'Descargador universal - detecta automáticamente la plataforma', usage: '/dl <url>' },
+  { cmd: 'cobalt', aliases: ['cb'], desc: 'Descargar con Cobalt API (soporta 20+ sitios)', usage: '/cobalt <url> [-a] [-q=720]' },
+  { cmd: 'threads', aliases: ['th'], desc: 'Descargar videos/imágenes de Threads', usage: '/threads <url>' },
+  { cmd: 'antidelete', aliases: ['antieliminar'], desc: 'Reenvía mensajes eliminados al grupo', usage: '/antidelete on|off' },
+  { cmd: 'mode', aliases: ['modo'], desc: 'Cambiar modo del bot (público/privado/grupo/inbox)', usage: '/mode public|private|group|inbox' },
+  { cmd: 'antibad', aliases: ['antigroserias'], desc: 'Filtro de groserías automático', usage: '/antibad on|off' },
+  { cmd: 'autosticker', aliases: ['as'], desc: 'Convierte imágenes a stickers automáticamente', usage: '/autosticker on|off' },
+  { cmd: 'autodownload', aliases: ['autodl'], desc: 'Descarga automática de URLs de redes sociales', usage: '/autodownload on|off' },
+  { cmd: 'tts', aliases: ['voz', 'speak'], desc: 'Convierte texto a voz (audio)', usage: '/tts [idioma] <texto>' },
+  { cmd: 'addbadword', aliases: [], desc: 'Agregar palabra prohibida al filtro', usage: '/addbadword <palabra>' },
+  { cmd: 'delbadword', aliases: [], desc: 'Quitar palabra prohibida del filtro', usage: '/delbadword <palabra>' },
+  { cmd: 'listbadwords', aliases: ['badwords'], desc: 'Ver lista de palabras prohibidas', usage: '/listbadwords' }
 ];
 
 /**
@@ -157,19 +160,19 @@ const CATEGORIES: MenuCategory[] = [
     id: 'download',
     emoji: '📥',
     name: 'Descargas',
-    commands: ['tiktok', 'ig', 'fb', 'twitter', 'pinterest']
+    commands: ['dl', 'cobalt', 'tiktok', 'ig', 'fb', 'twitter', 'pinterest', 'threads']
   },
   {
     id: 'tools',
     emoji: '🔧',
     name: 'Herramientas',
-    commands: ['translate', 'clima', 'bug', 'feat', 'id']
+    commands: ['translate', 'clima', 'bug', 'feat', 'id', 'tts']
   },
   {
     id: 'admin',
     emoji: '👑',
     name: 'Admin Grupo',
-    commands: ['kick', 'promote', 'demote', 'mute', 'unmute', 'warn', 'unwarn', 'listwarn', 'antilink', 'antispam', 'welcome', 'bye', 'setwelcome', 'setbye', 'tagall', 'hidetag', 'delete', 'clear', 'pin', 'close', 'open', 'compacto'],
+    commands: ['kick', 'promote', 'demote', 'mute', 'unmute', 'warn', 'unwarn', 'listwarn', 'antilink', 'antispam', 'antibad', 'addbadword', 'delbadword', 'listbadwords', 'antidelete', 'autosticker', 'autodownload', 'welcome', 'bye', 'setwelcome', 'setbye', 'tagall', 'hidetag', 'delete', 'clear', 'pin', 'close', 'open', 'compacto'],
     adminOnly: true
   },
   {
@@ -183,7 +186,7 @@ const CATEGORIES: MenuCategory[] = [
     id: 'owner',
     emoji: '🔐',
     name: 'Owner',
-    commands: ['restart', 'gitpull', 'logs', 'rpgowner', 'rpgdar', 'rpgquitar', 'rpgset', 'rpgdaritem', 'rpgbonus', 'rpgrobolibre', 'rpgevento', 'rpgpvp', 'rpgcaos', 'rpgdesactivar', 'rpgresetcd', 'rpgsetclase', 'rpgfullstats', 'rpgmaxlevel', 'rpginfo', 'rpgdaratodos', 'rpglluviamoney', 'rpgborrar', 'rpgtop', 'rpgautoevents'],
+    commands: ['restart', 'gitpull', 'logs', 'mode', 'rpgowner', 'rpgdar', 'rpgquitar', 'rpgset', 'rpgdaritem', 'rpgbonus', 'rpgrobolibre', 'rpgevento', 'rpgpvp', 'rpgcaos', 'rpgdesactivar', 'rpgresetcd', 'rpgsetclase', 'rpgfullstats', 'rpgmaxlevel', 'rpginfo', 'rpgdaratodos', 'rpglluviamoney', 'rpgborrar', 'rpgtop', 'rpgautoevents'],
     ownerOnly: true
   }
 ];
@@ -293,11 +296,14 @@ const COMMANDS: Record<string, CommandDetail> = {
   togif: { cmd: 'togif', aliases: ['gif'], desc: 'Sticker a GIF', usage: '/togif' },
 
   // Descargas
+  dl: { cmd: 'dl', aliases: ['download', 'descargar', 'bajar'], desc: 'Descarga universal (auto-detecta)', usage: '/dl <url>' },
+  cobalt: { cmd: 'cobalt', aliases: ['cb'], desc: 'Descargar con Cobalt (all-in-one)', usage: '/cobalt <url> [-a] [-q=720]' },
   tiktok: { cmd: 'tiktok', aliases: ['tt'], desc: 'Descargar de TikTok', usage: '/tiktok <url>' },
   ig: { cmd: 'ig', aliases: ['instagram'], desc: 'Descargar de Instagram', usage: '/ig <url>' },
   fb: { cmd: 'fb', aliases: ['facebook'], desc: 'Descargar de Facebook', usage: '/fb <url>' },
   twitter: { cmd: 'twitter', aliases: ['tw', 'x'], desc: 'Descargar de Twitter/X', usage: '/twitter <url>' },
-  pinterest: { cmd: 'pinterest', aliases: ['pin'], desc: 'Buscar en Pinterest', usage: '/pinterest <busqueda>' },
+  pinterest: { cmd: 'pinterest', aliases: ['pin'], desc: 'Buscar/descargar de Pinterest', usage: '/pinterest <url|búsqueda>' },
+  threads: { cmd: 'threads', aliases: ['th'], desc: 'Descargar de Threads', usage: '/threads <url>' },
 
   // Herramientas
   translate: { cmd: 'translate', aliases: ['traducir', 'tr'], desc: 'Traducir texto', usage: '/translate <idioma> <texto>' },
@@ -305,6 +311,7 @@ const COMMANDS: Record<string, CommandDetail> = {
   bug: { cmd: 'bug', aliases: ['reportar'], desc: 'Reportar bug', usage: '/bug <descripcion>' },
   feat: { cmd: 'feat', aliases: ['sugerencia'], desc: 'Sugerir función', usage: '/feat <descripcion>' },
   id: { cmd: 'id', aliases: ['chatid'], desc: 'Ver ID del chat', usage: '/id' },
+  tts: { cmd: 'tts', aliases: ['voz', 'speak'], desc: 'Texto a voz', usage: '/tts [idioma] <texto>' },
 
   // Admin
   kick: { cmd: 'kick', aliases: ['expulsar', 'ban'], desc: 'Expulsar usuario', usage: '/kick @usuario' },
@@ -317,6 +324,13 @@ const COMMANDS: Record<string, CommandDetail> = {
   listwarn: { cmd: 'listwarn', aliases: ['warns'], desc: 'Ver warns', usage: '/listwarn' },
   antilink: { cmd: 'antilink', aliases: [], desc: 'Anti-enlaces', usage: '/antilink on|off' },
   antispam: { cmd: 'antispam', aliases: [], desc: 'Anti-spam', usage: '/antispam on|off' },
+  antibad: { cmd: 'antibad', aliases: ['antigroserias'], desc: 'Anti-groserías', usage: '/antibad on|off' },
+  addbadword: { cmd: 'addbadword', aliases: [], desc: 'Agregar grosería', usage: '/addbadword <palabra>' },
+  delbadword: { cmd: 'delbadword', aliases: [], desc: 'Quitar grosería', usage: '/delbadword <palabra>' },
+  listbadwords: { cmd: 'listbadwords', aliases: ['badwords'], desc: 'Ver groserías', usage: '/listbadwords' },
+  antidelete: { cmd: 'antidelete', aliases: ['antieliminar'], desc: 'Anti-eliminación', usage: '/antidelete on|off' },
+  autosticker: { cmd: 'autosticker', aliases: ['as'], desc: 'Auto-sticker', usage: '/autosticker on|off' },
+  autodownload: { cmd: 'autodownload', aliases: ['autodl'], desc: 'Auto-descarga URLs', usage: '/autodownload on|off' },
   welcome: { cmd: 'welcome', aliases: [], desc: 'Bienvenidas on/off', usage: '/welcome on|off' },
   bye: { cmd: 'bye', aliases: [], desc: 'Despedidas on/off', usage: '/bye on|off' },
   setwelcome: { cmd: 'setwelcome', aliases: ['bienvenida'], desc: 'Mensaje bienvenida', usage: '/setwelcome <msg>' },
@@ -341,6 +355,7 @@ const COMMANDS: Record<string, CommandDetail> = {
   clearctm: { cmd: 'clearctm', aliases: [], desc: 'Borrar frases ctm', usage: '/clearctm' },
 
   // Owner
+  mode: { cmd: 'mode', aliases: ['modo'], desc: 'Modo del bot', usage: '/mode public|private|group|inbox' },
   restart: { cmd: 'restart', aliases: ['reiniciar'], desc: 'Reiniciar bot', usage: '/restart' },
   gitpull: { cmd: 'gitpull', aliases: ['update'], desc: 'Actualizar código', usage: '/gitpull' },
   logs: { cmd: 'logs', aliases: ['errorlogs'], desc: 'Ver logs errores', usage: '/logs [n]' },

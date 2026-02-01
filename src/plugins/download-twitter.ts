@@ -1,63 +1,13 @@
 /**
  * 🐦 Plugin de Descarga de Twitter/X
  * Comando: /twitter
+ * Usa múltiples APIs con fallback para máxima confiabilidad
  */
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
+import { downloadTwitter } from '../lib/downloaders.js';
 
 const TWITTER_REGEX = /(?:https?:\/\/)?(?:www\.)?(?:twitter\.com|x\.com)\/[a-zA-Z0-9_]+\/status\/\d+/i;
-
-/**
- * Obtiene información del video de Twitter/X
- */
-async function getTwitterVideo(url: string): Promise<{
-  success: boolean;
-  video?: string;
-  text?: string;
-  author?: string;
-  error?: string;
-}> {
-  try {
-    // Usar API de twitsave.com
-    const apiUrl = `https://twitsave.com/info?url=${encodeURIComponent(url)}`;
-
-    const response = await fetch(apiUrl, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-
-    const html = await response.text();
-
-    // Extraer URL del video
-    const videoMatch = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
-    if (!videoMatch) {
-      // Buscar en formato alternativo
-      const altMatch = html.match(/src="(https:\/\/[^"]+\.mp4[^"]*)"/i);
-      if (!altMatch) {
-        return { success: false, error: 'No se encontró el video' };
-      }
-      return { success: true, video: altMatch[1] };
-    }
-
-    // Extraer texto del tweet
-    const textMatch = html.match(/<p class="[^"]*tweet-text[^"]*">([^<]+)<\/p>/i);
-
-    // Extraer autor
-    const authorMatch = html.match(/@([a-zA-Z0-9_]+)/);
-
-    return {
-      success: true,
-      video: videoMatch[1],
-      text: textMatch?.[1]?.trim(),
-      author: authorMatch?.[1]
-    };
-  } catch (error) {
-    console.error('Error en Twitter API:', error);
-    return { success: false, error: 'Error al conectar con el servidor' };
-  }
-}
 
 /**
  * Comando /twitter - Descargar video de Twitter/X
@@ -91,21 +41,25 @@ export const twitterPlugin: PluginHandler = {
 
     await m.react('⏳');
 
-    const result = await getTwitterVideo(url);
+    const result = await downloadTwitter(url);
 
-    if (!result.success || !result.video) {
+    if (!result.success || !result.medias || result.medias.length === 0) {
       await m.react('❌');
       await m.reply(`❌ ${result.error || 'No se pudo descargar el video'}`);
       return;
     }
 
     try {
-      const response = await fetch(result.video);
+      const media = result.medias[0];
+      const response = await fetch(media.url);
       const buffer = Buffer.from(await response.arrayBuffer());
 
       let caption = `🐦 *Twitter/X Download*\n\n`;
       if (result.author) caption += `👤 @${result.author}\n`;
-      if (result.text) caption += `💬 ${result.text.substring(0, 200)}${result.text.length > 200 ? '...' : ''}`;
+      if (result.description) {
+        const desc = result.description.substring(0, 200);
+        caption += `💬 ${desc}${result.description.length > 200 ? '...' : ''}`;
+      }
 
       await conn.sendMessage(m.chat, {
         video: buffer,

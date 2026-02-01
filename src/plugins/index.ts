@@ -70,12 +70,22 @@ import { instagramPlugin } from './download-instagram.js';
 import { facebookPlugin } from './download-facebook.js';
 import { twitterPlugin } from './download-twitter.js';
 import { pinterestPlugin } from './download-pinterest.js';
+import { threadsPlugin } from './download-threads.js';
+import { universalDownloadPlugin, cobaltPlugin } from './download-universal.js';
 
 // Importar plugins de herramientas
 import { translatePlugin } from './tools-translate.js';
 import { climaPlugin } from './tools-clima.js';
 import { bugPlugin, featPlugin } from './tools-github.js';
 import { idPlugin } from './tools-id.js';
+import { ttsPlugin } from './tools-tts.js';
+
+// Importar nuevos plugins de grupo
+import { antiDeletePlugin } from './group-antidelete.js';
+import { modePlugin } from './admin-mode.js';
+import { antiBadPlugin, addBadWordPlugin, delBadWordPlugin, listBadWordsPlugin } from './group-antibad.js';
+import { autoStickerPlugin } from './group-autosticker.js';
+import { autoDownloadPlugin } from './group-autodownload.js';
 
 // Importar plugins de diversión
 import { slotPlugin, slotInfoPlugin } from './game-slot.js';
@@ -281,7 +291,8 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('admin-restart', restartPlugin);
   handler.registerPlugin('admin-gitpull', gitPullPlugin);
   handler.registerPlugin('admin-logs', logsPlugin);
-  console.log('      ✅ restart, gitpull, logs (reiniciar, update, actualizar)');
+  handler.registerPlugin('admin-mode', modePlugin);
+  console.log('      ✅ restart, gitpull, logs, mode (reiniciar, update, actualizar, modo)');
 
   // Cargar plugins de media
   console.log('');
@@ -313,7 +324,16 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('group-unwarn', unwarnPlugin);
   handler.registerPlugin('group-listwarn', listWarnPlugin);
   handler.registerPlugin('group-clearwarn', clearWarnPlugin);
+  handler.registerPlugin('group-antidelete', antiDeletePlugin);
+  handler.registerPlugin('group-antibad', antiBadPlugin);
+  handler.registerPlugin('group-addbadword', addBadWordPlugin);
+  handler.registerPlugin('group-delbadword', delBadWordPlugin);
+  handler.registerPlugin('group-listbadwords', listBadWordsPlugin);
+  handler.registerPlugin('group-autosticker', autoStickerPlugin);
+  handler.registerPlugin('group-autodownload', autoDownloadPlugin);
   console.log('      ✅ antilink, antispam, warn, unwarn, listwarn, clearwarn');
+  console.log('      ✅ antidelete, antibad, addbadword, delbadword, listbadwords');
+  console.log('      ✅ autosticker, autodownload');
 
   // Cargar plugins de bienvenida
   console.log('');
@@ -334,7 +354,11 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('download-facebook', facebookPlugin);
   handler.registerPlugin('download-twitter', twitterPlugin);
   handler.registerPlugin('download-pinterest', pinterestPlugin);
-  console.log('      ✅ tiktok, ig, fb, twitter, pinterest');
+  handler.registerPlugin('download-threads', threadsPlugin);
+  handler.registerPlugin('download-universal', universalDownloadPlugin);
+  handler.registerPlugin('download-cobalt', cobaltPlugin);
+  console.log('      ✅ tiktok, ig, fb, twitter, pinterest, threads');
+  console.log('      ✅ dl (universal), cobalt (all-in-one)');
 
   // Cargar plugins de herramientas
   console.log('');
@@ -344,7 +368,8 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('tools-bug', bugPlugin);
   handler.registerPlugin('tools-feat', featPlugin);
   handler.registerPlugin('tools-id', idPlugin);
-  console.log('      ✅ translate, clima, bug, feat, id');
+  handler.registerPlugin('tools-tts', ttsPlugin);
+  console.log('      ✅ translate, clima, bug, feat, id, tts');
 
   // Cargar plugins de diversión
   console.log('');
@@ -424,9 +449,10 @@ export function loadPlugins(handler: MessageHandler): void {
     4 +                            // stickers
     1 +                            // menu
     6 +                            // protección (antilink, antispam, warn, unwarn, listwarn, clearwarn)
+    8 +                            // nuevos protección (antidelete, antibad, addbadword, delbadword, listbadwords, autosticker, autodownload, mode)
     6 +                            // bienvenida (setwelcome, setbye, welcome, bye, tagall, hidetag)
-    5 +                            // descargadores
-    4 +                            // herramientas (translate, clima, bug, feat)
+    8 +                            // descargadores (tiktok, ig, fb, twitter, pinterest, threads, dl, cobalt)
+    5 +                            // herramientas (translate, clima, bug, feat, tts)
     21 +                           // diversión (slot, slotinfo, blackjack x8, amor, gay, beso x3, ruleta x6)
     8 +                            // custom poka/ctm (addpoka, listpoka, delpoka, clearpoka, addctm, listctm, delctm, clearctm)
     2 +                            // forja y fumar

@@ -1,119 +1,13 @@
 /**
  * 📸 Plugin de Descarga de Instagram
  * Comando: /ig
+ * Usa múltiples APIs con fallback para máxima confiabilidad
  */
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
+import { downloadInstagram } from '../lib/downloaders.js';
 
 const IG_REGEX = /(?:https?:\/\/)?(?:www\.)?instagram\.com\/(?:p|reel|reels|tv|stories)\/[a-zA-Z0-9_-]+/i;
-
-/**
- * Obtiene información del post de Instagram usando múltiples APIs
- */
-async function getInstagramMedia(url: string): Promise<{
-  success: boolean;
-  medias?: Array<{ url: string; type: 'video' | 'image' }>;
-  error?: string;
-}> {
-  // API principal: igdownloader
-  try {
-    const apiUrl = `https://v3.igdownloader.app/api/ajaxSearch`;
-
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      body: `recaptchaToken=&q=${encodeURIComponent(url)}&t=media&lang=en`,
-      signal: AbortSignal.timeout(15000)
-    });
-
-    const data = await response.json() as {
-      status: string;
-      data?: string;
-    };
-
-    if (data.status === 'ok' && data.data) {
-      const medias: Array<{ url: string; type: 'video' | 'image' }> = [];
-
-      // Buscar videos con patrones mejorados
-      const videoPatterns = [
-        /href="([^"]+)"\s*[^>]*>.*?(?:Download\s*Video|Descargar\s*Video)/gi,
-        /download-media.*?href="([^"]+\.mp4[^"]*)"/gi,
-        /"(https:\/\/[^"]+\.mp4[^"]*)"/gi
-      ];
-
-      for (const pattern of videoPatterns) {
-        const matches = data.data.matchAll(pattern);
-        for (const match of matches) {
-          if (match[1] && !medias.some(m => m.url === match[1])) {
-            medias.push({ url: match[1], type: 'video' });
-          }
-        }
-      }
-
-      // Buscar imágenes con patrones mejorados
-      const imagePatterns = [
-        /href="([^"]+)"\s*[^>]*>.*?(?:Download\s*Photo|Descargar\s*Foto)/gi,
-        /"(https:\/\/[^"]+(?:\.jpg|\.jpeg|\.png|\.webp)[^"]*)"/gi
-      ];
-
-      for (const pattern of imagePatterns) {
-        const matches = data.data.matchAll(pattern);
-        for (const match of matches) {
-          if (match[1] && !medias.some(m => m.url === match[1])) {
-            medias.push({ url: match[1], type: 'image' });
-          }
-        }
-      }
-
-      if (medias.length > 0) {
-        return { success: true, medias };
-      }
-    }
-  } catch (error) {
-    console.log('❌ igdownloader falló:', (error as Error).message);
-  }
-
-  // API alternativa: saveig
-  try {
-    console.log('🔍 Intentando API alternativa saveig...');
-    const response = await fetch('https://saveig.app/api/ajaxSearch', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      body: `q=${encodeURIComponent(url)}&t=media&lang=en`,
-      signal: AbortSignal.timeout(15000)
-    });
-
-    const data = await response.json() as { status: string; data?: string };
-
-    if (data.status === 'ok' && data.data) {
-      const medias: Array<{ url: string; type: 'video' | 'image' }> = [];
-
-      // Extraer todas las URLs de media
-      const urlMatches = data.data.matchAll(/(https:\/\/[^"<>\s]+(?:\.mp4|\.jpg|\.jpeg|\.png|\.webp))/gi);
-      for (const match of urlMatches) {
-        if (match[1] && !medias.some(m => m.url === match[1])) {
-          const isVideo = match[1].toLowerCase().includes('.mp4');
-          medias.push({ url: match[1], type: isVideo ? 'video' : 'image' });
-        }
-      }
-
-      if (medias.length > 0) {
-        console.log('✅ saveig exitoso');
-        return { success: true, medias };
-      }
-    }
-  } catch (error) {
-    console.log('❌ saveig falló:', (error as Error).message);
-  }
-
-  return { success: false, error: 'No se pudo descargar el contenido. El post puede ser privado o la API no está disponible.' };
-}
 
 /**
  * Comando /ig - Descargar contenido de Instagram
@@ -147,11 +41,11 @@ export const instagramPlugin: PluginHandler = {
 
     await m.react('⏳');
 
-    const result = await getInstagramMedia(url);
+    const result = await downloadInstagram(url);
 
     if (!result.success || !result.medias || result.medias.length === 0) {
       await m.react('❌');
-      await m.reply(`❌ ${result.error || 'No se pudo descargar el contenido'}`);
+      await m.reply(`❌ ${result.error || 'No se pudo descargar el contenido. El post puede ser privado.'}`);
       return;
     }
 

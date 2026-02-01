@@ -33,6 +33,15 @@ export interface ChatSettings {
   autoClearEnabled: boolean;    // Si autoclear está activo (limpia mensajes del bot después de 2 min)
   // Modo compacto - reduce spam del bot
   compactMode: boolean;         // Si está activo, usa reacciones en lugar de mensajes
+  // Anti-Delete: reenviar mensajes eliminados al grupo
+  antiDelete: boolean;
+  // Anti-Bad Words: filtro de groserías
+  antiBad: boolean;
+  badWords: string[];
+  // Auto-Sticker: convertir imágenes automáticamente a stickers
+  autoSticker: boolean;
+  // Auto-Downloader: detectar URLs y descargar automáticamente
+  autoDownload: boolean;
   // Frases personalizadas para comandos de diversión
   customPoka?: string[];        // Frases personalizadas para .poka
   customCtm?: string[];         // Frases personalizadas para .ctm
@@ -66,6 +75,8 @@ export interface DatabaseSchema {
     autoRead: boolean;
     selfMode: boolean;
     publicMode: boolean;
+    /** Modo del bot: public, private (solo owner), group (solo grupos), inbox (solo privado) */
+    botMode: 'public' | 'private' | 'group' | 'inbox';
     /** Configuración de eventos automáticos */
     autoEvents?: {
       enabled: boolean;
@@ -90,7 +101,12 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   autoMuteEnabled: false,
   mutedUsers: [],
   autoClearEnabled: false,
-  compactMode: false
+  compactMode: false,
+  antiDelete: false,
+  antiBad: false,
+  badWords: [],
+  autoSticker: false,
+  autoDownload: false
 };
 
 /**
@@ -103,6 +119,7 @@ export const DEFAULT_DATABASE: DatabaseSchema = {
   settings: {
     autoRead: false,
     selfMode: false,
-    publicMode: true
+    publicMode: true,
+    botMode: 'public'
   }
 };
