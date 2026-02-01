@@ -660,6 +660,56 @@ export const ITEMS: Record<string, Item> = {
     requiredLevel: 55
   },
 
+  // === ACCESORIOS DE FORJA ===
+  anillo_plata: {
+    id: 'anillo_plata',
+    name: 'Anillo de Plata',
+    emoji: '💍',
+    type: 'accessory',
+    rarity: 'raro',
+    description: 'Un anillo simple pero elegante, forjado con plata pura.',
+    price: 800,
+    sellPrice: 400,
+    stats: { defense: 5, mana: 15 },
+    requiredLevel: 5
+  },
+  amuleto_rubi: {
+    id: 'amuleto_rubi',
+    name: 'Amuleto de Rubí',
+    emoji: '📿',
+    type: 'accessory',
+    rarity: 'epico',
+    description: 'Aumenta tu poder de ataque con la energía del fuego.',
+    price: 6000,
+    sellPrice: 3000,
+    stats: { attack: 25, critChance: 8 },
+    requiredLevel: 20
+  },
+  collar_zafiro: {
+    id: 'collar_zafiro',
+    name: 'Collar de Zafiro',
+    emoji: '📿',
+    type: 'accessory',
+    rarity: 'epico',
+    description: 'Aumenta tu maná máximo con la esencia del hielo.',
+    price: 6000,
+    sellPrice: 3000,
+    stats: { mana: 60, defense: 10 },
+    requiredLevel: 20
+  },
+  corona_diamante: {
+    id: 'corona_diamante',
+    name: 'Corona de Diamante',
+    emoji: '👑',
+    type: 'accessory',
+    rarity: 'legendario',
+    description: 'La joya más codiciada del reino, forjada para reyes.',
+    price: 100000,
+    sellPrice: 50000,
+    stats: { attack: 40, defense: 40, health: 100, critChance: 15 },
+    requiredLevel: 50
+  },
+
   // === CONSUMIBLES (NIVEL BAJO) ===
   vendaje: {
     id: 'vendaje',
@@ -736,6 +786,30 @@ export const ITEMS: Record<string, Item> = {
     description: 'Duplica la XP por 30 minutos.',
     price: 5000,
     sellPrice: 2500,
+    consumeEffect: { expBoost: 2, duration: 30 * 60 * 1000 }
+  },
+
+  // === CONSUMIBLES DE FORJA ===
+  pocion_forja: {
+    id: 'pocion_forja',
+    name: 'Poción del Herrero',
+    emoji: '🧪',
+    type: 'consumable',
+    rarity: 'raro',
+    description: 'Aumenta la probabilidad de éxito en forja por 1 hora.',
+    price: 1500,
+    sellPrice: 750,
+    consumeEffect: { expBoost: 1, duration: 60 * 60 * 1000 }
+  },
+  elixir_experiencia: {
+    id: 'elixir_experiencia',
+    name: 'Elixir de Experiencia Doble',
+    emoji: '✨',
+    type: 'consumable',
+    rarity: 'epico',
+    description: 'Duplica la XP ganada por 30 minutos.',
+    price: 4000,
+    sellPrice: 2000,
     consumeEffect: { expBoost: 2, duration: 30 * 60 * 1000 }
   },
 

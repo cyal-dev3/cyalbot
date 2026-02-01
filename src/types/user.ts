@@ -11,6 +11,7 @@ import type { PlayerClass, ClassInfo } from './rpg.js';
 export interface InventoryItem {
   itemId: string;
   quantity: number;
+  enhanceLevel?: number;  // Nivel de mejora (+1 a +10) para el sistema de forja
 }
 
 /**
@@ -119,6 +120,7 @@ export interface UserRPG {
   lastAttack: number;
   lastDungeon: number;
   lastBomb: number;
+  lastFumar: number;  // Cooldown de fumar piedra
 
   // 🔄 Regeneración pasiva (timestamps)
   lastHealthRegen: number;
@@ -159,6 +161,9 @@ export interface UserRPG {
     totalReceived: number;
     hugHistory: { jid: string; count: number; lastHug: number }[];
   };
+
+  // ⚒️ Sistema de forja - Materiales
+  forgeMaterials: Record<string, number>;  // {materialId: cantidad}
 }
 
 /**
@@ -259,6 +264,7 @@ export const DEFAULT_USER: UserRPG = {
   lastAttack: 0,
   lastDungeon: 0,
   lastBomb: 0,
+  lastFumar: 0,
 
   // Regeneración pasiva
   lastHealthRegen: 0,
@@ -302,7 +308,10 @@ export const DEFAULT_USER: UserRPG = {
     totalGiven: 0,
     totalReceived: 0,
     hugHistory: []
-  }
+  },
+
+  // Forja - Materiales
+  forgeMaterials: {}
 };
 
 /**

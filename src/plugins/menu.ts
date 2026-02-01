@@ -1,1235 +1,617 @@
 /**
- * 📋 Plugin de Menú
- * Comando: menu - Muestra todos los comandos disponibles
+ * 📋 Plugin de Menú - CYALTRONIC
+ * Menú simplificado por categorías con mejoras
  */
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { CONFIG } from '../config.js';
-import { EMOJI } from '../lib/utils.js';
+import { EMOJI, pickRandom } from '../lib/utils.js';
+import { getDatabase } from '../lib/database.js';
 
 /**
- * Estructura de comandos organizados por categoría
+ * Categorías del menú
  */
-interface CommandInfo {
-  cmd: string;
-  aliases: string[];
-  description: string;
-  usage?: string;
-}
-
 interface MenuCategory {
+  id: string;
   emoji: string;
   name: string;
-  description: string;
-  commands: CommandInfo[];
+  commands: string[];
+  adminOnly?: boolean;
+  ownerOnly?: boolean;
 }
 
 /**
- * Catálogo completo de comandos
+ * Comando con descripción
  */
-const MENU_CATEGORIES: MenuCategory[] = [
+interface CommandDetail {
+  cmd: string;
+  aliases: string[];
+  desc: string;
+  usage: string;
+}
+
+/**
+ * Tips aleatorios para el menú
+ */
+const MENU_TIPS = [
+  '💡 Usa /perfil para ver tu progreso',
+  '💡 /daily te da recompensas gratis cada día',
+  '💡 Mina materiales con /minar para /forja',
+  '💡 Elige una clase con /clase para habilidades',
+  '💡 Los dungeons dan mejor loot: /dungeon',
+  '💡 Deposita en /banco para proteger tu dinero',
+  '💡 Modo /pasivo te protege de robos',
+  '💡 /slot y /blackjack para apostar',
+  '💡 Reporta bugs con /bug <descripción>',
+  '💡 /s convierte imágenes en stickers',
+  '💡 Mejora tu equipo con /forja mejorar',
+  '💡 /ranking muestra los mejores jugadores'
+];
+
+/**
+ * Comandos rápidos (más usados)
+ */
+const QUICK_COMMANDS = [
+  { cmd: 'perfil', emoji: '👤' },
+  { cmd: 'daily', emoji: '🎁' },
+  { cmd: 'work', emoji: '💼' },
+  { cmd: 'minar', emoji: '⛏️' },
+  { cmd: 'atacar', emoji: '⚔️' },
+  { cmd: 'tienda', emoji: '🏪' },
+  { cmd: 'inventario', emoji: '🎒' },
+  { cmd: 'forja', emoji: '⚒️' }
+];
+
+/**
+ * Comandos NUEVOS (categoría especial)
+ */
+const NEW_COMMANDS: CommandDetail[] = [
+  { cmd: 'forja', aliases: ['forge', 'herreria'], desc: 'Craftea armas, armaduras y mejora equipo', usage: '/forja [recetas|craftear|mejorar|materiales|fundir]' },
+  { cmd: 'fumar', aliases: ['smoke', 'piedra'], desc: 'Fuma piedra - 50% bueno, 50% malo', usage: '/fumar ($100)' },
+  { cmd: 'logs', aliases: ['errorlogs'], desc: 'Ver logs de errores del servidor', usage: '/logs [cantidad]' },
+  { cmd: 'addpoka', aliases: [], desc: 'Agregar frase personalizada de poka', usage: '/addpoka <frase con {name}>' },
+  { cmd: 'listpoka', aliases: [], desc: 'Ver frases de poka del grupo', usage: '/listpoka' },
+  { cmd: 'delpoka', aliases: [], desc: 'Eliminar frase de poka', usage: '/delpoka <número>' },
+  { cmd: 'addctm', aliases: [], desc: 'Agregar frase personalizada de ctm', usage: '/addctm <frase con {name}>' },
+  { cmd: 'listctm', aliases: [], desc: 'Ver frases de ctm del grupo', usage: '/listctm' },
+  { cmd: 'delctm', aliases: [], desc: 'Eliminar frase de ctm', usage: '/delctm <número>' }
+];
+
+/**
+ * Categorías del menú
+ */
+const CATEGORIES: MenuCategory[] = [
   {
+    id: 'rpg',
     emoji: '🎮',
     name: 'RPG Básico',
-    description: 'Comandos básicos del juego',
-    commands: [
-      {
-        cmd: 'verificar',
-        aliases: ['registrar', 'register'],
-        description: 'Registrarte en el juego',
-        usage: '/verificar nombre.edad'
-      },
-      {
-        cmd: 'perfil',
-        aliases: ['profile', 'p'],
-        description: 'Ver tu perfil o el de alguien',
-        usage: '/perfil [@usuario]'
-      },
-      {
-        cmd: 'nivel',
-        aliases: ['lvl', 'levelup', 'subir'],
-        description: 'Subir de nivel',
-        usage: '/nivel'
-      },
-      {
-        cmd: 'daily',
-        aliases: ['claim', 'reclamar', 'diario'],
-        description: 'Recompensa diaria',
-        usage: '/daily'
-      },
-      {
-        cmd: 'work',
-        aliases: ['trabajar', 'chambear', 'w'],
-        description: 'Trabajar para ganar XP',
-        usage: '/work'
-      },
-      {
-        cmd: 'minar',
-        aliases: ['mine', 'picar', 'excavar'],
-        description: 'Minar para ganar dinero y XP',
-        usage: '/minar'
-      }
-    ]
+    commands: ['verificar', 'perfil', 'nivel', 'daily', 'work', 'minar']
   },
   {
+    id: 'combat',
     emoji: '⚔️',
     name: 'Combate',
-    description: 'Pelea contra monstruos y jugadores',
-    commands: [
-      {
-        cmd: 'atacar',
-        aliases: ['attack', 'cazar', 'hunt'],
-        description: 'Luchar contra monstruos',
-        usage: '/atacar'
-      },
-      {
-        cmd: 'duelo',
-        aliases: ['duel', 'pvp', 'retar'],
-        description: 'Desafiar a otro jugador',
-        usage: '/duelo @usuario [apuesta]'
-      },
-      {
-        cmd: 'aceptar',
-        aliases: ['accept', 'si'],
-        description: '🆕 Aceptar desafío de duelo',
-        usage: '/aceptar'
-      },
-      {
-        cmd: 'rechazar',
-        aliases: ['decline', 'no', 'negar'],
-        description: '🆕 Rechazar desafío de duelo',
-        usage: '/rechazar'
-      },
-      {
-        cmd: 'golpe',
-        aliases: ['golpear', 'hit', 'g'],
-        description: '🆕 Atacar en duelo',
-        usage: '/golpe'
-      },
-      {
-        cmd: 'bloquear',
-        aliases: ['block', 'defender', 'b'],
-        description: '🆕 Bloquear ataque en duelo',
-        usage: '/bloquear'
-      },
-      {
-        cmd: 'poder',
-        aliases: ['habilidad', 'skill', 'p'],
-        description: '🆕 Usar habilidad especial en duelo',
-        usage: '/poder'
-      },
-      {
-        cmd: 'rendirse',
-        aliases: ['surrender', 'abandonar', 'huir'],
-        description: '🆕 Abandonar duelo',
-        usage: '/rendirse'
-      },
-      {
-        cmd: 'robar',
-        aliases: ['rob', 'steal', 'asaltar'],
-        description: 'Robar a otro jugador',
-        usage: '/robar @usuario'
-      },
-      {
-        cmd: 'bombardear',
-        aliases: ['bomba', 'bomb', 'granada'],
-        description: 'Lanzar bomba a jugador',
-        usage: '/bombardear @usuario'
-      },
-      {
-        cmd: 'deuda',
-        aliases: ['debt', 'imss'],
-        description: 'Ver tu deuda con el IMSS',
-        usage: '/deuda'
-      },
-      {
-        cmd: 'pagardeuda',
-        aliases: ['pagarimss', 'paydebt'],
-        description: 'Pagar tu deuda del IMSS',
-        usage: '/pagardeuda [cantidad]'
-      }
-    ]
+    commands: ['atacar', 'duelo', 'robar', 'bombardear', 'deuda', 'pagardeuda']
   },
   {
-    emoji: '🎭',
-    name: 'Clases',
-    description: 'Sistema de clases y habilidades',
-    commands: [
-      {
-        cmd: 'clases',
-        aliases: ['classes', 'verclases'],
-        description: 'Ver todas las clases',
-        usage: '/clases'
-      },
-      {
-        cmd: 'clase',
-        aliases: ['class', 'elegirclase'],
-        description: 'Elegir o ver tu clase',
-        usage: '/clase [guerrero/mago/ladron/arquero]'
-      },
-      {
-        cmd: 'habilidades',
-        aliases: ['skills', 'spells'],
-        description: 'Ver tus habilidades',
-        usage: '/habilidades'
-      }
-    ]
-  },
-  {
-    emoji: '🎒',
-    name: 'Inventario',
-    description: 'Items y equipamiento',
-    commands: [
-      {
-        cmd: 'inventario',
-        aliases: ['inv', 'items', 'mochila'],
-        description: 'Ver tu inventario',
-        usage: '/inventario [tipo]'
-      },
-      {
-        cmd: 'equipar',
-        aliases: ['equip', 'poner'],
-        description: 'Equipar un item',
-        usage: '/equipar [nombre item]'
-      },
-      {
-        cmd: 'desequipar',
-        aliases: ['unequip', 'quitar', 'remove'],
-        description: '🆕 Quitar item equipado',
-        usage: '/desequipar [nombre item]'
-      },
-      {
-        cmd: 'usar',
-        aliases: ['use', 'consumir', 'beber'],
-        description: 'Usar consumible',
-        usage: '/usar [nombre item]'
-      },
-      {
-        cmd: 'iteminfo',
-        aliases: ['veritem', 'item'],
-        description: 'Info de un item',
-        usage: '/iteminfo [nombre]'
-      }
-    ]
-  },
-  {
-    emoji: '🏪',
-    name: 'Tienda',
-    description: 'Compra y vende items',
-    commands: [
-      {
-        cmd: 'tienda',
-        aliases: ['shop', 'store', 'mercado'],
-        description: 'Ver items en venta',
-        usage: '/tienda [categoría]'
-      },
-      {
-        cmd: 'comprar',
-        aliases: ['buy', 'purchase'],
-        description: 'Comprar un item',
-        usage: '/comprar [item] [cantidad]'
-      },
-      {
-        cmd: 'vender',
-        aliases: ['sell'],
-        description: 'Vender items',
-        usage: '/vender [item] [cantidad]'
-      },
-      {
-        cmd: 'comprard',
-        aliases: ['buyd', 'comprardiamantes', 'buydiamonds'],
-        description: '🆕 Comprar diamantes con dinero',
-        usage: '/comprard [cantidad]'
-      }
-    ]
-  },
-  {
+    id: 'dungeon',
     emoji: '🏰',
     name: 'Dungeons',
-    description: 'Explora mazmorras peligrosas',
-    commands: [
-      {
-        cmd: 'dungeons',
-        aliases: ['mazmorras', 'exploraciones'],
-        description: 'Ver dungeons disponibles',
-        usage: '/dungeons'
-      },
-      {
-        cmd: 'dungeon',
-        aliases: ['mazmorra', 'explorar'],
-        description: '🆕 Entrar a dungeon INTERACTIVO',
-        usage: '/dungeon [nombre]'
-      },
-      {
-        cmd: 'a',
-        aliases: ['atacar', 'attack', 'atk'],
-        description: '🆕 Atacar monstruo (en dungeon)',
-        usage: '/a'
-      },
-      {
-        cmd: 'd',
-        aliases: ['defender', 'defend', 'def'],
-        description: '🆕 Defenderse (-50% daño, +maná)',
-        usage: '/d'
-      },
-      {
-        cmd: 'h',
-        aliases: ['habilidad', 'skill', 'poder'],
-        description: '🆕 Usar habilidad de clase',
-        usage: '/h [número/nombre]'
-      },
-      {
-        cmd: 'i',
-        aliases: ['item', 'pocion', 'usar'],
-        description: '🆕 Usar item/poción',
-        usage: '/i [número/nombre]'
-      },
-      {
-        cmd: 'huir',
-        aliases: ['escapar', 'flee', 'salir'],
-        description: '🆕 Escapar del dungeon',
-        usage: '/huir'
-      },
-      {
-        cmd: 'estado',
-        aliases: ['status', 'st'],
-        description: '🆕 Ver estado del combate',
-        usage: '/estado'
-      }
-    ]
+    commands: ['dungeons', 'dungeon', 'a', 'd', 'h', 'i', 'huir', 'estado']
   },
   {
-    emoji: '🏆',
-    name: 'Rankings',
-    description: 'Clasificaciones y logros',
-    commands: [
-      {
-        cmd: 'ranking',
-        aliases: ['top', 'leaderboard'],
-        description: 'Ver mejores jugadores',
-        usage: '/ranking [categoría]'
-      },
-      {
-        cmd: 'logros',
-        aliases: ['achievements', 'medallas'],
-        description: 'Ver tus logros',
-        usage: '/logros'
-      },
-      {
-        cmd: 'reclamarlogro',
-        aliases: ['claimachievement', 'reclamar'],
-        description: '🆕 Reclamar recompensa de logro',
-        usage: '/reclamarlogro'
-      },
-      {
-        cmd: 'stats',
-        aliases: ['estadisticas'],
-        description: 'Estadísticas detalladas',
-        usage: '/stats'
-      },
-      {
-        cmd: 'titulo',
-        aliases: ['title'],
-        description: 'Cambiar tu título',
-        usage: '/titulo [nombre]'
-      }
-    ]
+    id: 'inventory',
+    emoji: '🎒',
+    name: 'Inventario',
+    commands: ['inventario', 'equipar', 'desequipar', 'usar', 'iteminfo']
   },
   {
-    emoji: '📜',
-    name: 'Misiones',
-    description: 'Misiones diarias y semanales',
-    commands: [
-      {
-        cmd: 'misiones',
-        aliases: ['quests', 'tareas'],
-        description: 'Ver misiones activas',
-        usage: '/misiones'
-      },
-      {
-        cmd: 'reclamarmision',
-        aliases: ['claimquest'],
-        description: 'Reclamar recompensas',
-        usage: '/reclamarmision'
-      }
-    ]
+    id: 'shop',
+    emoji: '🏪',
+    name: 'Tienda',
+    commands: ['tienda', 'comprar', 'vender', 'comprard']
   },
   {
+    id: 'forge',
+    emoji: '⚒️',
+    name: 'Forja',
+    commands: ['forja', 'fumar']
+  },
+  {
+    id: 'economy',
     emoji: '💰',
     name: 'Economía',
-    description: '🆕 Sistema económico avanzado',
-    commands: [
-      {
-        cmd: 'economia',
-        aliases: ['economy', 'mieconomia', 'wallet'],
-        description: '🆕 Ver estado económico completo',
-        usage: '/economia'
-      },
-      {
-        cmd: 'banco',
-        aliases: ['bank', 'depositar'],
-        description: '🆕 Depositar dinero al banco',
-        usage: '/banco [cantidad]'
-      },
-      {
-        cmd: 'transferir',
-        aliases: ['transfer', 'enviar', 'pay'],
-        description: '🆕 Transferir dinero a otro',
-        usage: '/transferir @usuario [cantidad]'
-      },
-      {
-        cmd: 'esclavizar',
-        aliases: ['enslave', 'slave'],
-        description: '🆕 Esclavizar a otro usuario',
-        usage: '/esclavizar @usuario'
-      },
-      {
-        cmd: 'liberar',
-        aliases: ['free', 'liberarse', 'libertad'],
-        description: '🆕 Liberar a un esclavo',
-        usage: '/liberar @usuario'
-      },
-      {
-        cmd: 'esclavos',
-        aliases: ['slaves', 'misesclavos'],
-        description: '🆕 Ver tus esclavos',
-        usage: '/esclavos'
-      },
-      {
-        cmd: 'pasivo',
-        aliases: ['passive', 'pacifico', 'paz'],
-        description: '🆕 Modo pasivo (sin robo)',
-        usage: '/pasivo on/off'
-      }
-    ]
+    commands: ['economia', 'banco', 'transferir', 'esclavizar', 'liberar', 'esclavos', 'pasivo']
   },
   {
-    emoji: '👑',
-    name: 'Admin',
-    description: 'Comandos de administración',
-    commands: [
-      {
-        cmd: 'promote',
-        aliases: ['admin', 'haceradmin'],
-        description: 'Hacer admin',
-        usage: '/promote @usuario'
-      },
-      {
-        cmd: 'demote',
-        aliases: ['quitaradmin'],
-        description: 'Quitar admin',
-        usage: '/demote @usuario'
-      },
-      {
-        cmd: 'kick',
-        aliases: ['expulsar', 'ban'],
-        description: 'Expulsar usuario',
-        usage: '/kick @usuario'
-      },
-      {
-        cmd: 'mute',
-        aliases: ['silenciar'],
-        description: 'Silenciar usuario',
-        usage: '/mute @usuario'
-      },
-      {
-        cmd: 'unmute',
-        aliases: ['desilenciar', 'hablar'],
-        description: '🆕 Quitar silencio a usuario',
-        usage: '/unmute @usuario'
-      },
-      {
-        cmd: 'automute',
-        aliases: ['autosilencio'],
-        description: '🆕 Auto-silenciar nuevos miembros',
-        usage: '/automute on/off'
-      },
-      {
-        cmd: 'listmute',
-        aliases: ['mutelist', 'silenciados'],
-        description: '🆕 Ver usuarios silenciados',
-        usage: '/listmute'
-      },
-      {
-        cmd: 'pin',
-        aliases: ['fijar'],
-        description: 'Fijar mensaje',
-        usage: '/pin [duración]'
-      },
-      {
-        cmd: 'unpin',
-        aliases: ['desfijar', 'desanclar'],
-        description: '🆕 Desfijar mensaje',
-        usage: '/unpin (responder a mensaje)'
-      },
-      {
-        cmd: 'notify',
-        aliases: ['n', 'todos'],
-        description: 'Mencionar a todos',
-        usage: '/notify [mensaje]'
-      },
-      {
-        cmd: 'hidetag',
-        aliases: ['ht', 'notificar'],
-        description: '🆕 Mencionar a todos sin mostrar lista',
-        usage: '/hidetag [mensaje]'
-      },
-      {
-        cmd: 'delete',
-        aliases: ['del', 'eliminar', 'borrar'],
-        description: 'Eliminar un mensaje',
-        usage: '/delete (responder a mensaje)'
-      },
-      {
-        cmd: 'clear',
-        aliases: ['limpiar', 'clean'],
-        description: '🆕 Eliminar mensajes del bot y comandos',
-        usage: '/clear [cantidad]'
-      },
-      {
-        cmd: 'autoclear',
-        aliases: ['autolimpiar', 'autoclean'],
-        description: '🆕 Auto-eliminar después de 2 min',
-        usage: '/autoclear on/off'
-      },
-      {
-        cmd: 'close',
-        aliases: ['cerrar', 'cerrargrupo'],
-        description: 'Cerrar grupo (solo admins escriben)',
-        usage: '/close'
-      },
-      {
-        cmd: 'open',
-        aliases: ['abrir', 'abrirgrupo'],
-        description: 'Abrir grupo (todos escriben)',
-        usage: '/open'
-      },
-      {
-        cmd: 'welcome',
-        aliases: [],
-        description: '🆕 Activar/desactivar bienvenidas',
-        usage: '/welcome on/off'
-      },
-      {
-        cmd: 'bye',
-        aliases: [],
-        description: '🆕 Activar/desactivar despedidas',
-        usage: '/bye on/off'
-      },
-      {
-        cmd: 'compacto',
-        aliases: ['compact', 'silencioso', 'quiet'],
-        description: '🆕 Modo compacto (menos spam)',
-        usage: '/compacto on/off'
-      }
-    ]
+    id: 'class',
+    emoji: '🎭',
+    name: 'Clases',
+    commands: ['clases', 'clase', 'habilidades']
   },
   {
-    emoji: '🔧',
-    name: 'Owner',
-    description: 'Comandos exclusivos del dueño',
-    commands: [
-      {
-        cmd: 'restart',
-        aliases: ['reiniciar', 'reboot'],
-        description: 'Reiniciar el bot',
-        usage: '/restart'
-      },
-      {
-        cmd: 'gitpull',
-        aliases: ['pull', 'update', 'actualizar'],
-        description: 'Actualizar desde GitHub',
-        usage: '/gitpull'
-      }
-    ]
+    id: 'progress',
+    emoji: '🏆',
+    name: 'Progreso',
+    commands: ['ranking', 'logros', 'reclamarlogro', 'misiones', 'reclamarmision', 'stats', 'titulo']
   },
   {
-    emoji: '👑',
-    name: 'Owner RPG',
-    description: 'Control total del sistema RPG',
-    commands: [
-      {
-        cmd: 'rpgowner',
-        aliases: ['ownerrpg', 'rpgadmin', 'rpgmenu'],
-        description: 'Panel de control RPG',
-        usage: '/rpgowner'
-      },
-      {
-        cmd: 'rpgdar',
-        aliases: ['rpggive', 'rpgadd'],
-        description: 'Dar recursos a usuario',
-        usage: '/rpgdar @user [tipo] [cantidad]'
-      },
-      {
-        cmd: 'rpgquitar',
-        aliases: ['rpgremove', 'rpgtake'],
-        description: 'Quitar recursos a usuario',
-        usage: '/rpgquitar @user [tipo] [cantidad]'
-      },
-      {
-        cmd: 'rpgset',
-        aliases: ['rpgsetstat'],
-        description: 'Establecer stats',
-        usage: '/rpgset @user [stat] [valor]'
-      },
-      {
-        cmd: 'rpgdaritem',
-        aliases: ['rpggiveitem'],
-        description: 'Dar items a usuario',
-        usage: '/rpgdaritem @user [itemId] [cantidad]'
-      },
-      {
-        cmd: 'rpgbonus',
-        aliases: ['bonusmode', 'modobonus'],
-        description: 'Activar modo bonus global',
-        usage: '/rpgbonus [xp] [dinero] [mana] [tiempo]'
-      },
-      {
-        cmd: 'rpgrobolibre',
-        aliases: ['freerobo', 'modorobo'],
-        description: 'Robo sin cooldown',
-        usage: '/rpgrobolibre [tiempo]'
-      },
-      {
-        cmd: 'rpgevento',
-        aliases: ['rpgevent'],
-        description: 'Activar evento especial',
-        usage: '/rpgevento "nombre" [dropMult] [tiempo]'
-      },
-      {
-        cmd: 'rpgpvp',
-        aliases: ['modopvp'],
-        description: 'Daño aumentado en duelos',
-        usage: '/rpgpvp [mult] [tiempo]'
-      },
-      {
-        cmd: 'rpgcaos',
-        aliases: ['modocaos', 'chaosmode'],
-        description: 'Modo caos: TODO multiplicado',
-        usage: '/rpgcaos [mult] [tiempo]'
-      },
-      {
-        cmd: 'rpgdesactivar',
-        aliases: ['rpgoff'],
-        description: 'Desactivar modos especiales',
-        usage: '/rpgdesactivar [modo]'
-      },
-      {
-        cmd: 'rpgresetcd',
-        aliases: ['resetcooldown'],
-        description: 'Resetear cooldowns',
-        usage: '/rpgresetcd @user [tipo]'
-      },
-      {
-        cmd: 'rpgresetcdall',
-        aliases: ['resetcdall'],
-        description: '🆕 Resetear cooldowns de todos',
-        usage: '/rpgresetcdall [tipo]'
-      },
-      {
-        cmd: 'rpgsetclase',
-        aliases: ['rpgsetclass'],
-        description: 'Establecer clase de usuario',
-        usage: '/rpgsetclase @user [clase]'
-      },
-      {
-        cmd: 'rpgfullstats',
-        aliases: ['rpgmaxstats', 'rpggod'],
-        description: 'Dar stats máximos (MODO DIOS)',
-        usage: '/rpgfullstats @user'
-      },
-      {
-        cmd: 'rpgmaxlevel',
-        aliases: ['rpgsetlevel'],
-        description: 'Establecer nivel',
-        usage: '/rpgmaxlevel @user [nivel]'
-      },
-      {
-        cmd: 'rpginfo',
-        aliases: ['rpgcheck'],
-        description: 'Ver info completa de usuario',
-        usage: '/rpginfo @user'
-      },
-      {
-        cmd: 'rpgdaratodos',
-        aliases: ['rpggiveall'],
-        description: 'Dar recursos a TODOS',
-        usage: '/rpgdaratodos [tipo] [cantidad]'
-      },
-      {
-        cmd: 'rpglluviamoney',
-        aliases: ['rpgrainmoney'],
-        description: 'Lluvia de dinero en grupo',
-        usage: '/rpglluviamoney [cantidad]'
-      },
-      {
-        cmd: 'rpgborrar',
-        aliases: ['rpgdelete', 'rpgreset'],
-        description: 'Eliminar progreso de usuario',
-        usage: '/rpgborrar @user confirmar'
-      },
-      {
-        cmd: 'rpgtop',
-        aliases: ['rpgranking'],
-        description: 'Ver rankings RPG',
-        usage: '/rpgtop [tipo]'
-      },
-      {
-        cmd: 'rpglistitems',
-        aliases: ['rpgitems'],
-        description: 'Lista todos los items',
-        usage: '/rpglistitems [categoria]'
-      },
-      {
-        cmd: 'rpgautoevents',
-        aliases: ['autoevents', 'autoeventos'],
-        description: 'Activar/desactivar eventos aleatorios',
-        usage: '/rpgautoevents [on/off]'
-      },
-      {
-        cmd: 'rpgaddgrupo',
-        aliases: ['rpgaddgroup', 'eventaddgroup'],
-        description: 'Agregar grupo a anuncios de eventos',
-        usage: '/rpgaddgrupo'
-      },
-      {
-        cmd: 'rpgremovegrupo',
-        aliases: ['rpgremovegroup', 'eventremovegroup'],
-        description: 'Remover grupo de anuncios',
-        usage: '/rpgremovegrupo'
-      },
-      {
-        cmd: 'rpgeventinterval',
-        aliases: ['eventinterval', 'intervaloeventos'],
-        description: 'Configurar intervalo entre eventos',
-        usage: '/rpgeventinterval [min] [max]'
-      },
-      {
-        cmd: 'rpgforceevent',
-        aliases: ['forceevent', 'forzarevento'],
-        description: 'Forzar evento aleatorio ahora',
-        usage: '/rpgforceevent'
-      },
-      {
-        cmd: 'rpgeventstatus',
-        aliases: ['eventstatus', 'estadoeventos'],
-        description: 'Ver estado de eventos automáticos',
-        usage: '/rpgeventstatus'
-      }
-    ]
-  },
-  {
-    emoji: '🎵',
-    name: 'Media',
-    description: 'Multimedia',
-    commands: [
-      {
-        cmd: 'play',
-        aliases: ['musica', 'music', 'cancion'],
-        description: 'Descargar música',
-        usage: '/play [nombre/URL]'
-      }
-    ]
-  },
-  {
-    emoji: '🎨',
-    name: 'Stickers',
-    description: 'Crear y convertir stickers',
-    commands: [
-      {
-        cmd: 's',
-        aliases: ['sticker', 'stiker', 'stick'],
-        description: 'Crear sticker de imagen/video',
-        usage: '/s (responde a imagen/video)'
-      },
-      {
-        cmd: 'toimg',
-        aliases: ['toimage', 'img', 'imagen'],
-        description: 'Sticker a imagen PNG',
-        usage: '/toimg (responde a sticker)'
-      },
-      {
-        cmd: 'tovideo',
-        aliases: ['tovid', 'video'],
-        description: 'Sticker animado a video',
-        usage: '/tovideo (responde a sticker)'
-      },
-      {
-        cmd: 'togif',
-        aliases: ['gif'],
-        description: 'Sticker animado a GIF',
-        usage: '/togif (responde a sticker)'
-      }
-    ]
-  },
-  {
-    emoji: '🛡️',
-    name: 'Protección',
-    description: 'Protección de grupos',
-    commands: [
-      {
-        cmd: 'antilink',
-        aliases: [],
-        description: 'Activar/desactivar anti-enlaces',
-        usage: '/antilink on/off'
-      },
-      {
-        cmd: 'antispam',
-        aliases: [],
-        description: 'Activar/desactivar anti-spam',
-        usage: '/antispam on/off'
-      },
-      {
-        cmd: 'warn',
-        aliases: ['advertir'],
-        description: 'Advertir a un usuario',
-        usage: '/warn @usuario [razón]'
-      },
-      {
-        cmd: 'unwarn',
-        aliases: ['quitarwarn'],
-        description: 'Quitar advertencia',
-        usage: '/unwarn @usuario'
-      },
-      {
-        cmd: 'listwarn',
-        aliases: ['warns', 'advertencias'],
-        description: 'Ver usuarios con advertencias',
-        usage: '/listwarn'
-      },
-      {
-        cmd: 'clearwarn',
-        aliases: ['limpiarwarn'],
-        description: '🆕 Limpiar todas las advertencias',
-        usage: '/clearwarn @usuario'
-      },
-      {
-        cmd: 'setwelcome',
-        aliases: ['bienvenida'],
-        description: 'Configurar mensaje de bienvenida',
-        usage: '/setwelcome <mensaje>'
-      },
-      {
-        cmd: 'setbye',
-        aliases: ['despedida'],
-        description: 'Configurar mensaje de despedida',
-        usage: '/setbye <mensaje>'
-      },
-      {
-        cmd: 'tagall',
-        aliases: ['todos', 'invocar'],
-        description: 'Mencionar a todos',
-        usage: '/tagall [mensaje]'
-      }
-    ]
-  },
-  {
-    emoji: '📥',
-    name: 'Descargas',
-    description: 'Descargar contenido de redes sociales',
-    commands: [
-      {
-        cmd: 'tiktok',
-        aliases: ['tt', 'ttdl'],
-        description: 'Descargar video de TikTok',
-        usage: '/tiktok <url>'
-      },
-      {
-        cmd: 'ig',
-        aliases: ['instagram', 'igdl'],
-        description: 'Descargar de Instagram',
-        usage: '/ig <url>'
-      },
-      {
-        cmd: 'fb',
-        aliases: ['facebook', 'fbdl'],
-        description: 'Descargar video de Facebook',
-        usage: '/fb <url>'
-      },
-      {
-        cmd: 'twitter',
-        aliases: ['tw', 'x', 'twdl'],
-        description: 'Descargar video de Twitter/X',
-        usage: '/twitter <url>'
-      },
-      {
-        cmd: 'pinterest',
-        aliases: ['pin'],
-        description: 'Buscar imágenes en Pinterest',
-        usage: '/pinterest <búsqueda>'
-      }
-    ]
-  },
-  {
-    emoji: '🔧',
-    name: 'Herramientas',
-    description: 'Herramientas útiles',
-    commands: [
-      {
-        cmd: 'translate',
-        aliases: ['traducir', 'tr'],
-        description: 'Traducir texto',
-        usage: '/translate <idioma> <texto>'
-      },
-      {
-        cmd: 'clima',
-        aliases: ['weather', 'tiempo'],
-        description: 'Ver clima de una ciudad',
-        usage: '/clima <ciudad>'
-      },
-      {
-        cmd: 'id',
-        aliases: ['chatid', 'groupid'],
-        description: '🆕 Ver ID del chat/grupo',
-        usage: '/id'
-      },
-      {
-        cmd: 'bug',
-        aliases: ['reportar', 'reporte'],
-        description: '🆕 Reportar un bug',
-        usage: '/bug <descripción>'
-      },
-      {
-        cmd: 'feat',
-        aliases: ['feature', 'sugerencia', 'idea'],
-        description: '🆕 Sugerir una función',
-        usage: '/feat <descripción>'
-      }
-    ]
-  },
-  {
-    emoji: '🎮',
+    id: 'fun',
+    emoji: '🎪',
     name: 'Diversión',
-    description: 'Juegos y entretenimiento',
-    commands: [
-      {
-        cmd: 'slot',
-        aliases: ['tragamonedas', 'casino'],
-        description: 'Jugar tragamonedas',
-        usage: '/slot [apuesta]'
-      },
-      {
-        cmd: 'slotinfo',
-        aliases: ['slotayuda'],
-        description: '🆕 Info sobre la tragamonedas',
-        usage: '/slotinfo'
-      },
-      {
-        cmd: 'amor',
-        aliases: ['love', 'ship', 'compatibilidad'],
-        description: 'Calculadora de amor',
-        usage: '/amor @usuario'
-      },
-      {
-        cmd: 'gay',
-        aliases: ['gaytest'],
-        description: 'Test de gayedad (broma)',
-        usage: '/gay [@usuario]'
-      },
-      {
-        cmd: 'beso',
-        aliases: ['kiss', 'besito', 'muah'],
-        description: 'Dale un beso a alguien',
-        usage: '/beso @usuario'
-      },
-      {
-        cmd: 'misbesos',
-        aliases: ['mykisses', 'besostats'],
-        description: 'Ver tus estadísticas de besos',
-        usage: '/misbesos'
-      },
-      {
-        cmd: 'topbesos',
-        aliases: ['topkiss', 'besucones', 'rankingbesos'],
-        description: 'Ranking de besucones del grupo',
-        usage: '/topbesos'
-      },
-      {
-        cmd: 'abrazo',
-        aliases: ['hug', 'abrazar', 'apapacho'],
-        description: '🆕 Dale un abrazo a alguien',
-        usage: '/abrazo @usuario'
-      },
-      {
-        cmd: 'kissall',
-        aliases: ['besartodos', 'besoatodos'],
-        description: '🆕 Besar a todos del grupo',
-        usage: '/kissall'
-      },
-      {
-        cmd: 'gudmornin',
-        aliases: ['buenosdias', 'gm', 'goodmorning'],
-        description: '🆕 Buenos días a alguien',
-        usage: '/gudmornin @usuario'
-      },
-      {
-        cmd: 'poka',
-        aliases: ['limosna', 'pobre'],
-        description: '🆕 Pedir limosna con estilo',
-        usage: '/poka'
-      },
-      {
-        cmd: 'chingatumadre',
-        aliases: ['ctm', 'fuck', 'insultar'],
-        description: '🆕 Insultar en 5 idiomas',
-        usage: '/chingatumadre @usuario'
-      },
-      {
-        cmd: 'hazana',
-        aliases: ['hazaña', 'carlitos', 'feria'],
-        description: '🆕 Sticker de Carlitos',
-        usage: '/hazana'
-      }
-    ]
+    commands: ['slot', 'amor', 'gay', 'beso', 'misbesos', 'topbesos', 'abrazo', 'kissall', 'gudmornin', 'poka', 'ctm', 'hazana']
   },
   {
+    id: 'casino',
     emoji: '🃏',
     name: 'Casino',
-    description: 'Juegos de casino multiplayer',
-    commands: [
-      {
-        cmd: 'blackjack',
-        aliases: ['bj', 'mesa'],
-        description: 'Abrir mesa de Blackjack',
-        usage: '/blackjack [apuesta_min]'
-      },
-      {
-        cmd: 'jugar',
-        aliases: ['unirse', 'entrar'],
-        description: 'Unirse a mesa de Blackjack',
-        usage: '/jugar [apuesta]'
-      },
-      {
-        cmd: 'pedir',
-        aliases: ['hit', 'carta'],
-        description: 'Pedir carta en Blackjack',
-        usage: '/pedir'
-      },
-      {
-        cmd: 'plantarse',
-        aliases: ['stand', 'quedar'],
-        description: 'Plantarse en Blackjack',
-        usage: '/plantarse'
-      },
-      {
-        cmd: 'doblar',
-        aliases: ['double', 'dd'],
-        description: 'Doblar apuesta en Blackjack',
-        usage: '/doblar'
-      },
-      {
-        cmd: 'bjmesa',
-        aliases: ['vermesa', 'bjstatus'],
-        description: 'Ver estado de la mesa',
-        usage: '/bjmesa'
-      },
-      {
-        cmd: 'bjsalir',
-        aliases: ['salirmesa', 'bjleave'],
-        description: 'Salir de la mesa (en espera)',
-        usage: '/bjsalir'
-      },
-      {
-        cmd: 'bjinfo',
-        aliases: ['blackjackinfo', 'bjayuda'],
-        description: 'Info sobre Blackjack',
-        usage: '/bjinfo'
-      },
-      {
-        cmd: 'ruleta',
-        aliases: ['roulette', 'ruletamesa'],
-        description: 'Abrir mesa de Ruleta',
-        usage: '/ruleta [apuesta_min]'
-      },
-      {
-        cmd: 'apostar',
-        aliases: ['bet', 'ap'],
-        description: 'Apostar en la ruleta',
-        usage: '/apostar <tipo> <cantidad>'
-      },
-      {
-        cmd: 'girar',
-        aliases: ['spin', 'tirar'],
-        description: 'Girar ruleta (creador)',
-        usage: '/girar'
-      },
-      {
-        cmd: 'mesaruleta',
-        aliases: ['vermesa', 'ruletastatus'],
-        description: 'Ver estado de la ruleta',
-        usage: '/mesaruleta'
-      },
-      {
-        cmd: 'ruletasalir',
-        aliases: ['rsalir', 'cancelarapuesta'],
-        description: 'Cancelar tus apuestas',
-        usage: '/ruletasalir'
-      },
-      {
-        cmd: 'ruletainfo',
-        aliases: ['rouletteinfo', 'ruletaayuda'],
-        description: 'Info sobre la Ruleta',
-        usage: '/ruletainfo'
-      }
-    ]
+    commands: ['blackjack', 'jugar', 'pedir', 'plantarse', 'doblar', 'bjmesa', 'bjinfo', 'ruleta', 'apostar', 'girar', 'ruletainfo']
+  },
+  {
+    id: 'media',
+    emoji: '🎵',
+    name: 'Media',
+    commands: ['play', 's', 'toimg', 'tovideo', 'togif']
+  },
+  {
+    id: 'download',
+    emoji: '📥',
+    name: 'Descargas',
+    commands: ['tiktok', 'ig', 'fb', 'twitter', 'pinterest']
+  },
+  {
+    id: 'tools',
+    emoji: '🔧',
+    name: 'Herramientas',
+    commands: ['translate', 'clima', 'bug', 'feat', 'id']
+  },
+  {
+    id: 'admin',
+    emoji: '👑',
+    name: 'Admin Grupo',
+    commands: ['kick', 'promote', 'demote', 'mute', 'unmute', 'warn', 'unwarn', 'listwarn', 'antilink', 'antispam', 'welcome', 'bye', 'setwelcome', 'setbye', 'tagall', 'hidetag', 'delete', 'clear', 'pin', 'close', 'open', 'compacto'],
+    adminOnly: true
+  },
+  {
+    id: 'customize',
+    emoji: '✏️',
+    name: 'Personalizar',
+    commands: ['addpoka', 'delpoka', 'listpoka', 'clearpoka', 'addctm', 'delctm', 'listctm', 'clearctm'],
+    adminOnly: true
+  },
+  {
+    id: 'owner',
+    emoji: '🔐',
+    name: 'Owner',
+    commands: ['restart', 'gitpull', 'logs', 'rpgowner', 'rpgdar', 'rpgquitar', 'rpgset', 'rpgdaritem', 'rpgbonus', 'rpgrobolibre', 'rpgevento', 'rpgpvp', 'rpgcaos', 'rpgdesactivar', 'rpgresetcd', 'rpgsetclase', 'rpgfullstats', 'rpgmaxlevel', 'rpginfo', 'rpgdaratodos', 'rpglluviamoney', 'rpgborrar', 'rpgtop', 'rpgautoevents'],
+    ownerOnly: true
   }
 ];
 
 /**
+ * Detalles de comandos
+ */
+const COMMANDS: Record<string, CommandDetail> = {
+  // RPG Básico
+  verificar: { cmd: 'verificar', aliases: ['registrar', 'register'], desc: 'Registrarte en el juego', usage: '/verificar nombre.edad' },
+  perfil: { cmd: 'perfil', aliases: ['profile', 'p'], desc: 'Ver tu perfil o el de alguien', usage: '/perfil [@usuario]' },
+  nivel: { cmd: 'nivel', aliases: ['lvl', 'levelup'], desc: 'Subir de nivel', usage: '/nivel' },
+  daily: { cmd: 'daily', aliases: ['claim', 'diario'], desc: 'Recompensa diaria', usage: '/daily' },
+  work: { cmd: 'work', aliases: ['trabajar', 'w'], desc: 'Trabajar para ganar XP', usage: '/work' },
+  minar: { cmd: 'minar', aliases: ['mine', 'picar'], desc: 'Minar minerales y materiales', usage: '/minar' },
+
+  // Combate
+  atacar: { cmd: 'atacar', aliases: ['attack', 'hunt'], desc: 'Luchar contra monstruos', usage: '/atacar' },
+  duelo: { cmd: 'duelo', aliases: ['duel', 'pvp'], desc: 'Desafiar a otro jugador', usage: '/duelo @usuario [apuesta]' },
+  robar: { cmd: 'robar', aliases: ['rob', 'steal'], desc: 'Robar a otro jugador', usage: '/robar @usuario' },
+  bombardear: { cmd: 'bombardear', aliases: ['bomba', 'bomb'], desc: 'Lanzar bomba a jugador', usage: '/bombardear @usuario' },
+  deuda: { cmd: 'deuda', aliases: ['debt', 'imss'], desc: 'Ver tu deuda IMSS', usage: '/deuda' },
+  pagardeuda: { cmd: 'pagardeuda', aliases: ['pagarimss'], desc: 'Pagar deuda IMSS', usage: '/pagardeuda [cantidad]' },
+
+  // Dungeon
+  dungeons: { cmd: 'dungeons', aliases: ['mazmorras'], desc: 'Ver dungeons disponibles', usage: '/dungeons' },
+  dungeon: { cmd: 'dungeon', aliases: ['mazmorra'], desc: 'Entrar a dungeon interactivo', usage: '/dungeon [nombre]' },
+  a: { cmd: 'a', aliases: [], desc: 'Atacar en dungeon', usage: '/a' },
+  d: { cmd: 'd', aliases: [], desc: 'Defenderse en dungeon', usage: '/d' },
+  h: { cmd: 'h', aliases: [], desc: 'Usar habilidad en dungeon', usage: '/h [num]' },
+  i: { cmd: 'i', aliases: [], desc: 'Usar item en dungeon', usage: '/i [num]' },
+  huir: { cmd: 'huir', aliases: ['escapar', 'flee'], desc: 'Escapar del dungeon', usage: '/huir' },
+  estado: { cmd: 'estado', aliases: ['status'], desc: 'Ver estado en dungeon', usage: '/estado' },
+
+  // Inventario
+  inventario: { cmd: 'inventario', aliases: ['inv', 'items'], desc: 'Ver tu inventario', usage: '/inventario [tipo]' },
+  equipar: { cmd: 'equipar', aliases: ['equip'], desc: 'Equipar un item', usage: '/equipar [item]' },
+  desequipar: { cmd: 'desequipar', aliases: ['unequip'], desc: 'Quitar item equipado', usage: '/desequipar [slot]' },
+  usar: { cmd: 'usar', aliases: ['use', 'consumir'], desc: 'Usar consumible', usage: '/usar [item]' },
+  iteminfo: { cmd: 'iteminfo', aliases: ['item'], desc: 'Info de un item', usage: '/iteminfo [nombre]' },
+
+  // Tienda
+  tienda: { cmd: 'tienda', aliases: ['shop', 'store'], desc: 'Ver items en venta', usage: '/tienda [categoria]' },
+  comprar: { cmd: 'comprar', aliases: ['buy'], desc: 'Comprar un item', usage: '/comprar [item] [cantidad]' },
+  vender: { cmd: 'vender', aliases: ['sell'], desc: 'Vender items', usage: '/vender [item] [cantidad]' },
+  comprard: { cmd: 'comprard', aliases: ['buydiamonds'], desc: 'Comprar con diamantes', usage: '/comprard [item]' },
+
+  // Forja
+  forja: { cmd: 'forja', aliases: ['forge', 'herreria'], desc: 'Sistema de forja completo', usage: '/forja [subcomando]' },
+  fumar: { cmd: 'fumar', aliases: ['smoke', 'piedra'], desc: 'Fumar piedra (50/50)', usage: '/fumar' },
+
+  // Economía
+  economia: { cmd: 'economia', aliases: ['economy', 'wallet'], desc: 'Ver estado económico', usage: '/economia' },
+  banco: { cmd: 'banco', aliases: ['bank', 'depositar'], desc: 'Depositar al banco', usage: '/banco [cantidad]' },
+  transferir: { cmd: 'transferir', aliases: ['transfer', 'pay'], desc: 'Transferir dinero', usage: '/transferir @user [cant]' },
+  esclavizar: { cmd: 'esclavizar', aliases: ['enslave'], desc: 'Esclavizar usuario', usage: '/esclavizar @user' },
+  liberar: { cmd: 'liberar', aliases: ['free'], desc: 'Liberar esclavo', usage: '/liberar @user' },
+  esclavos: { cmd: 'esclavos', aliases: ['slaves'], desc: 'Ver tus esclavos', usage: '/esclavos' },
+  pasivo: { cmd: 'pasivo', aliases: ['passive', 'paz'], desc: 'Modo pasivo on/off', usage: '/pasivo on|off' },
+
+  // Clases
+  clases: { cmd: 'clases', aliases: ['classes'], desc: 'Ver todas las clases', usage: '/clases' },
+  clase: { cmd: 'clase', aliases: ['class'], desc: 'Elegir/ver tu clase', usage: '/clase [nombre]' },
+  habilidades: { cmd: 'habilidades', aliases: ['skills'], desc: 'Ver tus habilidades', usage: '/habilidades' },
+
+  // Progreso
+  ranking: { cmd: 'ranking', aliases: ['top', 'leaderboard'], desc: 'Ver mejores jugadores', usage: '/ranking [categoria]' },
+  logros: { cmd: 'logros', aliases: ['achievements'], desc: 'Ver tus logros', usage: '/logros' },
+  reclamarlogro: { cmd: 'reclamarlogro', aliases: ['claimachievement'], desc: 'Reclamar logro', usage: '/reclamarlogro' },
+  misiones: { cmd: 'misiones', aliases: ['quests'], desc: 'Ver misiones activas', usage: '/misiones' },
+  reclamarmision: { cmd: 'reclamarmision', aliases: ['claimquest'], desc: 'Reclamar misión', usage: '/reclamarmision' },
+  stats: { cmd: 'stats', aliases: ['estadisticas'], desc: 'Estadísticas detalladas', usage: '/stats' },
+  titulo: { cmd: 'titulo', aliases: ['title'], desc: 'Cambiar tu título', usage: '/titulo [nombre]' },
+
+  // Diversión
+  slot: { cmd: 'slot', aliases: ['tragamonedas'], desc: 'Jugar tragamonedas', usage: '/slot [apuesta]' },
+  amor: { cmd: 'amor', aliases: ['love', 'ship'], desc: 'Calculadora de amor', usage: '/amor @usuario' },
+  gay: { cmd: 'gay', aliases: ['gaytest'], desc: 'Test de gayedad', usage: '/gay [@usuario]' },
+  beso: { cmd: 'beso', aliases: ['kiss', 'muah'], desc: 'Dar un beso', usage: '/beso @usuario' },
+  misbesos: { cmd: 'misbesos', aliases: ['mykisses'], desc: 'Ver tus besos', usage: '/misbesos' },
+  topbesos: { cmd: 'topbesos', aliases: ['topkiss'], desc: 'Ranking de besos', usage: '/topbesos' },
+  abrazo: { cmd: 'abrazo', aliases: ['hug', 'abrazar'], desc: 'Dar un abrazo', usage: '/abrazo @usuario' },
+  kissall: { cmd: 'kissall', aliases: ['besartodos'], desc: 'Besar a todos', usage: '/kissall' },
+  gudmornin: { cmd: 'gudmornin', aliases: ['buenosdias', 'gm'], desc: 'Buenos días', usage: '/gudmornin @usuario' },
+  poka: { cmd: 'poka', aliases: ['limosna'], desc: 'Pedir limosna', usage: '/poka' },
+  ctm: { cmd: 'ctm', aliases: ['chingatumadre'], desc: 'Insultar creativamente', usage: '/ctm @usuario' },
+  hazana: { cmd: 'hazana', aliases: ['hazaña', 'carlitos'], desc: 'Sticker de Carlitos', usage: '/hazana' },
+
+  // Casino
+  blackjack: { cmd: 'blackjack', aliases: ['bj'], desc: 'Abrir mesa Blackjack', usage: '/blackjack [apuesta_min]' },
+  jugar: { cmd: 'jugar', aliases: ['unirse'], desc: 'Unirse a mesa', usage: '/jugar [apuesta]' },
+  pedir: { cmd: 'pedir', aliases: ['hit'], desc: 'Pedir carta', usage: '/pedir' },
+  plantarse: { cmd: 'plantarse', aliases: ['stand'], desc: 'Plantarse', usage: '/plantarse' },
+  doblar: { cmd: 'doblar', aliases: ['double'], desc: 'Doblar apuesta', usage: '/doblar' },
+  bjmesa: { cmd: 'bjmesa', aliases: ['vermesa'], desc: 'Ver mesa BJ', usage: '/bjmesa' },
+  bjinfo: { cmd: 'bjinfo', aliases: ['blackjackinfo'], desc: 'Info Blackjack', usage: '/bjinfo' },
+  ruleta: { cmd: 'ruleta', aliases: ['roulette'], desc: 'Abrir mesa Ruleta', usage: '/ruleta [apuesta_min]' },
+  apostar: { cmd: 'apostar', aliases: ['bet'], desc: 'Apostar en ruleta', usage: '/apostar <tipo> <cant>' },
+  girar: { cmd: 'girar', aliases: ['spin'], desc: 'Girar ruleta', usage: '/girar' },
+  ruletainfo: { cmd: 'ruletainfo', aliases: ['rouletteinfo'], desc: 'Info Ruleta', usage: '/ruletainfo' },
+
+  // Media
+  play: { cmd: 'play', aliases: ['musica', 'music'], desc: 'Descargar música', usage: '/play [nombre/URL]' },
+  s: { cmd: 's', aliases: ['sticker', 'stick'], desc: 'Crear sticker', usage: '/s (responder a imagen)' },
+  toimg: { cmd: 'toimg', aliases: ['toimage', 'img'], desc: 'Sticker a imagen', usage: '/toimg' },
+  tovideo: { cmd: 'tovideo', aliases: ['tovid'], desc: 'Sticker a video', usage: '/tovideo' },
+  togif: { cmd: 'togif', aliases: ['gif'], desc: 'Sticker a GIF', usage: '/togif' },
+
+  // Descargas
+  tiktok: { cmd: 'tiktok', aliases: ['tt'], desc: 'Descargar de TikTok', usage: '/tiktok <url>' },
+  ig: { cmd: 'ig', aliases: ['instagram'], desc: 'Descargar de Instagram', usage: '/ig <url>' },
+  fb: { cmd: 'fb', aliases: ['facebook'], desc: 'Descargar de Facebook', usage: '/fb <url>' },
+  twitter: { cmd: 'twitter', aliases: ['tw', 'x'], desc: 'Descargar de Twitter/X', usage: '/twitter <url>' },
+  pinterest: { cmd: 'pinterest', aliases: ['pin'], desc: 'Buscar en Pinterest', usage: '/pinterest <busqueda>' },
+
+  // Herramientas
+  translate: { cmd: 'translate', aliases: ['traducir', 'tr'], desc: 'Traducir texto', usage: '/translate <idioma> <texto>' },
+  clima: { cmd: 'clima', aliases: ['weather'], desc: 'Ver clima', usage: '/clima <ciudad>' },
+  bug: { cmd: 'bug', aliases: ['reportar'], desc: 'Reportar bug', usage: '/bug <descripcion>' },
+  feat: { cmd: 'feat', aliases: ['sugerencia'], desc: 'Sugerir función', usage: '/feat <descripcion>' },
+  id: { cmd: 'id', aliases: ['chatid'], desc: 'Ver ID del chat', usage: '/id' },
+
+  // Admin
+  kick: { cmd: 'kick', aliases: ['expulsar', 'ban'], desc: 'Expulsar usuario', usage: '/kick @usuario' },
+  promote: { cmd: 'promote', aliases: ['admin'], desc: 'Hacer admin', usage: '/promote @usuario' },
+  demote: { cmd: 'demote', aliases: ['quitaradmin'], desc: 'Quitar admin', usage: '/demote @usuario' },
+  mute: { cmd: 'mute', aliases: ['silenciar'], desc: 'Silenciar usuario', usage: '/mute @usuario' },
+  unmute: { cmd: 'unmute', aliases: ['desilenciar'], desc: 'Quitar silencio', usage: '/unmute @usuario' },
+  warn: { cmd: 'warn', aliases: ['advertir'], desc: 'Advertir usuario', usage: '/warn @usuario [razón]' },
+  unwarn: { cmd: 'unwarn', aliases: ['quitarwarn'], desc: 'Quitar warn', usage: '/unwarn @usuario' },
+  listwarn: { cmd: 'listwarn', aliases: ['warns'], desc: 'Ver warns', usage: '/listwarn' },
+  antilink: { cmd: 'antilink', aliases: [], desc: 'Anti-enlaces', usage: '/antilink on|off' },
+  antispam: { cmd: 'antispam', aliases: [], desc: 'Anti-spam', usage: '/antispam on|off' },
+  welcome: { cmd: 'welcome', aliases: [], desc: 'Bienvenidas on/off', usage: '/welcome on|off' },
+  bye: { cmd: 'bye', aliases: [], desc: 'Despedidas on/off', usage: '/bye on|off' },
+  setwelcome: { cmd: 'setwelcome', aliases: ['bienvenida'], desc: 'Mensaje bienvenida', usage: '/setwelcome <msg>' },
+  setbye: { cmd: 'setbye', aliases: ['despedida'], desc: 'Mensaje despedida', usage: '/setbye <msg>' },
+  tagall: { cmd: 'tagall', aliases: ['todos'], desc: 'Mencionar a todos', usage: '/tagall [msg]' },
+  hidetag: { cmd: 'hidetag', aliases: ['ht'], desc: 'Mención oculta', usage: '/hidetag [msg]' },
+  delete: { cmd: 'delete', aliases: ['del', 'borrar'], desc: 'Eliminar mensaje', usage: '/delete' },
+  clear: { cmd: 'clear', aliases: ['limpiar'], desc: 'Limpiar mensajes', usage: '/clear [cantidad]' },
+  pin: { cmd: 'pin', aliases: ['fijar'], desc: 'Fijar mensaje', usage: '/pin' },
+  close: { cmd: 'close', aliases: ['cerrar'], desc: 'Cerrar grupo', usage: '/close' },
+  open: { cmd: 'open', aliases: ['abrir'], desc: 'Abrir grupo', usage: '/open' },
+  compacto: { cmd: 'compacto', aliases: ['compact', 'quiet'], desc: 'Modo compacto', usage: '/compacto on|off' },
+
+  // Personalizar
+  addpoka: { cmd: 'addpoka', aliases: [], desc: 'Agregar frase poka', usage: '/addpoka <frase>' },
+  delpoka: { cmd: 'delpoka', aliases: [], desc: 'Eliminar frase poka', usage: '/delpoka <num>' },
+  listpoka: { cmd: 'listpoka', aliases: [], desc: 'Ver frases poka', usage: '/listpoka' },
+  clearpoka: { cmd: 'clearpoka', aliases: [], desc: 'Borrar frases poka', usage: '/clearpoka' },
+  addctm: { cmd: 'addctm', aliases: [], desc: 'Agregar frase ctm', usage: '/addctm <frase>' },
+  delctm: { cmd: 'delctm', aliases: [], desc: 'Eliminar frase ctm', usage: '/delctm <num>' },
+  listctm: { cmd: 'listctm', aliases: [], desc: 'Ver frases ctm', usage: '/listctm' },
+  clearctm: { cmd: 'clearctm', aliases: [], desc: 'Borrar frases ctm', usage: '/clearctm' },
+
+  // Owner
+  restart: { cmd: 'restart', aliases: ['reiniciar'], desc: 'Reiniciar bot', usage: '/restart' },
+  gitpull: { cmd: 'gitpull', aliases: ['update'], desc: 'Actualizar código', usage: '/gitpull' },
+  logs: { cmd: 'logs', aliases: ['errorlogs'], desc: 'Ver logs errores', usage: '/logs [n]' },
+  rpgowner: { cmd: 'rpgowner', aliases: ['rpgadmin'], desc: 'Panel RPG', usage: '/rpgowner' },
+  rpgdar: { cmd: 'rpgdar', aliases: ['rpggive'], desc: 'Dar recursos', usage: '/rpgdar @u tipo cant' },
+  rpgquitar: { cmd: 'rpgquitar', aliases: ['rpgtake'], desc: 'Quitar recursos', usage: '/rpgquitar @u tipo cant' },
+  rpgset: { cmd: 'rpgset', aliases: [], desc: 'Establecer stat', usage: '/rpgset @u stat val' },
+  rpgdaritem: { cmd: 'rpgdaritem', aliases: [], desc: 'Dar item', usage: '/rpgdaritem @u item cant' },
+  rpgbonus: { cmd: 'rpgbonus', aliases: [], desc: 'Modo bonus', usage: '/rpgbonus xp $ tiempo' },
+  rpgrobolibre: { cmd: 'rpgrobolibre', aliases: [], desc: 'Robo sin CD', usage: '/rpgrobolibre tiempo' },
+  rpgevento: { cmd: 'rpgevento', aliases: [], desc: 'Evento especial', usage: '/rpgevento "nombre" mult tiempo' },
+  rpgpvp: { cmd: 'rpgpvp', aliases: [], desc: 'Modo PVP', usage: '/rpgpvp mult tiempo' },
+  rpgcaos: { cmd: 'rpgcaos', aliases: [], desc: 'Modo caos', usage: '/rpgcaos mult tiempo' },
+  rpgdesactivar: { cmd: 'rpgdesactivar', aliases: ['rpgoff'], desc: 'Desactivar modos', usage: '/rpgdesactivar modo' },
+  rpgresetcd: { cmd: 'rpgresetcd', aliases: [], desc: 'Reset cooldowns', usage: '/rpgresetcd @u tipo' },
+  rpgsetclase: { cmd: 'rpgsetclase', aliases: [], desc: 'Cambiar clase', usage: '/rpgsetclase @u clase' },
+  rpgfullstats: { cmd: 'rpgfullstats', aliases: ['rpggod'], desc: 'Stats máximos', usage: '/rpgfullstats @u' },
+  rpgmaxlevel: { cmd: 'rpgmaxlevel', aliases: [], desc: 'Establecer nivel', usage: '/rpgmaxlevel @u lvl' },
+  rpginfo: { cmd: 'rpginfo', aliases: [], desc: 'Info usuario', usage: '/rpginfo @u' },
+  rpgdaratodos: { cmd: 'rpgdaratodos', aliases: [], desc: 'Dar a todos', usage: '/rpgdaratodos tipo cant' },
+  rpglluviamoney: { cmd: 'rpglluviamoney', aliases: [], desc: 'Lluvia dinero', usage: '/rpglluviamoney cant' },
+  rpgborrar: { cmd: 'rpgborrar', aliases: ['rpgreset'], desc: 'Borrar progreso', usage: '/rpgborrar @u confirmar' },
+  rpgtop: { cmd: 'rpgtop', aliases: [], desc: 'Rankings', usage: '/rpgtop tipo' },
+  rpgautoevents: { cmd: 'rpgautoevents', aliases: [], desc: 'Auto eventos', usage: '/rpgautoevents on|off' }
+};
+
+/**
  * Genera el menú principal
  */
-function generateMainMenu(isOwner: boolean, isAdmin: boolean): string {
-  const header = `
+function generateMainMenu(userName: string, userLevel: number, isOwner: boolean, isAdmin: boolean): string {
+  // Header con info del usuario
+  let menu = `
 ╭━━━━━━━━━━━━━━━━━━━━━╮
-┃  ${EMOJI.bot} *${CONFIG.botName}* v${CONFIG.version}
-┃  _Tu compañero de aventuras_
+┃  ${EMOJI.bot} *${CONFIG.botName}*
+┃  _Hola, ${userName}!_
 ╰━━━━━━━━━━━━━━━━━━━━━╯
 
-📋 *MENÚ DE COMANDOS*
-━━━━━━━━━━━━━━━━━━━━━
 `;
 
-  let menuContent = '';
+  // Comandos rápidos
+  menu += `⚡ *RÁPIDO:* `;
+  menu += QUICK_COMMANDS.map(q => `${q.emoji}/${q.cmd}`).join(' ');
+  menu += `\n\n`;
 
-  for (const category of MENU_CATEGORIES) {
-    // Filtrar categorías según permisos
-    if (category.name === 'Admin' && !isAdmin && !isOwner) continue;
-    if (category.name === 'Owner' && !isOwner) continue;
-    if (category.name === 'Owner RPG' && !isOwner) continue;
+  // Categoría de NUEVOS primero
+  menu += `🆕 *NUEVOS* → /menu nuevos\n`;
+  menu += `━━━━━━━━━━━━━━━━━━━━━\n`;
 
-    menuContent += `\n${category.emoji} *${category.name}*\n`;
+  // Categorías
+  menu += `📋 *CATEGORÍAS*\n\n`;
 
-    for (const cmd of category.commands) {
-      menuContent += `   ▸ */${cmd.cmd}* - ${cmd.description}\n`;
-    }
+  for (const cat of CATEGORIES) {
+    if (cat.adminOnly && !isAdmin && !isOwner) continue;
+    if (cat.ownerOnly && !isOwner) continue;
+
+    const cmdCount = cat.commands.length;
+    menu += `${cat.emoji} *${cat.name}* _(${cmdCount})_\n`;
+    menu += `   → /menu ${cat.id}\n`;
   }
 
-  const footer = `
-━━━━━━━━━━━━━━━━━━━━━
-💡 */menu [comando]* - Ver detalles
-💡 */menu [categoría]* - Ver categoría
-
-📝 *Prefijos:* / ! # .
-`;
-
-  return header + menuContent + footer;
-}
-
-/**
- * Genera información detallada de un comando
- */
-function getCommandDetails(commandName: string): string | null {
-  const cmdLower = commandName.toLowerCase();
-
-  for (const category of MENU_CATEGORIES) {
-    for (const cmd of category.commands) {
-      if (cmd.cmd === cmdLower || cmd.aliases.includes(cmdLower)) {
-        let details = `
-${category.emoji} *Comando: /${cmd.cmd}*
-━━━━━━━━━━━━━━━━━━━━━
-
-📝 *Descripción:*
-   ${cmd.description}
-
-🔧 *Uso:*
-   ${cmd.usage || `/${cmd.cmd}`}
-`;
-
-        if (cmd.aliases.length > 0) {
-          details += `
-🏷️ *Alias:*
-   ${cmd.aliases.map(a => `/${a}`).join(', ')}
-`;
-        }
-
-        details += `
-📁 *Categoría:* ${category.name}
-`;
-
-        return details;
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Genera menú de una categoría específica
- */
-function getCategoryMenu(categoryName: string): string | null {
-  const catLower = categoryName.toLowerCase();
-
-  const category = MENU_CATEGORIES.find(
-    c => c.name.toLowerCase() === catLower ||
-         c.name.toLowerCase().includes(catLower)
-  );
-
-  if (!category) return null;
-
-  let menu = `
-${category.emoji} *${category.name}*
-━━━━━━━━━━━━━━━━━━━━━
-_${category.description}_
-
-`;
-
-  for (const cmd of category.commands) {
-    menu += `▸ */${cmd.cmd}*\n`;
-    menu += `   ${cmd.description}\n`;
-    menu += `   _Uso: ${cmd.usage || `/${cmd.cmd}`}_\n`;
-    if (cmd.aliases.length > 0) {
-      menu += `   Alias: ${cmd.aliases.map(a => `/${a}`).join(', ')}\n`;
-    }
-    menu += '\n';
-  }
+  // Tip aleatorio
+  menu += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
+  menu += pickRandom(MENU_TIPS);
 
   return menu;
 }
 
 /**
- * Plugin: Menu - Ver todos los comandos
+ * Genera menú de comandos nuevos
+ */
+function getNewCommandsMenu(): string {
+  let menu = `
+🆕 *COMANDOS NUEVOS*
+━━━━━━━━━━━━━━━━━━━━━
+
+`;
+
+  for (const cmd of NEW_COMMANDS) {
+    menu += `▸ */${cmd.cmd}*\n`;
+    menu += `   ${cmd.desc}\n`;
+    menu += `   _${cmd.usage}_\n\n`;
+  }
+
+  menu += `━━━━━━━━━━━━━━━━━━━━━
+💡 */menu* - Volver al menú`;
+
+  return menu;
+}
+
+/**
+ * Genera menú de una categoría
+ */
+function getCategoryMenu(catId: string, isOwner: boolean, isAdmin: boolean): string | null {
+  const cat = CATEGORIES.find(c =>
+    c.id === catId.toLowerCase() ||
+    c.name.toLowerCase() === catId.toLowerCase() ||
+    c.name.toLowerCase().includes(catId.toLowerCase())
+  );
+
+  if (!cat) return null;
+  if (cat.adminOnly && !isAdmin && !isOwner) return null;
+  if (cat.ownerOnly && !isOwner) return null;
+
+  let menu = `
+${cat.emoji} *${cat.name.toUpperCase()}*
+━━━━━━━━━━━━━━━━━━━━━
+
+`;
+
+  for (const cmdName of cat.commands) {
+    const cmd = COMMANDS[cmdName];
+    if (cmd) {
+      menu += `▸ */${cmd.cmd}*\n`;
+      menu += `   ${cmd.desc}\n`;
+      menu += `   _${cmd.usage}_\n\n`;
+    }
+  }
+
+  menu += `━━━━━━━━━━━━━━━━━━━━━
+💡 */menu* - Menú principal
+💡 */menu [comando]* - Detalles`;
+
+  return menu;
+}
+
+/**
+ * Genera detalles de un comando
+ */
+function getCommandDetails(cmdName: string): string | null {
+  const cmdLower = cmdName.toLowerCase();
+
+  // Buscar en comandos nuevos primero
+  const newCmd = NEW_COMMANDS.find(c => c.cmd === cmdLower || c.aliases.includes(cmdLower));
+  if (newCmd) {
+    let catName = 'Nuevos';
+    let catEmoji = '🆕';
+
+    // Buscar categoría real
+    for (const cat of CATEGORIES) {
+      if (cat.commands.includes(newCmd.cmd)) {
+        catName = cat.name;
+        catEmoji = cat.emoji;
+        break;
+      }
+    }
+
+    let details = `
+🆕 */${newCmd.cmd}* _(NUEVO)_
+━━━━━━━━━━━━━━━━━━━━━
+
+📝 *Descripción:*
+   ${newCmd.desc}
+
+🔧 *Uso:*
+   ${newCmd.usage}
+`;
+
+    if (newCmd.aliases.length > 0) {
+      details += `
+🏷️ *Alias:*
+   ${newCmd.aliases.map(a => `/${a}`).join(', ')}
+`;
+    }
+
+    details += `
+📁 *Categoría:* ${catEmoji} ${catName}
+`;
+
+    return details;
+  }
+
+  // Buscar en comandos normales
+  let cmd: CommandDetail | undefined;
+  for (const [key, val] of Object.entries(COMMANDS)) {
+    if (key === cmdLower || val.aliases.includes(cmdLower)) {
+      cmd = val;
+      break;
+    }
+  }
+
+  if (!cmd) return null;
+
+  // Encontrar categoría
+  let catName = '';
+  let catEmoji = '';
+  for (const cat of CATEGORIES) {
+    if (cat.commands.includes(cmd.cmd)) {
+      catName = cat.name;
+      catEmoji = cat.emoji;
+      break;
+    }
+  }
+
+  let details = `
+${catEmoji} */${cmd.cmd}*
+━━━━━━━━━━━━━━━━━━━━━
+
+📝 *Descripción:*
+   ${cmd.desc}
+
+🔧 *Uso:*
+   ${cmd.usage}
+`;
+
+  if (cmd.aliases.length > 0) {
+    details += `
+🏷️ *Alias:*
+   ${cmd.aliases.map(a => `/${a}`).join(', ')}
+`;
+  }
+
+  details += `
+📁 *Categoría:* ${catName}
+`;
+
+  return details;
+}
+
+/**
+ * Plugin: Menu
  */
 export const menuPlugin: PluginHandler = {
-  command: ['menu', 'help', 'ayuda', 'comandos', 'cmds', '?'],
+  command: ['menu', 'help', 'ayuda', 'comandos', '?'],
   tags: ['utilidad'],
   help: [
-    'menu - Ver todos los comandos',
-    'menu [comando] - Ver detalles de un comando',
-    'menu [categoría] - Ver comandos de una categoría'
+    'menu - Ver menú principal',
+    'menu nuevos - Ver comandos nuevos',
+    'menu [categoría] - Ver comandos de categoría',
+    'menu [comando] - Ver detalles de comando'
   ],
 
   handler: async (ctx: MessageContext) => {
     const { m, text, isOwner, isAdmin } = ctx;
+    const query = text.trim().toLowerCase();
+    const db = getDatabase();
+    const user = db.getUser(m.sender);
 
-    // Si se proporciona un argumento, buscar comando o categoría
-    if (text.trim()) {
-      const query = text.trim();
+    // Obtener nombre y nivel del usuario
+    const userName = user.name || m.pushName || 'Aventurero';
+    const userLevel = user.level || 0;
 
-      // Primero buscar como comando
+    if (query) {
+      // Categoría especial: nuevos
+      if (query === 'nuevos' || query === 'new' || query === 'nuevo') {
+        await m.reply(getNewCommandsMenu());
+        return;
+      }
+
+      // Buscar como categoría
+      const catMenu = getCategoryMenu(query, isOwner, isAdmin);
+      if (catMenu) {
+        await m.reply(catMenu);
+        return;
+      }
+
+      // Buscar como comando
       const cmdDetails = getCommandDetails(query);
       if (cmdDetails) {
         await m.reply(cmdDetails);
         return;
       }
 
-      // Luego buscar como categoría
-      const catMenu = getCategoryMenu(query);
-      if (catMenu) {
-        await m.reply(catMenu);
-        return;
-      }
-
-      // No encontrado
       await m.reply(
-        `${EMOJI.error} No encontré el comando o categoría "*${query}*".\n\n` +
-        `📋 Usa */menu* para ver todos los comandos.`
+        `${EMOJI.error} No encontré "*${query}*"\n\n` +
+        `📋 Usa */menu* para ver las categorías.`
       );
       return;
     }
 
-    // Mostrar menú principal
-    const menu = generateMainMenu(isOwner, isAdmin);
+    // Menú principal
+    const menu = generateMainMenu(userName, userLevel, isOwner, isAdmin);
     await m.reply(menu);
     await m.react('📋');
   }

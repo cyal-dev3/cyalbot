@@ -236,30 +236,45 @@ export const bancoPlugin: PluginHandler = {
     }
 
     const newBankTotal = freshUser.bank + amount;
+
+    // Calcular comisión si excede el límite
+    const COMMISSION_RATE = 0.10; // 10% de comisión
+    let commission = 0;
+    let amountAfterCommission = amount;
+
     if (newBankTotal > BANK_MAX_AMOUNT) {
-      await m.reply(
-        `${EMOJI.error} Excedes el límite del banco.\n\n` +
-        `🏦 En banco: *$${formatNumber(freshUser.bank)}*\n` +
-        `📊 Límite máximo: *$${formatNumber(BANK_MAX_AMOUNT)}*\n` +
-        `💵 Puedes depositar hasta: *$${formatNumber(BANK_MAX_AMOUNT - freshUser.bank)}*`
-      );
-      return;
+      // Calcular cuánto excede el límite
+      const excessAmount = newBankTotal - BANK_MAX_AMOUNT;
+      commission = Math.floor(excessAmount * COMMISSION_RATE);
+      amountAfterCommission = amount - commission;
     }
+
+    const finalBankTotal = freshUser.bank + amountAfterCommission;
 
     db.updateUser(m.sender, {
       money: freshUser.money - amount,
-      bank: newBankTotal,
+      bank: finalBankTotal,
       bankDepositTime: now
     });
 
-    await m.reply(
-      `🏦 *DEPÓSITO EXITOSO*\n\n` +
-      `💵 Depositaste: *$${formatNumber(amount)}*\n` +
-      `🏦 Saldo en banco: *$${formatNumber(newBankTotal)}*\n` +
+    let response = `🏦 *DEPÓSITO EXITOSO*\n\n` +
+      `💵 Depositaste: *$${formatNumber(amount)}*\n`;
+
+    if (commission > 0) {
+      response += `📉 Comisión (${COMMISSION_RATE * 100}% sobre exceso de ${formatNumber(BANK_MAX_AMOUNT)}): *-$${formatNumber(commission)}*\n` +
+        `✅ Depositado efectivo: *$${formatNumber(amountAfterCommission)}*\n`;
+    }
+
+    response += `🏦 Saldo en banco: *$${formatNumber(finalBankTotal)}*\n` +
       `💰 Efectivo restante: *$${formatNumber(freshUser.money - amount)}*\n\n` +
       `🛡️ *Tu dinero está protegido por 24h*\n` +
-      `_Nadie puede robarte lo del banco_`
-    );
+      `_Nadie puede robarte lo del banco_`;
+
+    if (commission > 0) {
+      response += `\n\n⚠️ _Los depósitos superiores a $${formatNumber(BANK_MAX_AMOUNT)} tienen comisión._`;
+    }
+
+    await m.reply(response);
     await m.react('🏦');
   }
 };
@@ -446,6 +461,16 @@ export const esclavizarPlugin: PluginHandler = {
       await m.reply(
         `⛓️ *${target.name}* ya es esclavo de *${currentMaster.name}*.\n\n` +
         `⏳ Esclavitud expira en: *${Math.ceil((target.slaveUntil - now) / (60 * 60 * 1000))}h*`
+      );
+      return;
+    }
+
+    // Verificar si el atacante es esclavo del objetivo (no puedes esclavizar a tu amo)
+    if (master.slaveMaster === targetJid && master.slaveUntil > now) {
+      await m.reply(
+        `${EMOJI.error} No puedes esclavizar a tu amo.\n\n` +
+        `⛓️ *${target.name}* es tu dueño actual.\n` +
+        `💡 Primero debes comprar tu libertad con */liberar*`
       );
       return;
     }

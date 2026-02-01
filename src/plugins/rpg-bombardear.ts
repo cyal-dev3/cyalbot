@@ -248,6 +248,25 @@ export const bombardearPlugin: PluginHandler = {
       return;
     }
 
+    // Verificar si el atacante está en modo pasivo
+    if (attacker.passiveMode && attacker.passiveModeUntil > now) {
+      await m.reply(
+        `${EMOJI.error} Estás en *modo pasivo*.\n\n` +
+        `🕊️ No puedes bombardear a nadie mientras estés protegido.\n` +
+        `💡 Usa */pasivo* para desactivarlo (cooldown de 6h).`
+      );
+      return;
+    }
+
+    // Verificar si la víctima está en modo pasivo
+    if (target.passiveMode && target.passiveModeUntil > now) {
+      await m.reply(
+        `🕊️ *${target.name}* está en *modo pasivo*.\n\n` +
+        `No puedes bombardear a jugadores protegidos.`
+      );
+      return;
+    }
+
     // Verificar si el objetivo tiene escudo antibombas activo
     if (target.shieldBombas && target.shieldBombas > now) {
       const remainingTime = target.shieldBombas - now;

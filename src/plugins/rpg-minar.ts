@@ -18,28 +18,40 @@ interface Mineral {
   minMoney: number;
   maxMoney: number;
   expBonus: number;
+  materialId: string;  // ID para el sistema de forja
 }
 
 const MINERALS: Mineral[] = [
   // Comunes (60% probabilidad)
-  { name: 'Carbón', emoji: '⬛', rarity: 'comun', minMoney: 10, maxMoney: 30, expBonus: 0 },
-  { name: 'Piedra', emoji: '🪨', rarity: 'comun', minMoney: 5, maxMoney: 20, expBonus: 0 },
-  { name: 'Cobre', emoji: '🟤', rarity: 'comun', minMoney: 15, maxMoney: 40, expBonus: 5 },
-  { name: 'Hierro', emoji: '⚪', rarity: 'comun', minMoney: 20, maxMoney: 50, expBonus: 10 },
+  { name: 'Carbón', emoji: '⬛', rarity: 'comun', minMoney: 10, maxMoney: 30, expBonus: 0, materialId: 'carbon' },
+  { name: 'Piedra', emoji: '🪨', rarity: 'comun', minMoney: 5, maxMoney: 20, expBonus: 0, materialId: 'piedra' },
+  { name: 'Cobre', emoji: '🟤', rarity: 'comun', minMoney: 15, maxMoney: 40, expBonus: 5, materialId: 'cobre' },
+  { name: 'Hierro', emoji: '⚪', rarity: 'comun', minMoney: 20, maxMoney: 50, expBonus: 10, materialId: 'hierro' },
+  { name: 'Cuero', emoji: '🟫', rarity: 'comun', minMoney: 15, maxMoney: 35, expBonus: 5, materialId: 'cuero' },
 
   // Raros (25% probabilidad)
-  { name: 'Plata', emoji: '🩶', rarity: 'raro', minMoney: 50, maxMoney: 100, expBonus: 25 },
-  { name: 'Oro', emoji: '🟡', rarity: 'raro', minMoney: 80, maxMoney: 150, expBonus: 40 },
-  { name: 'Cristal', emoji: '🔷', rarity: 'raro', minMoney: 60, maxMoney: 120, expBonus: 30 },
+  { name: 'Plata', emoji: '🩶', rarity: 'raro', minMoney: 50, maxMoney: 100, expBonus: 25, materialId: 'plata' },
+  { name: 'Oro', emoji: '🟡', rarity: 'raro', minMoney: 80, maxMoney: 150, expBonus: 40, materialId: 'oro' },
+  { name: 'Cristal', emoji: '🔷', rarity: 'raro', minMoney: 60, maxMoney: 120, expBonus: 30, materialId: 'cristal' },
+  { name: 'Acero', emoji: '⬜', rarity: 'raro', minMoney: 70, maxMoney: 130, expBonus: 35, materialId: 'acero' },
 
   // Épicos (12% probabilidad)
-  { name: 'Rubí', emoji: '🔴', rarity: 'epico', minMoney: 150, maxMoney: 300, expBonus: 75 },
-  { name: 'Esmeralda', emoji: '🟢', rarity: 'epico', minMoney: 150, maxMoney: 300, expBonus: 75 },
-  { name: 'Zafiro', emoji: '🔵', rarity: 'epico', minMoney: 150, maxMoney: 300, expBonus: 75 },
+  { name: 'Rubí', emoji: '🔴', rarity: 'epico', minMoney: 150, maxMoney: 300, expBonus: 75, materialId: 'rubi' },
+  { name: 'Esmeralda', emoji: '🟢', rarity: 'epico', minMoney: 150, maxMoney: 300, expBonus: 75, materialId: 'esmeralda' },
+  { name: 'Zafiro', emoji: '🔵', rarity: 'epico', minMoney: 150, maxMoney: 300, expBonus: 75, materialId: 'zafiro' },
+  { name: 'Titanio', emoji: '🔘', rarity: 'epico', minMoney: 180, maxMoney: 350, expBonus: 85, materialId: 'titanio' },
+  { name: 'Esencia de Fuego', emoji: '🔥', rarity: 'epico', minMoney: 200, maxMoney: 400, expBonus: 100, materialId: 'esencia_fuego' },
+  { name: 'Esencia de Hielo', emoji: '❄️', rarity: 'epico', minMoney: 200, maxMoney: 400, expBonus: 100, materialId: 'esencia_hielo' },
+  { name: 'Esencia de Rayo', emoji: '⚡', rarity: 'epico', minMoney: 200, maxMoney: 400, expBonus: 100, materialId: 'esencia_rayo' },
+  { name: 'Fragmento de Alma', emoji: '👻', rarity: 'epico', minMoney: 250, maxMoney: 450, expBonus: 120, materialId: 'fragmento_alma' },
 
   // Legendarios (3% probabilidad)
-  { name: 'Diamante', emoji: '💎', rarity: 'legendario', minMoney: 400, maxMoney: 800, expBonus: 200 },
-  { name: 'Mithril', emoji: '✨', rarity: 'legendario', minMoney: 500, maxMoney: 1000, expBonus: 250 },
+  { name: 'Diamante', emoji: '💎', rarity: 'legendario', minMoney: 400, maxMoney: 800, expBonus: 200, materialId: 'diamante' },
+  { name: 'Mithril', emoji: '✨', rarity: 'legendario', minMoney: 500, maxMoney: 1000, expBonus: 250, materialId: 'mithril' },
+  { name: 'Adamantita', emoji: '💠', rarity: 'legendario', minMoney: 600, maxMoney: 1200, expBonus: 300, materialId: 'adamantita' },
+  { name: 'Polvo Estelar', emoji: '⭐', rarity: 'legendario', minMoney: 550, maxMoney: 1100, expBonus: 280, materialId: 'polvo_estelar' },
+  { name: 'Escama de Dragón', emoji: '🐉', rarity: 'legendario', minMoney: 800, maxMoney: 1500, expBonus: 400, materialId: 'escama_dragon' },
+  { name: 'Núcleo Elemental', emoji: '🌀', rarity: 'legendario', minMoney: 900, maxMoney: 1800, expBonus: 500, materialId: 'nucleo_elemental' },
 ];
 
 // Mensajes de minería
@@ -139,12 +151,24 @@ export const minePlugin: PluginHandler = {
     const foundMinerals: { mineral: Mineral; money: number }[] = [];
 
     // Minar cada mineral
+    const materialUpdates: Record<string, number> = {};
     for (let i = 0; i < mineralsFound; i++) {
       const mineral = selectMineral();
       const money = randomInt(mineral.minMoney, mineral.maxMoney);
       totalMoney += money;
       totalBonusExp += mineral.expBonus;
       foundMinerals.push({ mineral, money });
+
+      // Agregar material a la colección de forja
+      if (mineral.materialId) {
+        materialUpdates[mineral.materialId] = (materialUpdates[mineral.materialId] || 0) + 1;
+      }
+    }
+
+    // Actualizar forgeMaterials del usuario
+    const updatedForgeMaterials = { ...user.forgeMaterials };
+    for (const [materialId, quantity] of Object.entries(materialUpdates)) {
+      updatedForgeMaterials[materialId] = (updatedForgeMaterials[materialId] || 0) + quantity;
     }
 
     // Calcular XP base
@@ -181,11 +205,45 @@ export const minePlugin: PluginHandler = {
       modeMessages.push(`🎉 ${globalModes.eventMode.eventName}: +${eventExp} XP, +${eventMoney} 💰`);
     }
 
+    // Verificar si el usuario es esclavo y transferir parte al amo
+    let slaveryMessage = '';
+    let masterExpCut = 0;
+    let masterMoneyCut = 0;
+    const SLAVERY_CUT_PERCENT = 50; // 50% va al amo
+
+    if (user.slaveMaster && user.slaveUntil > now) {
+      const master = db.getUser(user.slaveMaster);
+
+      // Calcular el corte del amo (50%)
+      masterExpCut = Math.floor(totalExp * (SLAVERY_CUT_PERCENT / 100));
+      masterMoneyCut = Math.floor(totalMoney * (SLAVERY_CUT_PERCENT / 100));
+
+      // Reducir las ganancias del esclavo
+      totalExp -= masterExpCut;
+      totalMoney -= masterMoneyCut;
+
+      // Transferir al amo
+      if (masterExpCut > 0 || masterMoneyCut > 0) {
+        db.updateUser(user.slaveMaster, {
+          exp: master.exp + masterExpCut,
+          money: master.money + masterMoneyCut
+        });
+
+        slaveryMessage = `\n\n⛓️ *ESCLAVITUD ACTIVA*\n` +
+          `├ Tu amo *${master.name}* recibió:\n` +
+          `│  ${masterExpCut > 0 ? `+${formatNumber(masterExpCut)} ${EMOJI.exp} XP` : ''}` +
+          `${masterExpCut > 0 && masterMoneyCut > 0 ? ' | ' : ''}` +
+          `${masterMoneyCut > 0 ? `+${formatNumber(masterMoneyCut)} ${EMOJI.coin}` : ''}\n` +
+          `╰ _${SLAVERY_CUT_PERCENT}% de tus ganancias_`;
+      }
+    }
+
     // Aplicar recompensas
     db.updateUser(m.sender, {
       exp: user.exp + totalExp,
       money: user.money + totalMoney,
-      lastMine: now
+      lastMine: now,
+      forgeMaterials: updatedForgeMaterials
     });
 
     // Verificar si puede subir de nivel
@@ -238,7 +296,8 @@ export const minePlugin: PluginHandler = {
       `├ ${EMOJI.exp} EXP Total: *${formatNumber(user.exp + totalExp)}*\n` +
       `├ ${EMOJI.level} Nivel: *${user.level}*\n` +
       `╰ ${EMOJI.coin} Monedas: *${formatNumber(user.money + totalMoney)}*\n\n` +
-      `${EMOJI.time} Próxima minería en: *10 minutos*${modesMsg}${levelMessage}`
+      `${EMOJI.time} Próxima minería en: *10 minutos*${slaveryMessage}${modesMsg}${levelMessage}\n\n` +
+      `⚒️ _Materiales guardados para /forja_`
     );
   }
 };

@@ -43,7 +43,9 @@ import { registerGroupPinPlugins } from './group-pin.js';
 import { registerGroupLockPlugins } from './group-lock.js';
 import { registerGroupCompactPlugin } from './group-compact.js';
 import { notifyPlugin } from './admin-notify.js';
-import { restartPlugin, gitPullPlugin } from './admin-restart.js';
+import { restartPlugin, gitPullPlugin, logsPlugin } from './admin-restart.js';
+import { fumarPlugin } from './rpg-fumar.js';
+import forjaMenuPlugin from './rpg-forja.js';
 
 // Importar plugins de utilidad
 import { menuPlugin } from './menu.js';
@@ -81,7 +83,7 @@ import { blackjackPlugin, jugarPlugin, pedirPlugin, plantarsePlugin, doblarPlugi
 import { ruletaPlugin, apostarPlugin, ruletaMesaPlugin, ruletaSalirPlugin, ruletaInfoPlugin, girarPlugin } from './game-roulette.js';
 import { amorPlugin, gayPlugin } from './fun-amor.js';
 import { besoPlugin, misbesosPlugin, topbesosPlugin } from './fun-beso.js';
-import { abrazoPlugin, kissallPlugin, gudmorninPlugin, pokaPlugin, chingatumadrePlugin, hazanaPlugin } from './fun-social.js';
+import { abrazoPlugin, kissallPlugin, gudmorninPlugin, pokaPlugin, chingatumadrePlugin, hazanaPlugin, addPokaPlugin, listPokaPlugin, delPokaPlugin, clearPokaPlugin, addCtmPlugin, listCtmPlugin, delCtmPlugin, clearCtmPlugin } from './fun-social.js';
 
 // Importar plugins de economía avanzada
 import { bancoPlugin, transferirPlugin, esclavizarPlugin, liberarPlugin, esclavosPlugin, pasivoPlugin, estadoEconomiaPlugin } from './rpg-economia.js';
@@ -231,6 +233,13 @@ export function loadPlugins(handler: MessageHandler): void {
   }
   console.log('      ✅ misiones, reclamarmision');
 
+  // Cargar plugins de forja y fumar
+  console.log('');
+  console.log('   ⚒️ RPG Forja:');
+  handler.registerPlugin('rpg-forja', forjaMenuPlugin);
+  handler.registerPlugin('rpg-fumar', fumarPlugin);
+  console.log('      ✅ forja, fumar (herreria, forge, smoke, piedra)');
+
   // Cargar plugins de economía avanzada
   console.log('');
   console.log('   💰 RPG Economía:');
@@ -270,7 +279,8 @@ export function loadPlugins(handler: MessageHandler): void {
 
   handler.registerPlugin('admin-restart', restartPlugin);
   handler.registerPlugin('admin-gitpull', gitPullPlugin);
-  console.log('      ✅ restart, gitpull (reiniciar, update, actualizar)');
+  handler.registerPlugin('admin-logs', logsPlugin);
+  console.log('      ✅ restart, gitpull, logs (reiniciar, update, actualizar)');
 
   // Cargar plugins de media
   console.log('');
@@ -359,6 +369,14 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('fun-poka', pokaPlugin);
   handler.registerPlugin('fun-chingatumadre', chingatumadrePlugin);
   handler.registerPlugin('fun-hazana', hazanaPlugin);
+  handler.registerPlugin('fun-addpoka', addPokaPlugin);
+  handler.registerPlugin('fun-listpoka', listPokaPlugin);
+  handler.registerPlugin('fun-delpoka', delPokaPlugin);
+  handler.registerPlugin('fun-clearpoka', clearPokaPlugin);
+  handler.registerPlugin('fun-addctm', addCtmPlugin);
+  handler.registerPlugin('fun-listctm', listCtmPlugin);
+  handler.registerPlugin('fun-delctm', delCtmPlugin);
+  handler.registerPlugin('fun-clearctm', clearCtmPlugin);
   handler.registerPlugin('game-ruleta', ruletaPlugin);
   handler.registerPlugin('game-apostar', apostarPlugin);
   handler.registerPlugin('game-ruleta-mesa', ruletaMesaPlugin);
@@ -367,6 +385,8 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('game-girar', girarPlugin);
   console.log('      ✅ slot, slotinfo, amor, gay, beso, misbesos, topbesos');
   console.log('      ✅ abrazo, kissall, gudmornin, poka, chingatumadre, hazana');
+  console.log('      ✅ addpoka, listpoka, delpoka, clearpoka');
+  console.log('      ✅ addctm, listctm, delctm, clearctm');
   console.log('      ✅ blackjack, jugar, pedir, plantarse, doblar, bjmesa, bjsalir, bjinfo');
   console.log('      ✅ ruleta, apostar, vermesa, ruletasalir, ruletainfo, girar');
 
@@ -407,6 +427,9 @@ export function loadPlugins(handler: MessageHandler): void {
     5 +                            // descargadores
     4 +                            // herramientas (translate, clima, bug, feat)
     21 +                           // diversión (slot, slotinfo, blackjack x8, amor, gay, beso x3, ruleta x6)
+    8 +                            // custom poka/ctm (addpoka, listpoka, delpoka, clearpoka, addctm, listctm, delctm, clearctm)
+    2 +                            // forja y fumar
+    1 +                            // logs
     ownerRpgPlugins.length;        // owner RPG (22 comandos)
 
   console.log('');

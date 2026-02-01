@@ -33,6 +33,9 @@ export interface ChatSettings {
   autoClearEnabled: boolean;    // Si autoclear está activo (limpia mensajes del bot después de 2 min)
   // Modo compacto - reduce spam del bot
   compactMode: boolean;         // Si está activo, usa reacciones en lugar de mensajes
+  // Frases personalizadas para comandos de diversión
+  customPoka?: string[];        // Frases personalizadas para .poka
+  customCtm?: string[];         // Frases personalizadas para .ctm
 }
 
 /**
@@ -63,6 +66,13 @@ export interface DatabaseSchema {
     autoRead: boolean;
     selfMode: boolean;
     publicMode: boolean;
+    /** Configuración de eventos automáticos */
+    autoEvents?: {
+      enabled: boolean;
+      minInterval: number;
+      maxInterval: number;
+      announcementGroups: string[];
+    };
   };
 }
 

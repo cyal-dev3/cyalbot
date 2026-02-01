@@ -8,6 +8,7 @@
 import type { WASocket } from 'baileys';
 import { globalModes } from '../plugins/owner-rpg.js';
 import { msToTime, pickRandom, randomInt, weightedRandom } from './utils.js';
+import { getDatabase } from './database.js';
 
 // ==================== CONFIGURACIÓN ====================
 
@@ -25,6 +26,48 @@ export const autoEventConfig: AutoEventConfig = {
   maxInterval: 120 * 60 * 1000,  // Máximo 2 horas
   announcementGroups: []         // Grupos donde se anunciarán los eventos
 };
+
+/**
+ * Guarda la configuración de eventos en la base de datos
+ */
+function saveConfig(): void {
+  try {
+    const db = getDatabase();
+    const settings = db.getSettings();
+    settings.autoEvents = {
+      enabled: autoEventConfig.enabled,
+      minInterval: autoEventConfig.minInterval,
+      maxInterval: autoEventConfig.maxInterval,
+      announcementGroups: [...autoEventConfig.announcementGroups]
+    };
+    db.updateSettings(settings);
+    console.log('[AutoEvents] ✅ Configuración guardada en base de datos');
+  } catch (error) {
+    console.error('[AutoEvents] ❌ Error al guardar configuración:', error);
+  }
+}
+
+/**
+ * Carga la configuración de eventos desde la base de datos
+ */
+export function loadConfig(): void {
+  try {
+    const db = getDatabase();
+    const settings = db.getSettings();
+
+    if (settings.autoEvents) {
+      autoEventConfig.enabled = settings.autoEvents.enabled;
+      autoEventConfig.minInterval = settings.autoEvents.minInterval;
+      autoEventConfig.maxInterval = settings.autoEvents.maxInterval;
+      autoEventConfig.announcementGroups = [...settings.autoEvents.announcementGroups];
+      console.log(`[AutoEvents] ✅ Configuración cargada: enabled=${autoEventConfig.enabled}, grupos=${autoEventConfig.announcementGroups.length}`);
+    } else {
+      console.log('[AutoEvents] ℹ️ No hay configuración guardada, usando valores por defecto');
+    }
+  } catch (error) {
+    console.error('[AutoEvents] ❌ Error al cargar configuración:', error);
+  }
+}
 
 // ==================== TIPOS DE EVENTOS ====================
 
@@ -292,6 +335,9 @@ async function triggerRandomEvent(): Promise<void> {
 export function startAutoEvents(conn: WASocket): void {
   connInstance = conn;
 
+  // Cargar configuración desde la base de datos
+  loadConfig();
+
   if (autoEventConfig.enabled) {
     console.log('[AutoEvents] 🎲 Sistema de eventos automáticos ACTIVADO');
     scheduleNextEvent();
@@ -316,6 +362,7 @@ export function stopAutoEvents(): void {
  */
 export function toggleAutoEvents(enabled: boolean): void {
   autoEventConfig.enabled = enabled;
+  saveConfig(); // Persistir cambio
 
   if (enabled) {
     scheduleNextEvent();
@@ -330,6 +377,7 @@ export function toggleAutoEvents(enabled: boolean): void {
 export function addAnnouncementGroup(groupId: string): boolean {
   if (!autoEventConfig.announcementGroups.includes(groupId)) {
     autoEventConfig.announcementGroups.push(groupId);
+    saveConfig(); // Persistir cambio
     return true;
   }
   return false;
@@ -342,6 +390,7 @@ export function removeAnnouncementGroup(groupId: string): boolean {
   const index = autoEventConfig.announcementGroups.indexOf(groupId);
   if (index > -1) {
     autoEventConfig.announcementGroups.splice(index, 1);
+    saveConfig(); // Persistir cambio
     return true;
   }
   return false;
@@ -353,6 +402,7 @@ export function removeAnnouncementGroup(groupId: string): boolean {
 export function setEventIntervals(minMinutes: number, maxMinutes: number): void {
   autoEventConfig.minInterval = minMinutes * 60 * 1000;
   autoEventConfig.maxInterval = maxMinutes * 60 * 1000;
+  saveConfig(); // Persistir cambio
 
   // Reiniciar el timer si está activo
   if (autoEventConfig.enabled && eventTimer) {

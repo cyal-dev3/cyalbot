@@ -63,3 +63,57 @@ export const gitPullPlugin: PluginHandler = {
     });
   }
 };
+
+/**
+ * Plugin: Logs - Ver los logs de errores del servidor
+ */
+export const logsPlugin: PluginHandler = {
+  command: ['logs', 'errorlogs', 'errors', 'serverlogs'],
+  tags: ['owner'],
+  help: [
+    'logs - Ver los ultimos 20 errores del servidor',
+    'logs [numero] - Ver los ultimos N errores (max 100)'
+  ],
+  owner: true,
+
+  handler: async (ctx) => {
+    const { m, args } = ctx;
+
+    // Numero de lineas a mostrar (default 20, max 100)
+    let lines = 20;
+    if (args[0]) {
+      const requested = parseInt(args[0]);
+      if (!isNaN(requested) && requested > 0) {
+        lines = Math.min(requested, 100);
+      }
+    }
+
+    await m.reply(`📋 *Obteniendo ultimos ${lines} errores...*`);
+
+    // Usar pm2 logs con --err para solo errores y --nostream para no bloquear
+    const logsCommand = `pm2 logs CYALTRONIC --err --lines ${lines} --nostream`;
+
+    exec(logsCommand, { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        console.error('Error al obtener logs:', error);
+        m.reply(`❌ *Error al obtener logs:*\n\n\`\`\`${error.message}\`\`\``);
+        return;
+      }
+
+      const output = stdout || stderr || 'Sin errores recientes';
+
+      // Truncar si es muy largo para WhatsApp (max ~4000 chars)
+      let logOutput = output.trim();
+      if (logOutput.length > 4000) {
+        logOutput = logOutput.substring(logOutput.length - 4000);
+        logOutput = '...(truncado)\n\n' + logOutput;
+      }
+
+      if (!logOutput || logOutput === 'Sin errores recientes' || logOutput.length < 10) {
+        m.reply('✅ *No hay errores recientes*\n\nEl servidor está funcionando correctamente.');
+      } else {
+        m.reply(`📋 *LOGS DE ERRORES (ultimos ${lines}):*\n\n\`\`\`${logOutput}\`\`\``);
+      }
+    });
+  }
+};

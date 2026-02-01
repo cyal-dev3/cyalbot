@@ -297,6 +297,15 @@ export const gudmorninPlugin: PluginHandler = {
   }
 };
 
+// Frases por defecto para poka
+const DEFAULT_POKA_RESPONSES = [
+  `🥫💰 *{name}* está pidiendo limosna...\n\n_"Una monedita para el taco, jefe..."_`,
+  `🥫🪙 *{name}* sacó su latita...\n\n_"Cualquier cosa ayuda, mi buen..."_`,
+  `🥫💵 *{name}* extiende la mano...\n\n_"Pa' la coca, carnal..."_`,
+  `🥫🤲 *{name}* hace cara de perrito triste...\n\n_"Ando bien poka, ayuda..."_`,
+  `🥫😢 *{name}* muestra su cartera vacía...\n\n_"No me alcanza ni pa'l camión..."_`,
+];
+
 /**
  * Comando /poka - Pedir limosna
  */
@@ -307,18 +316,37 @@ export const pokaPlugin: PluginHandler = {
 
   async handler(ctx: MessageContext) {
     const { m } = ctx;
+    const db = getDatabase();
     const senderName = m.pushName || m.sender.split('@')[0];
 
-    const responses = [
-      `🥫💰 *${senderName}* está pidiendo limosna...\n\n_"Una monedita para el taco, jefe..."_`,
-      `🥫🪙 *${senderName}* sacó su latita...\n\n_"Cualquier cosa ayuda, mi buen..."_`,
-      `🥫💵 *${senderName}* extiende la mano...\n\n_"Pa' la coca, carnal..."_`,
-      `🥫🤲 *${senderName}* hace cara de perrito triste...\n\n_"Ando bien poka, ayuda..."_`,
-      `🥫😢 *${senderName}* muestra su cartera vacía...\n\n_"No me alcanza ni pa'l camión..."_`,
-    ];
+    // Obtener frases personalizadas del grupo si existen
+    let responses: string[];
+    if (m.isGroup) {
+      const chatSettings = db.getChatSettings(m.chat);
+      if (chatSettings.customPoka && chatSettings.customPoka.length > 0) {
+        responses = chatSettings.customPoka;
+      } else {
+        responses = DEFAULT_POKA_RESPONSES;
+      }
+    } else {
+      responses = DEFAULT_POKA_RESPONSES;
+    }
 
-    await m.reply(pickRandom(responses));
+    // Reemplazar {name} con el nombre del usuario
+    const selectedResponse = pickRandom(responses).replace(/{name}/g, senderName);
+    await m.reply(selectedResponse);
   }
+};
+
+// Frases por defecto para ctm (si hay personalizadas, reemplazan todo)
+const DEFAULT_CTM_RESPONSE = (senderName: string, targetName: string) => {
+  let response = `🤬 *${senderName}* le menta la madre a *${targetName}* en 5 idiomas:\n\n`;
+  response += `🇲🇽 *Español:*\n${pickRandom(INSULTS.spanish).replace('{target}', targetName)}\n\n`;
+  response += `🇺🇸 *English:*\n${pickRandom(INSULTS.english).replace('{target}', targetName)}\n\n`;
+  response += `🇫🇷 *Français:*\n${pickRandom(INSULTS.french).replace('{target}', targetName)}\n\n`;
+  response += `🇩🇪 *Deutsch:*\n${pickRandom(INSULTS.german).replace('{target}', targetName)}\n\n`;
+  response += `🇮🇹 *Italiano:*\n${pickRandom(INSULTS.italian).replace('{target}', targetName)}`;
+  return response;
 };
 
 /**
@@ -331,6 +359,7 @@ export const chingatumadrePlugin: PluginHandler = {
 
   async handler(ctx: MessageContext) {
     const { m, conn } = ctx;
+    const db = getDatabase();
 
     // Obtener usuario objetivo
     let targetJid: string | null = null;
@@ -359,14 +388,21 @@ export const chingatumadrePlugin: PluginHandler = {
 
     const senderName = m.pushName || m.sender.split('@')[0];
 
-    // Generar insultos en 5 idiomas
-    let response = `🤬 *${senderName}* le menta la madre a *${targetName}* en 5 idiomas:\n\n`;
-
-    response += `🇲🇽 *Español:*\n${pickRandom(INSULTS.spanish).replace('{target}', targetName)}\n\n`;
-    response += `🇺🇸 *English:*\n${pickRandom(INSULTS.english).replace('{target}', targetName)}\n\n`;
-    response += `🇫🇷 *Français:*\n${pickRandom(INSULTS.french).replace('{target}', targetName)}\n\n`;
-    response += `🇩🇪 *Deutsch:*\n${pickRandom(INSULTS.german).replace('{target}', targetName)}\n\n`;
-    response += `🇮🇹 *Italiano:*\n${pickRandom(INSULTS.italian).replace('{target}', targetName)}`;
+    // Verificar si hay frases personalizadas del grupo
+    let response: string;
+    if (m.isGroup) {
+      const chatSettings = db.getChatSettings(m.chat);
+      if (chatSettings.customCtm && chatSettings.customCtm.length > 0) {
+        // Usar frase personalizada aleatoria
+        response = pickRandom(chatSettings.customCtm)
+          .replace(/{name}/g, senderName)
+          .replace(/{target}/g, targetName);
+      } else {
+        response = DEFAULT_CTM_RESPONSE(senderName, targetName);
+      }
+    } else {
+      response = DEFAULT_CTM_RESPONSE(senderName, targetName);
+    }
 
     await conn.sendMessage(m.chat, {
       text: response,
@@ -410,11 +446,290 @@ export const hazanaPlugin: PluginHandler = {
   }
 };
 
+/**
+ * Comando /addpoka - Agregar frase personalizada para poka
+ */
+export const addPokaPlugin: PluginHandler = {
+  command: ['addpoka', 'agregarpoka'],
+  description: 'Agrega una frase personalizada para .poka',
+  category: 'fun',
+  group: true,
+  admin: true,
+
+  async handler(ctx: MessageContext) {
+    const { m, args } = ctx;
+    const db = getDatabase();
+
+    const phrase = args.join(' ').trim();
+    if (!phrase) {
+      await m.reply(
+        `📝 *AGREGAR FRASE POKA*\n\n` +
+        `Uso: /addpoka <frase>\n\n` +
+        `Variables disponibles:\n` +
+        `• {name} - Nombre del usuario\n\n` +
+        `Ejemplo: /addpoka 🥫 *{name}* anda bien poka...`
+      );
+      return;
+    }
+
+    const chatSettings = db.getChatSettings(m.chat);
+    if (!chatSettings.customPoka) {
+      chatSettings.customPoka = [];
+    }
+
+    chatSettings.customPoka.push(phrase);
+    db.updateChatSettings(m.chat, { customPoka: chatSettings.customPoka });
+
+    await m.reply(
+      `✅ *Frase agregada para .poka*\n\n` +
+      `📝 "${phrase}"\n\n` +
+      `📊 Total de frases: *${chatSettings.customPoka.length}*`
+    );
+  }
+};
+
+/**
+ * Comando /listpoka - Ver frases personalizadas de poka
+ */
+export const listPokaPlugin: PluginHandler = {
+  command: ['listpoka', 'verpoka', 'frasespoka'],
+  description: 'Ver frases personalizadas de .poka',
+  category: 'fun',
+  group: true,
+
+  async handler(ctx: MessageContext) {
+    const { m } = ctx;
+    const db = getDatabase();
+
+    const chatSettings = db.getChatSettings(m.chat);
+    const phrases = chatSettings.customPoka || [];
+
+    if (phrases.length === 0) {
+      await m.reply(
+        `📋 *FRASES POKA*\n\n` +
+        `No hay frases personalizadas.\n` +
+        `Se usan las frases por defecto.\n\n` +
+        `💡 Usa /addpoka para agregar frases.`
+      );
+      return;
+    }
+
+    let response = `📋 *FRASES POKA PERSONALIZADAS*\n\n`;
+    phrases.forEach((phrase, i) => {
+      response += `${i + 1}. ${phrase}\n\n`;
+    });
+    response += `\n💡 Usa /delpoka <número> para eliminar una frase.`;
+
+    await m.reply(response);
+  }
+};
+
+/**
+ * Comando /delpoka - Eliminar frase de poka
+ */
+export const delPokaPlugin: PluginHandler = {
+  command: ['delpoka', 'borrarpoka', 'removepoka'],
+  description: 'Elimina una frase personalizada de .poka',
+  category: 'fun',
+  group: true,
+  admin: true,
+
+  async handler(ctx: MessageContext) {
+    const { m, args } = ctx;
+    const db = getDatabase();
+
+    const index = parseInt(args[0]) - 1;
+    const chatSettings = db.getChatSettings(m.chat);
+
+    if (!chatSettings.customPoka || chatSettings.customPoka.length === 0) {
+      await m.reply('❌ No hay frases personalizadas para eliminar.');
+      return;
+    }
+
+    if (isNaN(index) || index < 0 || index >= chatSettings.customPoka.length) {
+      await m.reply(`❌ Número inválido. Usa un número del 1 al ${chatSettings.customPoka.length}`);
+      return;
+    }
+
+    const removed = chatSettings.customPoka.splice(index, 1)[0];
+    db.updateChatSettings(m.chat, { customPoka: chatSettings.customPoka });
+
+    await m.reply(
+      `✅ *Frase eliminada*\n\n` +
+      `📝 "${removed}"\n\n` +
+      `📊 Frases restantes: *${chatSettings.customPoka.length}*`
+    );
+  }
+};
+
+/**
+ * Comando /clearpoka - Limpiar todas las frases de poka
+ */
+export const clearPokaPlugin: PluginHandler = {
+  command: ['clearpoka', 'limpiarpoka', 'resetpoka'],
+  description: 'Elimina todas las frases personalizadas de .poka',
+  category: 'fun',
+  group: true,
+  admin: true,
+
+  async handler(ctx: MessageContext) {
+    const { m } = ctx;
+    const db = getDatabase();
+
+    db.updateChatSettings(m.chat, { customPoka: [] });
+    await m.reply('✅ Todas las frases personalizadas de .poka han sido eliminadas.');
+  }
+};
+
+/**
+ * Comando /addctm - Agregar frase personalizada para ctm
+ */
+export const addCtmPlugin: PluginHandler = {
+  command: ['addctm', 'agregarctm'],
+  description: 'Agrega una frase personalizada para .ctm',
+  category: 'fun',
+  group: true,
+  admin: true,
+
+  async handler(ctx: MessageContext) {
+    const { m, args } = ctx;
+    const db = getDatabase();
+
+    const phrase = args.join(' ').trim();
+    if (!phrase) {
+      await m.reply(
+        `📝 *AGREGAR FRASE CTM*\n\n` +
+        `Uso: /addctm <frase>\n\n` +
+        `Variables disponibles:\n` +
+        `• {name} - Nombre del que usa el comando\n` +
+        `• {target} - Nombre del objetivo\n\n` +
+        `Ejemplo: /addctm 🤬 *{name}* le dice a *{target}*: ¡Chingas a tu madre!`
+      );
+      return;
+    }
+
+    const chatSettings = db.getChatSettings(m.chat);
+    if (!chatSettings.customCtm) {
+      chatSettings.customCtm = [];
+    }
+
+    chatSettings.customCtm.push(phrase);
+    db.updateChatSettings(m.chat, { customCtm: chatSettings.customCtm });
+
+    await m.reply(
+      `✅ *Frase agregada para .ctm*\n\n` +
+      `📝 "${phrase}"\n\n` +
+      `📊 Total de frases: *${chatSettings.customCtm.length}*`
+    );
+  }
+};
+
+/**
+ * Comando /listctm - Ver frases personalizadas de ctm
+ */
+export const listCtmPlugin: PluginHandler = {
+  command: ['listctm', 'verctm', 'frasesctm'],
+  description: 'Ver frases personalizadas de .ctm',
+  category: 'fun',
+  group: true,
+
+  async handler(ctx: MessageContext) {
+    const { m } = ctx;
+    const db = getDatabase();
+
+    const chatSettings = db.getChatSettings(m.chat);
+    const phrases = chatSettings.customCtm || [];
+
+    if (phrases.length === 0) {
+      await m.reply(
+        `📋 *FRASES CTM*\n\n` +
+        `No hay frases personalizadas.\n` +
+        `Se usa el insulto multilingüe por defecto.\n\n` +
+        `💡 Usa /addctm para agregar frases.`
+      );
+      return;
+    }
+
+    let response = `📋 *FRASES CTM PERSONALIZADAS*\n\n`;
+    phrases.forEach((phrase, i) => {
+      response += `${i + 1}. ${phrase}\n\n`;
+    });
+    response += `\n💡 Usa /delctm <número> para eliminar una frase.`;
+
+    await m.reply(response);
+  }
+};
+
+/**
+ * Comando /delctm - Eliminar frase de ctm
+ */
+export const delCtmPlugin: PluginHandler = {
+  command: ['delctm', 'borrarctm', 'removectm'],
+  description: 'Elimina una frase personalizada de .ctm',
+  category: 'fun',
+  group: true,
+  admin: true,
+
+  async handler(ctx: MessageContext) {
+    const { m, args } = ctx;
+    const db = getDatabase();
+
+    const index = parseInt(args[0]) - 1;
+    const chatSettings = db.getChatSettings(m.chat);
+
+    if (!chatSettings.customCtm || chatSettings.customCtm.length === 0) {
+      await m.reply('❌ No hay frases personalizadas para eliminar.');
+      return;
+    }
+
+    if (isNaN(index) || index < 0 || index >= chatSettings.customCtm.length) {
+      await m.reply(`❌ Número inválido. Usa un número del 1 al ${chatSettings.customCtm.length}`);
+      return;
+    }
+
+    const removed = chatSettings.customCtm.splice(index, 1)[0];
+    db.updateChatSettings(m.chat, { customCtm: chatSettings.customCtm });
+
+    await m.reply(
+      `✅ *Frase eliminada*\n\n` +
+      `📝 "${removed}"\n\n` +
+      `📊 Frases restantes: *${chatSettings.customCtm.length}*`
+    );
+  }
+};
+
+/**
+ * Comando /clearctm - Limpiar todas las frases de ctm
+ */
+export const clearCtmPlugin: PluginHandler = {
+  command: ['clearctm', 'limpiarctm', 'resetctm'],
+  description: 'Elimina todas las frases personalizadas de .ctm',
+  category: 'fun',
+  group: true,
+  admin: true,
+
+  async handler(ctx: MessageContext) {
+    const { m } = ctx;
+    const db = getDatabase();
+
+    db.updateChatSettings(m.chat, { customCtm: [] });
+    await m.reply('✅ Todas las frases personalizadas de .ctm han sido eliminadas.');
+  }
+};
+
 export default [
   abrazoPlugin,
   kissallPlugin,
   gudmorninPlugin,
   pokaPlugin,
   chingatumadrePlugin,
-  hazanaPlugin
+  hazanaPlugin,
+  addPokaPlugin,
+  listPokaPlugin,
+  delPokaPlugin,
+  clearPokaPlugin,
+  addCtmPlugin,
+  listCtmPlugin,
+  delCtmPlugin,
+  clearCtmPlugin
 ];

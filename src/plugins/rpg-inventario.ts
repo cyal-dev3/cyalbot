@@ -161,7 +161,12 @@ const inventarioPlugin: PluginHandler = {
                           (type === 'accessory' && user.equipment.accessory === item.id);
 
           response += `   ${rarity} ${item.emoji} ${item.name}`;
-          if (quantity > 1) response += ` x${quantity}`;
+          // Siempre mostrar cantidad para consumibles y materiales
+          if (item.type === 'consumable' || item.type === 'material') {
+            response += ` (x${quantity})`;
+          } else if (quantity > 1) {
+            response += ` x${quantity}`;
+          }
           if (equipped) response += ` ✓`;
           response += '\n';
         }

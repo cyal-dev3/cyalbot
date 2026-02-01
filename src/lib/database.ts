@@ -390,6 +390,25 @@ export class Database {
     const chat = this.getChatSettings(chatId);
     return chat.warnings;
   }
+
+  // ============================================
+  // ⚙️ FUNCIONES DE CONFIGURACIÓN GLOBAL
+  // ============================================
+
+  /**
+   * Obtiene la configuración global del bot
+   */
+  getSettings(): DatabaseSchema['settings'] {
+    return this.db.data.settings;
+  }
+
+  /**
+   * Actualiza la configuración global del bot
+   */
+  updateSettings(settings: Partial<DatabaseSchema['settings']>): void {
+    Object.assign(this.db.data.settings, settings);
+    this.isDirty = true;
+  }
 }
 
 /**

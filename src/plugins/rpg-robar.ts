@@ -270,6 +270,25 @@ export const robarPlugin: PluginHandler = {
       return;
     }
 
+    // Verificar si el ladrón está en modo pasivo
+    if (thief.passiveMode && thief.passiveModeUntil > now) {
+      await m.reply(
+        `${EMOJI.error} Estás en *modo pasivo*.\n\n` +
+        `🕊️ No puedes robar a nadie mientras estés protegido.\n` +
+        `💡 Usa */pasivo* para desactivarlo (cooldown de 6h).`
+      );
+      return;
+    }
+
+    // Verificar si la víctima está en modo pasivo
+    if (victim.passiveMode && victim.passiveModeUntil > now) {
+      await m.reply(
+        `🕊️ *${victim.name}* está en *modo pasivo*.\n\n` +
+        `No puedes robar a jugadores protegidos.`
+      );
+      return;
+    }
+
     // Verificar que el ladrón tenga dinero para la multa potencial
     if (thief.money < 50) {
       await m.reply(

@@ -167,6 +167,39 @@ export const workPlugin: PluginHandler = {
     // Seleccionar actividad aleatoria
     const activity = pickRandom(WORK_ACTIVITIES);
 
+    // Verificar si el usuario es esclavo y transferir parte al amo
+    let slaveryMessage = '';
+    let masterExpCut = 0;
+    let masterMoneyCut = 0;
+    const SLAVERY_CUT_PERCENT = 50; // 50% va al amo
+
+    if (user.slaveMaster && user.slaveUntil > now) {
+      const master = db.getUser(user.slaveMaster);
+
+      // Calcular el corte del amo (50%)
+      masterExpCut = Math.floor(expReward * (SLAVERY_CUT_PERCENT / 100));
+      masterMoneyCut = Math.floor(bonusMoney * (SLAVERY_CUT_PERCENT / 100));
+
+      // Reducir las ganancias del esclavo
+      expReward -= masterExpCut;
+      bonusMoney -= masterMoneyCut;
+
+      // Transferir al amo
+      if (masterExpCut > 0 || masterMoneyCut > 0) {
+        db.updateUser(user.slaveMaster, {
+          exp: master.exp + masterExpCut,
+          money: master.money + masterMoneyCut
+        });
+
+        slaveryMessage = `\n\n⛓️ *ESCLAVITUD ACTIVA*\n` +
+          `├ Tu amo *${master.name}* recibió:\n` +
+          `│  ${masterExpCut > 0 ? `+${formatNumber(masterExpCut)} ${EMOJI.exp} XP` : ''}` +
+          `${masterExpCut > 0 && masterMoneyCut > 0 ? ' | ' : ''}` +
+          `${masterMoneyCut > 0 ? `+${formatNumber(masterMoneyCut)} ${EMOJI.coin}` : ''}\n` +
+          `╰ _${SLAVERY_CUT_PERCENT}% de tus ganancias_`;
+      }
+    }
+
     // Aplicar recompensas
     db.updateUser(m.sender, {
       exp: user.exp + expReward,
@@ -217,7 +250,7 @@ export const workPlugin: PluginHandler = {
       `├ ${EMOJI.exp} EXP Total: *${formatNumber(user.exp + expReward)}*\n` +
       `├ ${EMOJI.level} Nivel: *${user.level}*\n` +
       `╰ ${EMOJI.coin} Monedas: *${formatNumber(user.money + bonusMoney)}*\n\n` +
-      `${EMOJI.time} Próximo trabajo en: *${nextWorkMinutes} minutos*${levelMessage}`
+      `${EMOJI.time} Próximo trabajo en: *${nextWorkMinutes} minutos*${slaveryMessage}${levelMessage}`
     );
   }
 };

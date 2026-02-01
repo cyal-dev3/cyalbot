@@ -122,9 +122,42 @@ export const dailyPlugin: PluginHandler = {
     }
 
     // Aplicar recompensas con bonos globales
-    const totalExp = expReward + streakBonus + globalExpBonus;
-    const totalMoney = moneyReward + globalMoneyBonus;
+    let totalExp = expReward + streakBonus + globalExpBonus;
+    let totalMoney = moneyReward + globalMoneyBonus;
     const totalDiamonds = diamondReward + diamondStreakBonus;
+
+    // Verificar si el usuario es esclavo y transferir parte al amo
+    let slaveryMessage = '';
+    let masterExpCut = 0;
+    let masterMoneyCut = 0;
+    const SLAVERY_CUT_PERCENT = 50; // 50% va al amo
+
+    if (user.slaveMaster && user.slaveUntil > now) {
+      const master = db.getUser(user.slaveMaster);
+
+      // Calcular el corte del amo (50%)
+      masterExpCut = Math.floor(totalExp * (SLAVERY_CUT_PERCENT / 100));
+      masterMoneyCut = Math.floor(totalMoney * (SLAVERY_CUT_PERCENT / 100));
+
+      // Reducir las ganancias del esclavo
+      totalExp -= masterExpCut;
+      totalMoney -= masterMoneyCut;
+
+      // Transferir al amo
+      if (masterExpCut > 0 || masterMoneyCut > 0) {
+        db.updateUser(user.slaveMaster, {
+          exp: master.exp + masterExpCut,
+          money: master.money + masterMoneyCut
+        });
+
+        slaveryMessage = `\n\n⛓️ *ESCLAVITUD ACTIVA*\n` +
+          `├ Tu amo *${master.name}* recibió:\n` +
+          `│  ${masterExpCut > 0 ? `+${formatNumber(masterExpCut)} ${EMOJI.exp} XP` : ''}` +
+          `${masterExpCut > 0 && masterMoneyCut > 0 ? ' | ' : ''}` +
+          `${masterMoneyCut > 0 ? `+${formatNumber(masterMoneyCut)} ${EMOJI.coin}` : ''}\n` +
+          `╰ _${SLAVERY_CUT_PERCENT}% de tus ganancias_`;
+      }
+    }
 
     db.updateUser(m.sender, {
       exp: user.exp + totalExp,
@@ -162,7 +195,7 @@ export const dailyPlugin: PluginHandler = {
       `│  +${formatNumber(moneyReward)} ${EMOJI.coin} Monedas\n` +
       `│  +${potionReward} ${EMOJI.potion} Pociones\n` +
       `│  +${diamondReward} 💎 Diamantes${rankBonusMsg}\n` +
-      `╰═══════════════════════════╯${streakMessage}${modesMsg}\n\n` +
+      `╰═══════════════════════════╯${streakMessage}${slaveryMessage}${modesMsg}\n\n` +
       `${EMOJI.time} Próximo regalo en: *${nextDailyHours} horas*\n\n` +
       `${EMOJI.info} *Tu nuevo balance:*\n` +
       `├ ${EMOJI.exp} EXP Total: *${formatNumber(user.exp + totalExp)}*\n` +
