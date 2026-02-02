@@ -36,8 +36,19 @@ export const tipsterPlugin: PluginHandler = {
       case 'add':
       case 'agregar':
       case 'seguir': {
-        if (!tipsterName) {
-          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster add NombreTipster*');
+        let finalTipsterName = tipsterName;
+
+        // Si no hay nombre, intentar extraerlo del mensaje citado
+        if (!finalTipsterName && m.quoted) {
+          const quotedText = m.quoted.text || '';
+          const tipsterMatch = quotedText.match(/🎫\s*([^\n]+)/);
+          if (tipsterMatch) {
+            finalTipsterName = tipsterMatch[1].trim();
+          }
+        }
+
+        if (!finalTipsterName) {
+          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster add NombreTipster*\n\n_También puedes responder a una imagen con 🎫_');
         }
 
         const userBetting = db.getUserBetting(m.sender);
@@ -46,20 +57,20 @@ export const tipsterPlugin: PluginHandler = {
           return m.reply('❌ Has alcanzado el límite de 20 tipsters favoritos.\n\n_Usa /tipster remove para quitar alguno._');
         }
 
-        const success = db.followTipster(m.chat, tipsterName, m.sender);
+        const success = db.followTipster(m.chat, finalTipsterName, m.sender);
 
         if (!success) {
-          return m.reply(`❌ Ya sigues a *${tipsterName}*`);
+          return m.reply(`❌ Ya sigues a *${finalTipsterName}*`);
         }
 
-        const tipster = db.getTipster(m.chat, tipsterName);
+        const tipster = db.getTipster(m.chat, finalTipsterName);
         const record = tipster && (tipster.wins + tipster.losses > 0)
           ? `${tipster.wins}W - ${tipster.losses}L`
           : 'Sin historial';
 
         await m.reply(
           `✅ *Tipster agregado a favoritos*\n\n` +
-          `🎫 *${tipsterName}*\n` +
+          `🎫 *${finalTipsterName}*\n` +
           `📊 Record: ${record}\n` +
           `👥 Seguidores: ${tipster?.followers.length || 1}\n\n` +
           `_Recibirás notificaciones cuando llegue un pick de este tipster._`
@@ -71,17 +82,28 @@ export const tipsterPlugin: PluginHandler = {
       case 'quitar':
       case 'eliminar':
       case 'dejar': {
-        if (!tipsterName) {
-          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster remove NombreTipster*');
+        let finalRemoveName = tipsterName;
+
+        // Si no hay nombre, intentar extraerlo del mensaje citado
+        if (!finalRemoveName && m.quoted) {
+          const quotedText = m.quoted.text || '';
+          const tipsterMatch = quotedText.match(/🎫\s*([^\n]+)/);
+          if (tipsterMatch) {
+            finalRemoveName = tipsterMatch[1].trim();
+          }
         }
 
-        const success = db.unfollowTipster(m.chat, tipsterName, m.sender);
+        if (!finalRemoveName) {
+          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster remove NombreTipster*\n\n_También puedes responder a una imagen con 🎫_');
+        }
+
+        const success = db.unfollowTipster(m.chat, finalRemoveName, m.sender);
 
         if (!success) {
-          return m.reply(`❌ No sigues a *${tipsterName}*`);
+          return m.reply(`❌ No sigues a *${finalRemoveName}*`);
         }
 
-        await m.reply(`✅ Has dejado de seguir a *${tipsterName}*`);
+        await m.reply(`✅ Has dejado de seguir a *${finalRemoveName}*`);
         break;
       }
 
