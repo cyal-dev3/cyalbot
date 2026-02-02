@@ -53,16 +53,19 @@ export const pickPlugin: PluginHandler = {
       }
     }
 
-    // Verificar si ya existe un pick con este messageId
-    const existingPick = m.quoted.key.id ? db.getPickByMessageId(m.chat, m.quoted.key.id) : null;
-    if (existingPick) {
-      const statusEmoji = existingPick.status === 'pending' ? '⏳' : existingPick.status === 'won' ? '✅' : '❌';
-      return m.reply(`❌ Este pick ya fue registrado.\n\n🎫 *${existingPick.tipsterOriginal}*\n📊 Estado: ${statusEmoji} ${existingPick.status}\n💰 Unidades: ${existingPick.units}`);
+    // Verificar si ya existe un pick PENDIENTE con este messageId del mismo tipster
+    // Permite: picks de diferentes tipsters del mismo mensaje, o re-registrar si el anterior ya fue resuelto
+    const normalizedTipster = db.normalizeTipsterName(tipsterName);
+    if (m.quoted.key.id) {
+      const existingPick = db.getPickByMessageId(m.chat, m.quoted.key.id);
+      if (existingPick && existingPick.tipster === normalizedTipster && existingPick.status === 'pending') {
+        return m.reply(`❌ Este pick ya está registrado y pendiente.\n\n🎫 *${existingPick.tipsterOriginal}*\n💰 Unidades: ${existingPick.units}\n🆔 \`${existingPick.id.slice(-8)}\`\n\n_Usa /verde o /roja para resolverlo primero._`);
+      }
     }
 
     // Registrar el pick
     const pick = db.registerPick(m.chat, {
-      tipster: db.normalizeTipsterName(tipsterName),
+      tipster: normalizedTipster,
       tipsterOriginal: tipsterName,
       description: quotedText.substring(0, 500),
       units,
