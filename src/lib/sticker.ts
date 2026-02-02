@@ -54,12 +54,14 @@ function getTempPath(ext: string): string {
 /**
  * Detecta el tipo de archivo basado en el buffer
  */
-function detectFileType(buffer: Buffer): { mime: string; ext: string } {
+function detectFileType(buffer: Buffer): { mime: string; ext: string; isAnimated?: boolean } {
   // Detectar por magic bytes
   if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) {
     // RIFF header - puede ser webp
     if (buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-      return { mime: 'image/webp', ext: 'webp' };
+      // Verificar si es webp animado (buscar ANIM chunk)
+      const isAnimated = buffer.includes(Buffer.from('ANIM')) || buffer.includes(Buffer.from('ANMF'));
+      return { mime: 'image/webp', ext: 'webp', isAnimated };
     }
   }
   if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
@@ -71,11 +73,39 @@ function detectFileType(buffer: Buffer): { mime: string; ext: string } {
   if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
     return { mime: 'image/gif', ext: 'gif' };
   }
-  // MP4/MOV
-  if (buffer[4] === 0x66 && buffer[5] === 0x74 && buffer[6] === 0x79 && buffer[7] === 0x70) {
+
+  // MP4/MOV/3GP - buscar ftyp en diferentes posiciones
+  // ftyp puede estar en posición 4 o después de un header
+  const ftypIndex = buffer.indexOf(Buffer.from('ftyp'));
+  if (ftypIndex !== -1 && ftypIndex < 12) {
     return { mime: 'video/mp4', ext: 'mp4' };
   }
-  // Fallback
+
+  // WebM
+  if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) {
+    return { mime: 'video/webm', ext: 'webm' };
+  }
+
+  // AVI
+  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+      buffer[8] === 0x41 && buffer[9] === 0x56 && buffer[10] === 0x49) {
+    return { mime: 'video/avi', ext: 'avi' };
+  }
+
+  // MKV
+  if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) {
+    return { mime: 'video/x-matroska', ext: 'mkv' };
+  }
+
+  // Fallback - intentar detectar si parece video por tamaño y estructura
+  // Los videos suelen tener más de 50KB y estructura específica
+  if (buffer.length > 50000) {
+    // Buscar indicadores comunes de video
+    if (buffer.includes(Buffer.from('moov')) || buffer.includes(Buffer.from('mdat'))) {
+      return { mime: 'video/mp4', ext: 'mp4' };
+    }
+  }
+
   return { mime: 'application/octet-stream', ext: 'bin' };
 }
 
@@ -133,7 +163,8 @@ export async function addExif(
  */
 export async function imageToSticker(
   buffer: Buffer,
-  metadata: StickerMetadata = {}
+  metadata: StickerMetadata = {},
+  crop: boolean = true
 ): Promise<Buffer> {
   const { packname = 'CYALTRONIC', author = 'Bot', categories = [''] } = metadata;
 
@@ -144,12 +175,17 @@ export async function imageToSticker(
   try {
     await fs.writeFile(inputPath, buffer);
 
-    // Convertir a webp con escala 512x512
+    // Elegir filtro basado en si queremos recortar o mantener transparencia
+    // Por defecto recortamos para evitar barras
+    const vfFilter = crop
+      ? 'scale=512:512:force_original_aspect_ratio=increase,crop=512:512,setsar=1'
+      : 'scale=512:512:flags=lanczos:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000,setsar=1';
+
     await runFfmpeg(inputPath, outputPath, [
-      '-vf', 'scale=512:512:flags=lanczos:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000,setsar=1',
+      '-vf', vfFilter,
       '-c:v', 'libwebp',
       '-lossless', '0',
-      '-quality', '80',
+      '-quality', '90',
       '-loop', '0'
     ]);
 
@@ -182,13 +218,15 @@ export async function videoToSticker(
   try {
     await fs.writeFile(inputPath, buffer);
 
-    // Convertir a webp animado (máximo 512x512, 10fps, 6 segundos)
+    // Convertir a webp animado (512x512, sin barras)
+    // Escala el video para que el lado más pequeño sea 512 y luego recorta el centro
+    // Esto evita las barras blancas/negras manteniendo todo el espacio ocupado
     await runFfmpeg(inputPath, outputPath, [
-      '-vf', "scale='min(512,iw)':min'(512,ih)':force_original_aspect_ratio=decrease,fps=10,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=white@0.0",
-      '-t', '6',
+      '-vf', 'scale=512:512:force_original_aspect_ratio=increase,crop=512:512,fps=15',
+      '-t', '8',
       '-c:v', 'libwebp',
       '-lossless', '0',
-      '-quality', '50',
+      '-quality', '60',
       '-loop', '0',
       '-preset', 'default',
       '-an',

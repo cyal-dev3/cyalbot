@@ -5,9 +5,9 @@
 
 import { Low } from 'lowdb';
 import { JSONFile } from 'lowdb/node';
-import type { DatabaseSchema, ChatSettings, UserWarning } from '../types/database.js';
-import { DEFAULT_DATABASE, DEFAULT_CHAT_SETTINGS } from '../types/database.js';
-import { DEFAULT_USER, type UserRPG } from '../types/user.js';
+import type { DatabaseSchema, ChatSettings, UserWarning, BettingSystem, TipsterStats, BettingPick } from '../types/database.js';
+import { DEFAULT_DATABASE, DEFAULT_CHAT_SETTINGS, DEFAULT_BETTING_SYSTEM, DEFAULT_TIPSTER_STATS } from '../types/database.js';
+import { DEFAULT_USER, DEFAULT_USER_BETTING, type UserRPG, type UserBetting } from '../types/user.js';
 
 /**
  * Clase principal de base de datos
@@ -408,6 +408,347 @@ export class Database {
   updateSettings(settings: Partial<DatabaseSchema['settings']>): void {
     Object.assign(this.db.data.settings, settings);
     this.isDirty = true;
+  }
+
+  // ============================================
+  // 🎰 FUNCIONES DE BETTING/TIPSTERS
+  // ============================================
+
+  /**
+   * Normaliza el nombre de un tipster para indexar
+   * Elimina emojis, espacios extra, y convierte a minúsculas
+   */
+  normalizeTipsterName(name: string): string {
+    return name
+      .replace(/[\u{1F300}-\u{1F9FF}]/gu, '') // Eliminar emojis
+      .replace(/[^\w\sáéíóúñÁÉÍÓÚÑ]/gi, '') // Solo letras, números, espacios y acentos
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_'); // Espacios a guiones bajos
+  }
+
+  /**
+   * Obtiene el sistema de betting de un grupo
+   * Lo crea si no existe
+   */
+  getBettingSystem(chatId: string): BettingSystem {
+    const chat = this.getChatSettings(chatId);
+    if (!chat.bettingSystem) {
+      chat.bettingSystem = { ...DEFAULT_BETTING_SYSTEM, tipsters: {}, picks: [] };
+      this.isDirty = true;
+    }
+    return chat.bettingSystem;
+  }
+
+  /**
+   * Actualiza el sistema de betting
+   */
+  updateBettingSystem(chatId: string, updates: Partial<BettingSystem>): void {
+    const system = this.getBettingSystem(chatId);
+    Object.assign(system, updates);
+    this.isDirty = true;
+  }
+
+  /**
+   * Obtiene o crea un tipster
+   */
+  getOrCreateTipster(chatId: string, tipsterName: string): TipsterStats {
+    const system = this.getBettingSystem(chatId);
+    const normalized = this.normalizeTipsterName(tipsterName);
+
+    if (!system.tipsters[normalized]) {
+      system.tipsters[normalized] = {
+        ...DEFAULT_TIPSTER_STATS,
+        name: tipsterName.trim(),
+        normalized,
+        followers: []
+      };
+      this.isDirty = true;
+    }
+
+    return system.tipsters[normalized];
+  }
+
+  /**
+   * Obtiene un tipster existente
+   */
+  getTipster(chatId: string, tipsterName: string): TipsterStats | null {
+    const system = this.getBettingSystem(chatId);
+    const normalized = this.normalizeTipsterName(tipsterName);
+    return system.tipsters[normalized] || null;
+  }
+
+  /**
+   * Registra un nuevo pick
+   */
+  registerPick(chatId: string, pick: Omit<BettingPick, 'id'>): BettingPick {
+    const system = this.getBettingSystem(chatId);
+    const tipster = this.getOrCreateTipster(chatId, pick.tipsterOriginal);
+
+    // Generar ID único
+    const id = `pick_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    const newPick: BettingPick = {
+      ...pick,
+      id,
+      tipster: tipster.normalized
+    };
+
+    // Agregar pick al inicio
+    system.picks.unshift(newPick);
+
+    // Actualizar stats del tipster
+    tipster.pending++;
+    tipster.totalUnits += pick.units;
+    tipster.lastPickDate = Date.now();
+
+    // Limpiar picks antiguos si excede el límite
+    if (system.picks.length > system.maxPicks) {
+      system.picks = system.picks.slice(0, system.maxPicks);
+    }
+
+    this.isDirty = true;
+    return newPick;
+  }
+
+  /**
+   * Resuelve un pick (marca como ganado o perdido)
+   */
+  resolvePick(chatId: string, pickId: string, won: boolean, resolvedBy: string): BettingPick | null {
+    const system = this.getBettingSystem(chatId);
+    const pick = system.picks.find(p => p.id === pickId);
+
+    if (!pick || pick.status !== 'pending') return null;
+
+    const tipster = system.tipsters[pick.tipster];
+    if (!tipster) return null;
+
+    // Actualizar pick
+    pick.status = won ? 'won' : 'lost';
+    pick.resolvedAt = Date.now();
+    pick.resolvedBy = resolvedBy;
+
+    // Actualizar stats del tipster
+    tipster.pending--;
+
+    if (won) {
+      tipster.wins++;
+      tipster.wonUnits += pick.units;
+      tipster.currentStreak = tipster.currentStreak >= 0 ? tipster.currentStreak + 1 : 1;
+      if (tipster.currentStreak > tipster.bestStreak) {
+        tipster.bestStreak = tipster.currentStreak;
+      }
+    } else {
+      tipster.losses++;
+      tipster.lostUnits += pick.units;
+      tipster.currentStreak = tipster.currentStreak <= 0 ? tipster.currentStreak - 1 : -1;
+      if (tipster.currentStreak < tipster.worstStreak) {
+        tipster.worstStreak = tipster.currentStreak;
+      }
+    }
+
+    // Actualizar stats de seguidores
+    for (const followerJid of pick.followers) {
+      const user = this.getUser(followerJid);
+      if (user.betting) {
+        if (won) {
+          user.betting.stats.wonFollowed++;
+        } else {
+          user.betting.stats.lostFollowed++;
+        }
+      }
+    }
+
+    this.isDirty = true;
+    return pick;
+  }
+
+  /**
+   * Obtiene picks pendientes de un grupo
+   */
+  getPendingPicks(chatId: string, tipsterName?: string): BettingPick[] {
+    const system = this.getBettingSystem(chatId);
+    let picks = system.picks.filter(p => p.status === 'pending');
+
+    if (tipsterName) {
+      const normalized = this.normalizeTipsterName(tipsterName);
+      picks = picks.filter(p => p.tipster === normalized);
+    }
+
+    return picks;
+  }
+
+  /**
+   * Obtiene un pick por ID de mensaje
+   */
+  getPickByMessageId(chatId: string, messageId: string): BettingPick | null {
+    const system = this.getBettingSystem(chatId);
+    return system.picks.find(p => p.messageId === messageId) || null;
+  }
+
+  /**
+   * Obtiene un pick por ID
+   */
+  getPickById(chatId: string, pickId: string): BettingPick | null {
+    const system = this.getBettingSystem(chatId);
+    return system.picks.find(p => p.id === pickId) || null;
+  }
+
+  /**
+   * Obtiene el último pick pendiente de un tipster
+   */
+  getLastPendingPick(chatId: string, tipsterName?: string): BettingPick | null {
+    const pending = this.getPendingPicks(chatId, tipsterName);
+    return pending.length > 0 ? pending[0] : null;
+  }
+
+  /**
+   * Sigue un pick
+   */
+  followPick(chatId: string, pickId: string, userJid: string): boolean {
+    const system = this.getBettingSystem(chatId);
+    const pick = system.picks.find(p => p.id === pickId);
+
+    if (!pick || pick.status !== 'pending') return false;
+    if (pick.followers.includes(userJid)) return false;
+
+    pick.followers.push(userJid);
+
+    // Actualizar stats del usuario
+    const user = this.getUser(userJid);
+    if (!user.betting) {
+      user.betting = { ...DEFAULT_USER_BETTING };
+    }
+    user.betting.stats.totalFollowed++;
+
+    this.isDirty = true;
+    return true;
+  }
+
+  /**
+   * Obtiene seguidores de un tipster
+   */
+  getTipsterFollowers(chatId: string, tipsterName: string): string[] {
+    const tipster = this.getTipster(chatId, tipsterName);
+    return tipster?.followers || [];
+  }
+
+  /**
+   * Agrega un seguidor a un tipster
+   */
+  followTipster(chatId: string, tipsterName: string, userJid: string): boolean {
+    const tipster = this.getOrCreateTipster(chatId, tipsterName);
+
+    if (tipster.followers.includes(userJid)) return false;
+
+    tipster.followers.push(userJid);
+
+    // Actualizar favoritos del usuario
+    const user = this.getUser(userJid);
+    if (!user.betting) {
+      user.betting = { ...DEFAULT_USER_BETTING };
+    }
+
+    const normalized = this.normalizeTipsterName(tipsterName);
+    if (!user.betting.favoriteTipsters.includes(normalized)) {
+      if (user.betting.favoriteTipsters.length < 20) { // Máximo 20 favoritos
+        user.betting.favoriteTipsters.push(normalized);
+      }
+    }
+
+    this.isDirty = true;
+    return true;
+  }
+
+  /**
+   * Quita un seguidor de un tipster
+   */
+  unfollowTipster(chatId: string, tipsterName: string, userJid: string): boolean {
+    const tipster = this.getTipster(chatId, tipsterName);
+    if (!tipster) return false;
+
+    const index = tipster.followers.indexOf(userJid);
+    if (index === -1) return false;
+
+    tipster.followers.splice(index, 1);
+
+    // Quitar de favoritos del usuario
+    const user = this.getUser(userJid);
+    if (user.betting) {
+      const normalized = this.normalizeTipsterName(tipsterName);
+      const favIndex = user.betting.favoriteTipsters.indexOf(normalized);
+      if (favIndex !== -1) {
+        user.betting.favoriteTipsters.splice(favIndex, 1);
+      }
+    }
+
+    this.isDirty = true;
+    return true;
+  }
+
+  /**
+   * Obtiene el betting del usuario
+   */
+  getUserBetting(userJid: string): UserBetting {
+    const user = this.getUser(userJid);
+    if (!user.betting) {
+      user.betting = { ...DEFAULT_USER_BETTING };
+      this.isDirty = true;
+    }
+    return user.betting;
+  }
+
+  /**
+   * Obtiene todos los tipsters de un grupo ordenados por algún criterio
+   */
+  getTipsterRanking(
+    chatId: string,
+    sortBy: 'winrate' | 'roi' | 'wins' | 'streak' = 'winrate',
+    limit: number = 10
+  ): TipsterStats[] {
+    const system = this.getBettingSystem(chatId);
+    const tipsters = Object.values(system.tipsters);
+
+    return tipsters
+      .filter(t => t.wins + t.losses > 0) // Solo tipsters con historial
+      .sort((a, b) => {
+        switch (sortBy) {
+          case 'winrate': {
+            const wrA = a.wins / (a.wins + a.losses) || 0;
+            const wrB = b.wins / (b.wins + b.losses) || 0;
+            return wrB - wrA;
+          }
+          case 'roi': {
+            const roiA = a.totalUnits > 0 ? ((a.wonUnits - a.lostUnits) / a.totalUnits) * 100 : 0;
+            const roiB = b.totalUnits > 0 ? ((b.wonUnits - b.lostUnits) / b.totalUnits) * 100 : 0;
+            return roiB - roiA;
+          }
+          case 'wins':
+            return b.wins - a.wins;
+          case 'streak':
+            return b.bestStreak - a.bestStreak;
+          default:
+            return 0;
+        }
+      })
+      .slice(0, limit);
+  }
+
+  /**
+   * Obtiene historial de picks resueltos
+   */
+  getPickHistory(chatId: string, tipsterName?: string, limit: number = 100): BettingPick[] {
+    const system = this.getBettingSystem(chatId);
+    let picks = system.picks.filter(p => p.status !== 'pending');
+
+    if (tipsterName) {
+      const normalized = this.normalizeTipsterName(tipsterName);
+      picks = picks.filter(p => p.tipster === normalized);
+    }
+
+    return picks
+      .sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0))
+      .slice(0, limit);
   }
 }
 

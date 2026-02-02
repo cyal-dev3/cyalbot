@@ -164,7 +164,36 @@ export interface UserRPG {
 
   // ⚒️ Sistema de forja - Materiales
   forgeMaterials: Record<string, number>;  // {materialId: cantidad}
+
+  // 🎰 Sistema de Betting
+  betting?: UserBetting;
 }
+
+/**
+ * Sistema de betting del usuario
+ */
+export interface UserBetting {
+  favoriteTipsters: string[];  // Nombres normalizados de tipsters favoritos
+  notifyOnFavorite: boolean;   // Recibir @menciones cuando llega pick de favorito
+  stats: {
+    totalFollowed: number;     // Total de picks seguidos
+    wonFollowed: number;       // Picks seguidos ganados
+    lostFollowed: number;      // Picks seguidos perdidos
+  };
+}
+
+/**
+ * Valores por defecto para betting de usuario
+ */
+export const DEFAULT_USER_BETTING: UserBetting = {
+  favoriteTipsters: [],
+  notifyOnFavorite: true,
+  stats: {
+    totalFollowed: 0,
+    wonFollowed: 0,
+    lostFollowed: 0
+  }
+};
 
 /**
  * Estadísticas de besos del usuario
@@ -311,7 +340,10 @@ export const DEFAULT_USER: UserRPG = {
   },
 
   // Forja - Materiales
-  forgeMaterials: {}
+  forgeMaterials: {},
+
+  // Betting
+  betting: undefined
 };
 
 /**

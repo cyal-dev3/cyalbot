@@ -45,7 +45,9 @@ const MENU_TIPS = [
   '💡 Reporta bugs con /bug <descripción>',
   '💡 /s convierte imágenes en stickers',
   '💡 Mejora tu equipo con /forja mejorar',
-  '💡 /ranking muestra los mejores jugadores'
+  '💡 /ranking muestra los mejores jugadores',
+  '💡 /tipster add para seguir tipsters favoritos',
+  '💡 /rankingtipsters muestra los mejores tipsters'
 ];
 
 /**
@@ -66,6 +68,20 @@ const QUICK_COMMANDS = [
  * Comandos NUEVOS (categoría especial)
  */
 const NEW_COMMANDS: CommandDetail[] = [
+  // Sistema de Betting/Tipsters (NUEVO)
+  { cmd: 'betting', aliases: ['apuestas'], desc: 'Activar/desactivar sistema de betting (admin)', usage: '/betting on|off|auto' },
+  { cmd: 'pick', aliases: ['apuesta', 'bet'], desc: 'Registrar pick respondiendo a imagen de tipster', usage: '/pick [unidades]' },
+  { cmd: 'verde', aliases: ['green', 'win', 'won'], desc: 'Marcar pick como ganado', usage: '/verde [id]' },
+  { cmd: 'roja', aliases: ['red', 'loss', 'lost'], desc: 'Marcar pick como perdido', usage: '/roja [id]' },
+  { cmd: 'pendientes', aliases: ['pending', 'picks'], desc: 'Ver picks sin resolver', usage: '/pendientes [tipster]' },
+  { cmd: 'tipster', aliases: ['tip'], desc: 'Gestionar tipsters favoritos', usage: '/tipster add|remove|list|notify' },
+  { cmd: 'mistipsters', aliases: ['misfavoritos'], desc: 'Ver tus tipsters favoritos con estadísticas', usage: '/mistipsters' },
+  { cmd: 'tipstats', aliases: ['statstipster'], desc: 'Ver estadísticas detalladas de un tipster', usage: '/tipstats <nombre>' },
+  { cmd: 'rankingtipsters', aliases: ['toptipsters', 'leaderboard'], desc: 'Ranking de tipsters por winrate/ROI/wins/streak', usage: '/rankingtipsters [criterio]' },
+  { cmd: 'historial', aliases: ['history'], desc: 'Ver últimos picks resueltos', usage: '/historial [tipster]' },
+  { cmd: 'bettingstats', aliases: ['statsbet'], desc: 'Estadísticas globales del sistema de betting', usage: '/bettingstats' },
+  { cmd: 'seguir', aliases: ['follow'], desc: 'Seguir un pick activo', usage: '/seguir (respondiendo a pick)' },
+  // Comandos anteriores
   { cmd: 'dl', aliases: ['download', 'descargar'], desc: 'Descargador universal - detecta automáticamente la plataforma', usage: '/dl <url>' },
   { cmd: 'cobalt', aliases: ['cb'], desc: 'Descargar con Cobalt API (soporta 20+ sitios)', usage: '/cobalt <url> [-a] [-q=720]' },
   { cmd: 'threads', aliases: ['th'], desc: 'Descargar videos/imágenes de Threads', usage: '/threads <url>' },
@@ -149,6 +165,12 @@ const CATEGORIES: MenuCategory[] = [
     emoji: '🃏',
     name: 'Casino',
     commands: ['blackjack', 'jugar', 'pedir', 'plantarse', 'doblar', 'bjmesa', 'bjinfo', 'ruleta', 'apostar', 'girar', 'ruletainfo']
+  },
+  {
+    id: 'betting',
+    emoji: '🎫',
+    name: 'Betting/Tipsters',
+    commands: ['betting', 'pick', 'verde', 'roja', 'pendientes', 'seguir', 'tipster', 'mistipsters', 'tipsters', 'tipstats', 'rankingtipsters', 'historial', 'bettingstats']
   },
   {
     id: 'media',
@@ -287,6 +309,21 @@ const COMMANDS: Record<string, CommandDetail> = {
   apostar: { cmd: 'apostar', aliases: ['bet'], desc: 'Apostar en ruleta', usage: '/apostar <tipo> <cant>' },
   girar: { cmd: 'girar', aliases: ['spin'], desc: 'Girar ruleta', usage: '/girar' },
   ruletainfo: { cmd: 'ruletainfo', aliases: ['rouletteinfo'], desc: 'Info Ruleta', usage: '/ruletainfo' },
+
+  // Betting/Tipsters
+  betting: { cmd: 'betting', aliases: ['apuestas'], desc: 'Activar/desactivar sistema', usage: '/betting on|off|auto' },
+  pick: { cmd: 'pick', aliases: ['apuesta', 'bet'], desc: 'Registrar pick de tipster', usage: '/pick [unidades]' },
+  verde: { cmd: 'verde', aliases: ['green', 'win', 'won', 'g'], desc: 'Marcar pick ganado', usage: '/verde [id|tipster]' },
+  roja: { cmd: 'roja', aliases: ['red', 'loss', 'lost', 'l'], desc: 'Marcar pick perdido', usage: '/roja [id|tipster]' },
+  pendientes: { cmd: 'pendientes', aliases: ['pending', 'picks', 'activos'], desc: 'Ver picks sin resolver', usage: '/pendientes [tipster]' },
+  seguir: { cmd: 'seguir', aliases: ['follow', 'unirme'], desc: 'Seguir un pick activo', usage: '/seguir' },
+  tipster: { cmd: 'tipster', aliases: ['tip'], desc: 'Gestionar tipsters favoritos', usage: '/tipster add|remove|list|notify <nombre>' },
+  mistipsters: { cmd: 'mistipsters', aliases: ['misfavoritos', 'mytipsters'], desc: 'Ver tus favoritos con stats', usage: '/mistipsters' },
+  tipsters: { cmd: 'tipsters', aliases: ['tipstersde'], desc: 'Ver favoritos de usuario', usage: '/tipsters @usuario' },
+  tipstats: { cmd: 'tipstats', aliases: ['statstipster', 'tipsterstat'], desc: 'Stats de un tipster', usage: '/tipstats <nombre>' },
+  rankingtipsters: { cmd: 'rankingtipsters', aliases: ['toptipsters', 'ranking'], desc: 'Top tipsters', usage: '/rankingtipsters [winrate|roi|wins|streak]' },
+  historial: { cmd: 'historial', aliases: ['history', 'ultimos'], desc: 'Picks resueltos', usage: '/historial [tipster]' },
+  bettingstats: { cmd: 'bettingstats', aliases: ['statsbet', 'statsbetting'], desc: 'Stats globales betting', usage: '/bettingstats' },
 
   // Media
   play: { cmd: 'play', aliases: ['musica', 'music'], desc: 'Descargar música', usage: '/play [nombre/URL]' },

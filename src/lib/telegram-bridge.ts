@@ -10,6 +10,7 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import type { WASocket } from 'baileys';
 import chalk from 'chalk';
+import { getDatabase } from './database.js';
 
 interface TelegramBridgeConfig {
   apiId: number;
@@ -244,6 +245,77 @@ function handleTelegramMessage(
 }
 
 /**
+ * Regex para detectar tipsters en el formato 🎫 NombreTipster
+ */
+const TIPSTER_REGEX = /🎫\s*([^\n]+)/;
+
+/**
+ * Detecta y notifica sobre picks de tipsters
+ */
+async function handleTipsterDetection(
+  sock: WASocket,
+  config: TelegramBridgeConfig,
+  text: string,
+  mediaBuffer?: Buffer,
+  isPhoto?: boolean
+): Promise<{ tipsterName: string; mentions: string[] } | null> {
+  const match = text.match(TIPSTER_REGEX);
+  if (!match) return null;
+
+  const tipsterName = match[1].trim();
+  if (!tipsterName) return null;
+
+  try {
+    const db = getDatabase();
+    const system = db.getBettingSystem(config.whatsappGroupId);
+
+    // Si el sistema no está habilitado, no hacer nada extra
+    if (!system.enabled) return null;
+
+    const normalized = db.normalizeTipsterName(tipsterName);
+    const tipster = db.getTipster(config.whatsappGroupId, tipsterName);
+
+    // Obtener seguidores para mencionar
+    const mentions: string[] = [];
+
+    if (tipster && tipster.followers.length > 0) {
+      // Mencionar a los seguidores que tienen notificaciones activas
+      for (const followerJid of tipster.followers) {
+        const userBetting = db.getUserBetting(followerJid);
+        if (userBetting.notifyOnFavorite) {
+          mentions.push(followerJid);
+        }
+      }
+    }
+
+    // Auto-registrar pick si está habilitado
+    if (system.autoRegister && mediaBuffer) {
+      db.registerPick(config.whatsappGroupId, {
+        tipster: normalized,
+        tipsterOriginal: tipsterName,
+        description: text.substring(0, 500),
+        units: 1,
+        status: 'pending',
+        createdAt: Date.now(),
+        createdBy: 'TELEGRAM_BRIDGE',
+        followers: [],
+        messageId: undefined // Se actualizará después de enviar
+      });
+
+      console.log(
+        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+        chalk.magenta(`🎫 Pick auto-registrado: ${tipsterName}`)
+      );
+    }
+
+    return { tipsterName, mentions };
+  } catch (error) {
+    console.error('Error en detección de tipster:', error);
+    return null;
+  }
+}
+
+/**
  * Procesa el mensaje internamente (llamado desde la cola)
  */
 async function processMessageInternal(
@@ -270,18 +342,46 @@ async function processMessageInternal(
     const buffer = await client.downloadMedia(message, {}) as Buffer;
 
     if (buffer) {
-      const caption = formatMessage(senderName, text || '');
+      let caption = formatMessage(senderName, text || '');
+
+      // Detectar tipster y obtener menciones
+      const tipsterInfo = await handleTipsterDetection(
+        sock,
+        config,
+        text || '',
+        buffer,
+        !!message.photo
+      );
+
+      // Si hay menciones de seguidores, agregarlas al caption
+      if (tipsterInfo && tipsterInfo.mentions.length > 0) {
+        const mentionText = tipsterInfo.mentions
+          .map(jid => `@${jid.split('@')[0]}`)
+          .join(' ');
+        caption += `\n\n🔔 *Seguidores:* ${mentionText}`;
+      }
 
       if (message.photo) {
         await sock.sendMessage(config.whatsappGroupId, {
           image: buffer,
           caption: caption,
+          mentions: tipsterInfo?.mentions || []
         });
       } else if (message.video) {
         await sock.sendMessage(config.whatsappGroupId, {
           video: buffer,
           caption: caption,
+          mentions: tipsterInfo?.mentions || []
         });
+      }
+
+      // Log especial para tipsters
+      if (tipsterInfo) {
+        console.log(
+          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+          chalk.magenta(`🎫 Tipster detectado: ${tipsterInfo.tipsterName}`) +
+          (tipsterInfo.mentions.length > 0 ? chalk.cyan(` (${tipsterInfo.mentions.length} notificados)`) : '')
+        );
       }
 
       console.log(

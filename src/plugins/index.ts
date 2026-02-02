@@ -101,6 +101,11 @@ import { bancoPlugin, transferirPlugin, esclavizarPlugin, liberarPlugin, esclavo
 // Importar plugins de owner
 import ownerRpgPlugins from './owner-rpg.js';
 
+// Importar plugins de betting
+import { pickPlugin, verdePlugin, rojaPlugin, pendientesPlugin, seguirPickPlugin } from './betting-pick.js';
+import { tipsterPlugin, misTipstersPlugin, tipstersDePlugin } from './betting-tipster.js';
+import { tipstatsPlugin, rankingTipstersPlugin, historialPlugin, bettingPlugin, bettingStatsPlugin } from './betting-stats.js';
+
 /**
  * Lista de plugins RPG básicos
  */
@@ -427,6 +432,27 @@ export function loadPlugins(handler: MessageHandler): void {
   console.log('      ✅ rpgresetcd, rpgsetclase, rpgfullstats, rpgmaxlevel');
   console.log('      ✅ rpginfo, rpgdaratodos, rpglluviamoney, rpgborrar, rpgtop');
 
+  // Cargar plugins de betting
+  console.log('');
+  console.log('   🎫 Betting/Tipsters:');
+  handler.registerPlugin('betting-pick', pickPlugin);
+  handler.registerPlugin('betting-verde', verdePlugin);
+  handler.registerPlugin('betting-roja', rojaPlugin);
+  handler.registerPlugin('betting-pendientes', pendientesPlugin);
+  handler.registerPlugin('betting-seguir', seguirPickPlugin);
+  handler.registerPlugin('betting-tipster', tipsterPlugin);
+  handler.registerPlugin('betting-mistipsters', misTipstersPlugin);
+  handler.registerPlugin('betting-tipstersde', tipstersDePlugin);
+  handler.registerPlugin('betting-tipstats', tipstatsPlugin);
+  handler.registerPlugin('betting-ranking', rankingTipstersPlugin);
+  handler.registerPlugin('betting-historial', historialPlugin);
+  handler.registerPlugin('betting-toggle', bettingPlugin);
+  handler.registerPlugin('betting-stats', bettingStatsPlugin);
+  console.log('      ✅ pick, verde, roja, pendientes, seguir');
+  console.log('      ✅ tipster, mistipsters, tipsters');
+  console.log('      ✅ tipstats, rankingtipsters, historial');
+  console.log('      ✅ betting, bettingstats');
+
   // Calcular total de plugins
   const totalPlugins =
     rpgBasicPlugins.length +       // 7 - RPG básico
@@ -457,7 +483,8 @@ export function loadPlugins(handler: MessageHandler): void {
     8 +                            // custom poka/ctm (addpoka, listpoka, delpoka, clearpoka, addctm, listctm, delctm, clearctm)
     2 +                            // forja y fumar
     1 +                            // logs
-    ownerRpgPlugins.length;        // owner RPG (22 comandos)
+    ownerRpgPlugins.length +       // owner RPG (22 comandos)
+    13;                            // betting (pick, verde, roja, pendientes, seguir, tipster, mistipsters, tipstersde, tipstats, ranking, historial, betting, bettingstats)
 
   console.log('');
   console.log(`📦 Total: ${totalPlugins} comandos cargados`);

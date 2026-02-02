@@ -16,7 +16,7 @@ import { CONFIG } from './config.js';
 import { startAutoEvents } from './lib/auto-events.js';
 import { startAutoRegen } from './lib/auto-regen.js';
 import { startTelegramBridge, stopTelegramBridge } from './lib/telegram-bridge.js';
-import type { WASocket, proto, GroupMetadata } from 'baileys';
+import { downloadMediaMessage, type WASocket, type proto, type GroupMetadata } from 'baileys';
 import { LRUCache } from './lib/lru-cache.js';
 
 // Variables globales para reconexión
@@ -349,56 +349,109 @@ async function connectBot(): Promise<WASocket> {
           const cachedMsg = chatCache.get(msgId);
           if (!cachedMsg) continue;
 
-          // Extraer contenido del mensaje eliminado
-          const sender = cachedMsg.key.participant || cachedMsg.key.remoteJid || 'Desconocido';
-          const senderNumber = sender.split('@')[0];
-          const pushName = cachedMsg.pushName || senderNumber;
-
           const content = cachedMsg.message;
           if (!content) continue;
 
-          const msgText =
-            content.conversation ||
-            content.extendedTextMessage?.text ||
-            content.imageMessage?.caption ||
-            content.videoMessage?.caption ||
-            '';
+          const pushName = cachedMsg.pushName || 'Usuario';
 
-          // Construir mensaje de reenvío
-          let antiDeleteText = `🗑️ *Mensaje eliminado*\n\n👤 *${pushName}* (@${senderNumber}) eliminó:\n`;
+          // Intentar reenviar el contenido original sin texto adicional
+          try {
+            // Imagen
+            if (content.imageMessage) {
+              const buffer = await downloadMediaMessage(
+                cachedMsg,
+                'buffer',
+                {},
+                { logger: console as any, reuploadRequest: conn.updateMediaMessage }
+              ) as Buffer;
+              await conn.sendMessage(chatId, {
+                image: buffer,
+                caption: content.imageMessage.caption || undefined
+              });
+            }
+            // Video o GIF
+            else if (content.videoMessage) {
+              const buffer = await downloadMediaMessage(
+                cachedMsg,
+                'buffer',
+                {},
+                { logger: console as any, reuploadRequest: conn.updateMediaMessage }
+              ) as Buffer;
+              const isGif = content.videoMessage.gifPlayback || false;
+              await conn.sendMessage(chatId, {
+                video: buffer,
+                caption: isGif ? undefined : (content.videoMessage.caption || undefined),
+                mimetype: content.videoMessage.mimetype || 'video/mp4',
+                gifPlayback: isGif
+              });
+            }
+            // Audio
+            else if (content.audioMessage) {
+              const buffer = await downloadMediaMessage(
+                cachedMsg,
+                'buffer',
+                {},
+                { logger: console as any, reuploadRequest: conn.updateMediaMessage }
+              ) as Buffer;
+              await conn.sendMessage(chatId, {
+                audio: buffer,
+                mimetype: content.audioMessage.mimetype || 'audio/mpeg',
+                ptt: content.audioMessage.ptt || false
+              });
+            }
+            // Sticker
+            else if (content.stickerMessage) {
+              const buffer = await downloadMediaMessage(
+                cachedMsg,
+                'buffer',
+                {},
+                { logger: console as any, reuploadRequest: conn.updateMediaMessage }
+              ) as Buffer;
+              await conn.sendMessage(chatId, { sticker: buffer });
+            }
+            // Documento
+            else if (content.documentMessage) {
+              const buffer = await downloadMediaMessage(
+                cachedMsg,
+                'buffer',
+                {},
+                { logger: console as any, reuploadRequest: conn.updateMediaMessage }
+              ) as Buffer;
+              await conn.sendMessage(chatId, {
+                document: buffer,
+                mimetype: content.documentMessage.mimetype || 'application/octet-stream',
+                fileName: content.documentMessage.fileName || 'documento'
+              });
+            }
+            // Texto simple o extendido
+            else if (content.conversation || content.extendedTextMessage?.text) {
+              const text = content.conversation || content.extendedTextMessage?.text || '';
+              await conn.sendMessage(chatId, { text });
+            }
+            // Contacto
+            else if (content.contactMessage) {
+              await conn.sendMessage(chatId, {
+                contacts: {
+                  displayName: content.contactMessage.displayName || 'Contacto',
+                  contacts: [{ vcard: content.contactMessage.vcard || '' }]
+                }
+              });
+            }
+            // Ubicación
+            else if (content.locationMessage) {
+              await conn.sendMessage(chatId, {
+                location: {
+                  degreesLatitude: content.locationMessage.degreesLatitude || 0,
+                  degreesLongitude: content.locationMessage.degreesLongitude || 0
+                }
+              });
+            }
 
-          if (msgText) {
-            antiDeleteText += `\n💬 ${msgText}`;
+            console.log(`🗑️ AntiDelete: Contenido de ${pushName} reenviado`);
+          } catch (downloadError) {
+            // Si falla la descarga del media, no hacer nada (silencioso)
+            console.log(`🗑️ AntiDelete: No se pudo reenviar media de ${pushName}`);
           }
-
-          if (content.imageMessage) {
-            antiDeleteText += '\n📷 [Imagen]';
-          } else if (content.videoMessage) {
-            antiDeleteText += '\n🎥 [Video]';
-          } else if (content.audioMessage) {
-            antiDeleteText += '\n🎵 [Audio]';
-          } else if (content.stickerMessage) {
-            antiDeleteText += '\n🎨 [Sticker]';
-          } else if (content.documentMessage) {
-            antiDeleteText += '\n📄 [Documento]';
-          } else if (content.contactMessage) {
-            antiDeleteText += '\n👤 [Contacto]';
-          } else if (content.locationMessage) {
-            antiDeleteText += '\n📍 [Ubicación]';
-          }
-
-          if (!msgText && !content.imageMessage && !content.videoMessage && !content.audioMessage &&
-              !content.stickerMessage && !content.documentMessage && !content.contactMessage &&
-              !content.locationMessage) {
-            antiDeleteText += '\n📝 [Contenido no disponible]';
-          }
-
-          await conn.sendMessage(chatId, {
-            text: antiDeleteText,
-            mentions: [sender]
-          });
-
-          console.log(`🗑️ AntiDelete: Mensaje de ${pushName} reenviado en ${chatId}`);
 
           // Limpiar del caché
           chatCache.delete(msgId);

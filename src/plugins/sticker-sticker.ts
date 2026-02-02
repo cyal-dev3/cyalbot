@@ -6,7 +6,7 @@
 
 import { downloadMediaMessage } from 'baileys';
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { createSticker } from '../lib/sticker.js';
+import { createSticker, videoToSticker, imageToSticker } from '../lib/sticker.js';
 
 /**
  * Verifica si una URL es válida para imágenes
@@ -139,18 +139,29 @@ export const stickerPlugin: PluginHandler = {
         );
       }
 
-      // Verificar tamaño (máximo 2MB para stickers)
-      if (mediaBuffer.length > 2 * 1024 * 1024 && mediaType === 'video') {
+      // Verificar tamaño (máximo 5MB para videos, el sticker se comprimirá)
+      if (mediaBuffer.length > 5 * 1024 * 1024 && mediaType === 'video') {
         await m.react('⚠️');
-        return m.reply('⚠️ El video es muy grande. Intenta con uno más corto (máx 6 segundos).');
+        return m.reply('⚠️ El video es muy grande. Intenta con uno más corto (máx 8 segundos).');
       }
 
-      // Crear el sticker
-      const stickerBuffer = await createSticker(mediaBuffer, {
+      // Crear el sticker según el tipo de media
+      const stickerMetadata = {
         packname: 'CYALTRONIC',
         author: m.pushName || 'User',
         categories: ['🎨']
-      });
+      };
+
+      let stickerBuffer: Buffer;
+
+      // Usar la función específica para cada tipo para mejor resultado
+      if (mediaType === 'video') {
+        // Forzar uso de videoToSticker para videos
+        stickerBuffer = await videoToSticker(mediaBuffer, stickerMetadata);
+      } else {
+        // Para imágenes y stickers usar la detección automática
+        stickerBuffer = await createSticker(mediaBuffer, stickerMetadata);
+      }
 
       // Enviar sticker
       await conn.sendMessage(m.chat, {
