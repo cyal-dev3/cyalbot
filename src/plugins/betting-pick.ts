@@ -142,6 +142,12 @@ export const verdePlugin: PluginHandler = {
       return m.reply(`❌ Este pick ya fue resuelto como ${emoji} ${pick.status.toUpperCase()}`);
     }
 
+    // Verificar que solo el creador del pick pueda resolverlo
+    // (excepto si fue creado por TELEGRAM_BRIDGE, en ese caso cualquiera puede)
+    if (pick.createdBy !== 'TELEGRAM_BRIDGE' && pick.createdBy !== m.sender) {
+      return m.reply('❌ Solo quien registró este pick puede marcarlo como ganado.');
+    }
+
     // Resolver el pick
     const resolved = db.resolvePick(m.chat, pick.id, true, m.sender);
     if (!resolved) {
@@ -212,6 +218,12 @@ export const rojaPlugin: PluginHandler = {
       return m.reply(`❌ Este pick ya fue resuelto como ${emoji} ${pick.status.toUpperCase()}`);
     }
 
+    // Verificar que solo el creador del pick pueda resolverlo
+    // (excepto si fue creado por TELEGRAM_BRIDGE, en ese caso cualquiera puede)
+    if (pick.createdBy !== 'TELEGRAM_BRIDGE' && pick.createdBy !== m.sender) {
+      return m.reply('❌ Solo quien registró este pick puede marcarlo como perdido.');
+    }
+
     // Resolver el pick
     const resolved = db.resolvePick(m.chat, pick.id, false, m.sender);
     if (!resolved) {
@@ -270,7 +282,11 @@ export const pendientesPlugin: PluginHandler = {
       const mins = Math.floor((timeSince % 3600000) / 60000);
       const timeStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
 
-      msg += `🎫 *${pick.tipsterOriginal}*\n`;
+      // Indicar si el usuario actual puede resolver este pick
+      const canResolve = pick.createdBy === m.sender || pick.createdBy === 'TELEGRAM_BRIDGE';
+      const resolveIndicator = canResolve ? '🔓' : '🔒';
+
+      msg += `🎫 *${pick.tipsterOriginal}* ${resolveIndicator}\n`;
       msg += `   💰 ${pick.units}u | 👥 ${pick.followers.length} | ⏰ ${timeStr}\n`;
       msg += `   🆔 \`${pick.id.slice(-8)}\`\n\n`;
     }
@@ -279,7 +295,8 @@ export const pendientesPlugin: PluginHandler = {
       msg += `_... y ${picks.length - 15} más_\n`;
     }
 
-    msg += '\n_Usa /verde o /roja para resolver_';
+    msg += '\n🔓 = puedes resolver | 🔒 = registrado por otro\n';
+    msg += '_Usa /verde o /roja para resolver, /cancelar para void_';
 
     await m.reply(msg);
   }
@@ -345,4 +362,73 @@ export const seguirPickPlugin: PluginHandler = {
   }
 };
 
-export default [pickPlugin, verdePlugin, rojaPlugin, pendientesPlugin, seguirPickPlugin];
+/**
+ * Comando /cancelar - Cancelar un pick (void/push)
+ */
+export const cancelarPlugin: PluginHandler = {
+  command: /^(cancelar|cancel|void|push|anular)$/i,
+  tags: ['betting'],
+  help: ['cancelar - Cancelar un pick pendiente (void/push, no afecta stats)'],
+  group: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m, text } = ctx;
+    const db = getDatabase();
+
+    const system = db.getBettingSystem(m.chat);
+    if (!system.enabled) {
+      return m.reply('❌ El sistema de betting no está habilitado.');
+    }
+
+    let pick;
+
+    // Si hay mensaje citado, buscar ese pick
+    if (m.quoted && m.quoted.key.id) {
+      pick = db.getPickByMessageId(m.chat, m.quoted.key.id);
+    }
+
+    // Si no hay citado o no se encontró, buscar por ID o el último pendiente
+    if (!pick) {
+      if (text) {
+        const pendingPicks = db.getPendingPicks(m.chat);
+        pick = pendingPicks.find(p => p.id.endsWith(text) || p.id.includes(text));
+
+        if (!pick) {
+          pick = db.getLastPendingPick(m.chat, text);
+        }
+      } else {
+        pick = db.getLastPendingPick(m.chat);
+      }
+    }
+
+    if (!pick) {
+      return m.reply('❌ No se encontró ningún pick pendiente.\n\n_Puedes responder a un pick o usar /pendientes para ver los picks activos._');
+    }
+
+    if (pick.status !== 'pending') {
+      const emoji = pick.status === 'won' ? '✅' : '❌';
+      return m.reply(`❌ Este pick ya fue resuelto como ${emoji} ${pick.status.toUpperCase()}, no se puede cancelar.`);
+    }
+
+    // Verificar que solo el creador del pick pueda cancelarlo
+    if (pick.createdBy !== 'TELEGRAM_BRIDGE' && pick.createdBy !== m.sender) {
+      return m.reply('❌ Solo quien registró este pick puede cancelarlo.');
+    }
+
+    // Cancelar el pick
+    const cancelled = db.cancelPick(m.chat, pick.id, m.sender);
+    if (!cancelled) {
+      return m.reply('❌ Error al cancelar el pick.');
+    }
+
+    await m.reply(
+      `🚫 *PICK CANCELADO (VOID)*\n\n` +
+      `🎫 *Tipster:* ${cancelled.tipsterOriginal}\n` +
+      `💰 *Unidades:* ${cancelled.units} (devueltas)\n` +
+      `👥 *Seguidores:* ${cancelled.followers.length}\n\n` +
+      `_Este pick no afecta las estadísticas._`
+    );
+  }
+};
+
+export default [pickPlugin, verdePlugin, rojaPlugin, pendientesPlugin, seguirPickPlugin, cancelarPlugin];

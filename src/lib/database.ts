@@ -202,6 +202,22 @@ export class Database {
         needsMigration = true;
       }
 
+      // Migrar betting: asegurar que cada usuario tenga su propio array de favoritos
+      // (corrige bug de arrays compartidos por shallow copy)
+      if (user.betting) {
+        const oldFavs = user.betting.favoriteTipsters;
+        user.betting = {
+          favoriteTipsters: Array.isArray(oldFavs) ? [...oldFavs] : [],
+          notifyOnFavorite: user.betting.notifyOnFavorite ?? true,
+          stats: {
+            totalFollowed: user.betting.stats?.totalFollowed ?? 0,
+            wonFollowed: user.betting.stats?.wonFollowed ?? 0,
+            lostFollowed: user.betting.stats?.lostFollowed ?? 0
+          }
+        };
+        needsMigration = true;
+      }
+
       if (needsMigration) {
         this.isDirty = true;
       }
@@ -564,6 +580,32 @@ export class Database {
   }
 
   /**
+   * Cancela un pick (void/push) sin afectar estadísticas de win/loss
+   */
+  cancelPick(chatId: string, pickId: string, cancelledBy: string): BettingPick | null {
+    const system = this.getBettingSystem(chatId);
+    const pickIndex = system.picks.findIndex(p => p.id === pickId);
+
+    if (pickIndex === -1) return null;
+    const pick = system.picks[pickIndex];
+    if (pick.status !== 'pending') return null;
+
+    const tipster = system.tipsters[pick.tipster];
+    if (tipster) {
+      // Solo decrementar pendientes y unidades totales
+      tipster.pending--;
+      tipster.totalUnits -= pick.units;
+    }
+
+    // Eliminar el pick
+    const cancelledPick = { ...pick };
+    system.picks.splice(pickIndex, 1);
+
+    this.isDirty = true;
+    return cancelledPick;
+  }
+
+  /**
    * Obtiene picks pendientes de un grupo
    */
   getPendingPicks(chatId: string, tipsterName?: string): BettingPick[] {
@@ -617,7 +659,11 @@ export class Database {
     // Actualizar stats del usuario
     const user = this.getUser(userJid);
     if (!user.betting) {
-      user.betting = { ...DEFAULT_USER_BETTING };
+      user.betting = {
+        favoriteTipsters: [],
+        notifyOnFavorite: true,
+        stats: { totalFollowed: 0, wonFollowed: 0, lostFollowed: 0 }
+      };
     }
     user.betting.stats.totalFollowed++;
 
@@ -646,7 +692,11 @@ export class Database {
     // Actualizar favoritos del usuario
     const user = this.getUser(userJid);
     if (!user.betting) {
-      user.betting = { ...DEFAULT_USER_BETTING };
+      user.betting = {
+        favoriteTipsters: [],
+        notifyOnFavorite: true,
+        stats: { totalFollowed: 0, wonFollowed: 0, lostFollowed: 0 }
+      };
     }
 
     const normalized = this.normalizeTipsterName(tipsterName);
@@ -692,7 +742,16 @@ export class Database {
   getUserBetting(userJid: string): UserBetting {
     const user = this.getUser(userJid);
     if (!user.betting) {
-      user.betting = { ...DEFAULT_USER_BETTING };
+      // Deep copy para evitar compartir arrays entre usuarios
+      user.betting = {
+        favoriteTipsters: [],
+        notifyOnFavorite: true,
+        stats: {
+          totalFollowed: 0,
+          wonFollowed: 0,
+          lostFollowed: 0
+        }
+      };
       this.isDirty = true;
     }
     return user.betting;
