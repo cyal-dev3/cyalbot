@@ -15,7 +15,7 @@ import { loadPlugins } from './plugins/index.js';
 import { CONFIG } from './config.js';
 import { startAutoEvents } from './lib/auto-events.js';
 import { startAutoRegen } from './lib/auto-regen.js';
-import { startTelegramBridge, stopTelegramBridge } from './lib/telegram-bridge.js';
+import { startTelegramBridge, stopTelegramBridge, pauseMessageQueue, resumeMessageQueue, updateQueueSocket } from './lib/telegram-bridge.js';
 import { downloadMediaMessage, type WASocket, type proto, type GroupMetadata } from 'baileys';
 import { LRUCache } from './lib/lru-cache.js';
 
@@ -477,6 +477,9 @@ async function connectBot(): Promise<WASocket> {
     const { connection, lastDisconnect } = update;
 
     if (connection === 'close') {
+      // Pausar cola de Telegram antes de reconectar
+      pauseMessageQueue();
+
       if (shouldReconnect(lastDisconnect?.error)) {
         console.log(chalk.yellow('\n🔄 Reconectando en 3 segundos...\n'));
         setTimeout(() => connectBot(), 3000);
@@ -487,20 +490,27 @@ async function connectBot(): Promise<WASocket> {
       }
     }
 
-    if (connection === 'open' && isFirstConnection) {
-      isFirstConnection = false;
-      showCommands();
+    if (connection === 'open') {
+      if (isFirstConnection) {
+        isFirstConnection = false;
+        showCommands();
 
-      // Iniciar sistema de eventos automáticos
-      startAutoEvents(conn);
+        // Iniciar sistema de eventos automáticos
+        startAutoEvents(conn);
 
-      // Iniciar sistema de regeneración pasiva
-      startAutoRegen();
+        // Iniciar sistema de regeneración pasiva
+        startAutoRegen();
 
-      // Iniciar puente de Telegram (en paralelo, no bloquea)
-      startTelegramBridge(conn).catch((err) => {
-        console.error(chalk.red('❌ Error en Telegram Bridge:'), err);
-      });
+        // Iniciar puente de Telegram (en paralelo, no bloquea)
+        startTelegramBridge(conn).catch((err) => {
+          console.error(chalk.red('❌ Error en Telegram Bridge:'), err);
+        });
+      } else {
+        // Reconexión - actualizar socket y reanudar cola (sin perder mensajes)
+        console.log(chalk.yellow('🔄 Actualizando conexión del Telegram Bridge...'));
+        updateQueueSocket(conn);
+        resumeMessageQueue();
+      }
     }
   });
 

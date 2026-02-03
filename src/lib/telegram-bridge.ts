@@ -21,50 +21,169 @@ interface TelegramBridgeConfig {
 }
 
 // ============================================================================
-// Cola de mensajes para procesamiento secuencial
+// Cola de mensajes para procesamiento secuencial (persistente)
 // ============================================================================
 
-interface QueuedMessage {
-  event: NewMessageEvent;
-  client: TelegramClient;
-  sock: WASocket;
+/**
+ * Datos pre-procesados del mensaje para poder reenviarlo sin depender del socket original
+ */
+interface ProcessedMessageData {
+  id: string;
+  senderName: string;
+  text: string;
+  mediaBuffer?: Buffer;
+  mediaType?: 'photo' | 'video';
   config: TelegramBridgeConfig;
+  timestamp: number;
   retries: number;
 }
 
 class MessageQueue {
-  private queue: QueuedMessage[] = [];
+  private queue: ProcessedMessageData[] = [];
   private isProcessing = false;
-  private readonly maxRetries = 3;
-  private readonly delayBetweenMessages = 1000; // 1 segundo entre mensajes
-  private readonly retryDelays = [2000, 5000, 10000]; // Backoff exponencial
+  private isPaused = false;
+  private currentSock: WASocket | null = null;
+  private readonly maxRetries = 10; // Más reintentos ya que no descartamos mensajes
+  private readonly delayBetweenMessages = 1000;
+  private readonly retryDelays = [2000, 5000, 10000, 15000, 30000]; // Backoff más largo
+  private consecutiveErrors = 0;
+  private readonly maxConsecutiveErrors = 5;
+  private readonly maxQueueSize = 100; // Límite de mensajes en cola
+  private readonly maxMessageAge = 30 * 60 * 1000; // 30 minutos máximo de antigüedad
 
   /**
-   * Agrega un mensaje a la cola para procesamiento
+   * Actualiza el socket de WhatsApp (llamar después de reconexión)
    */
-  enqueue(item: Omit<QueuedMessage, 'retries'>): void {
-    this.queue.push({ ...item, retries: 0 });
+  updateSocket(sock: WASocket): void {
+    this.currentSock = sock;
     console.log(
       chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-      chalk.cyan(`📥 Mensaje en cola (${this.queue.length} pendientes)`)
+      chalk.cyan(`🔄 Socket de WhatsApp actualizado en la cola`)
     );
-    this.processQueue();
+  }
+
+  /**
+   * Agrega un mensaje pre-procesado a la cola
+   */
+  async enqueue(
+    event: NewMessageEvent,
+    client: TelegramClient,
+    sock: WASocket,
+    config: TelegramBridgeConfig
+  ): Promise<void> {
+    // Actualizar socket actual
+    this.currentSock = sock;
+
+    // Verificar límite de cola
+    if (this.queue.length >= this.maxQueueSize) {
+      // Eliminar mensajes más antiguos si excedemos el límite
+      const removed = this.queue.shift();
+      if (removed) {
+        console.log(
+          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+          chalk.yellow(`⚠️ Cola llena, descartando mensaje antiguo de ${removed.senderName}`)
+        );
+      }
+    }
+
+    try {
+      // Pre-procesar el mensaje para no depender del evento original
+      const message = event.message;
+      const senderName = await this.getSenderName(client, event);
+      const text = message.text || message.message || '';
+
+      let mediaBuffer: Buffer | undefined;
+      let mediaType: 'photo' | 'video' | undefined;
+
+      // Descargar media ahora para no perderlo
+      if (message.photo || message.video) {
+        try {
+          mediaBuffer = await client.downloadMedia(message, {}) as Buffer;
+          mediaType = message.photo ? 'photo' : 'video';
+        } catch (err) {
+          console.log(
+            chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+            chalk.yellow(`⚠️ No se pudo descargar media, guardando solo texto`)
+          );
+        }
+      }
+
+      const processedMessage: ProcessedMessageData = {
+        id: `${message.chatId}-${message.id}-${Date.now()}`,
+        senderName,
+        text,
+        mediaBuffer,
+        mediaType,
+        config,
+        timestamp: Date.now(),
+        retries: 0
+      };
+
+      this.queue.push(processedMessage);
+
+      console.log(
+        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+        chalk.cyan(`📥 Mensaje en cola (${this.queue.length} pendientes)`)
+      );
+
+      this.processQueue();
+    } catch (error) {
+      console.error(
+        chalk.red(`❌ Error al encolar mensaje:`),
+        error instanceof Error ? error.message : error
+      );
+    }
+  }
+
+  /**
+   * Obtiene el nombre del remitente
+   */
+  private async getSenderName(client: TelegramClient, event: NewMessageEvent): Promise<string> {
+    try {
+      const sender = await event.message.getSender();
+      if (sender) {
+        if ('firstName' in sender) {
+          const user = sender as Api.User;
+          return user.firstName + (user.lastName ? ` ${user.lastName}` : '');
+        }
+        if ('title' in sender) {
+          return (sender as Api.Channel).title || 'Canal';
+        }
+      }
+    } catch {
+      // Ignorar errores
+    }
+    return 'Desconocido';
   }
 
   /**
    * Procesa la cola de mensajes secuencialmente
    */
   private async processQueue(): Promise<void> {
-    if (this.isProcessing || this.queue.length === 0) return;
+    if (this.isProcessing || this.queue.length === 0 || this.isPaused) return;
 
     this.isProcessing = true;
 
-    while (this.queue.length > 0) {
-      const item = this.queue.shift()!;
+    while (this.queue.length > 0 && !this.isPaused) {
+      // Limpiar mensajes muy antiguos
+      this.cleanOldMessages();
+
+      if (this.queue.length === 0) break;
+
+      const item = this.queue[0]; // Peek, no shift aún
 
       try {
         await this.processMessage(item);
-        // Delay entre mensajes para evitar rate limiting
+        // Éxito - ahora sí eliminamos de la cola
+        this.queue.shift();
+        this.consecutiveErrors = 0;
+
+        console.log(
+          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+          chalk.green(`✅ Mensaje enviado (${this.queue.length} pendientes)`)
+        );
+
+        // Delay entre mensajes
         if (this.queue.length > 0) {
           await this.delay(this.delayBetweenMessages);
         }
@@ -77,40 +196,131 @@ class MessageQueue {
   }
 
   /**
-   * Procesa un mensaje individual con manejo de errores
+   * Limpia mensajes que exceden el tiempo máximo de antigüedad
    */
-  private async processMessage(item: QueuedMessage): Promise<void> {
-    await processMessageInternal(item.event, item.client, item.sock, item.config);
-  }
+  private cleanOldMessages(): void {
+    const now = Date.now();
+    const oldCount = this.queue.length;
 
-  /**
-   * Maneja errores con reintentos y backoff exponencial
-   */
-  private async handleError(item: QueuedMessage, error: unknown): Promise<void> {
-    const isConnectionError = this.isConnectionError(error);
+    this.queue = this.queue.filter(msg => {
+      const age = now - msg.timestamp;
+      if (age > this.maxMessageAge) {
+        console.log(
+          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+          chalk.yellow(`⏰ Mensaje de ${msg.senderName} expirado (${Math.round(age/60000)}min)`)
+        );
+        return false;
+      }
+      return true;
+    });
 
-    if (isConnectionError && item.retries < this.maxRetries) {
-      item.retries++;
-      const delay = this.retryDelays[item.retries - 1] || this.retryDelays[this.retryDelays.length - 1];
-
+    const removed = oldCount - this.queue.length;
+    if (removed > 0) {
       console.log(
         chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.yellow(`⏳ Reintento ${item.retries}/${this.maxRetries} en ${delay/1000}s...`)
-      );
-
-      await this.delay(delay);
-      // Re-agregar al frente de la cola para reintentar
-      this.queue.unshift(item);
-    } else {
-      console.error(
-        chalk.red(`❌ Error procesando mensaje (sin más reintentos):`),
-        error instanceof Error ? error.message : error
+        chalk.yellow(`🧹 ${removed} mensaje(s) expirado(s) eliminado(s)`)
       );
     }
   }
 
   /**
-   * Detecta si es un error de conexión que se puede reintentar
+   * Procesa un mensaje individual
+   */
+  private async processMessage(item: ProcessedMessageData): Promise<void> {
+    // Verificar que tenemos socket disponible
+    if (!this.currentSock?.user) {
+      throw new Error('Connection Closed - WhatsApp socket no disponible');
+    }
+
+    const sock = this.currentSock;
+    const { senderName, text, mediaBuffer, mediaType, config } = item;
+
+    // Formatear mensaje
+    const formattedText = `*Reenvio de Telegram:*\n\n*${senderName}:* ${text}`;
+
+    // Detectar tipster
+    const tipsterInfo = await handleTipsterDetection(sock, config, text, mediaBuffer, mediaType === 'photo');
+
+    let caption = formattedText;
+    if (tipsterInfo && tipsterInfo.mentions.length > 0) {
+      const mentionText = tipsterInfo.mentions
+        .map(jid => `@${jid.split('@')[0]}`)
+        .join(' ');
+      caption += `\n\n🔔 *Seguidores:* ${mentionText}`;
+    }
+
+    // Enviar según tipo de contenido
+    if (mediaBuffer && mediaType) {
+      if (mediaType === 'photo') {
+        await sock.sendMessage(config.whatsappGroupId, {
+          image: mediaBuffer,
+          caption,
+          mentions: tipsterInfo?.mentions || []
+        });
+      } else {
+        await sock.sendMessage(config.whatsappGroupId, {
+          video: mediaBuffer,
+          caption,
+          mentions: tipsterInfo?.mentions || []
+        });
+      }
+
+      if (tipsterInfo) {
+        console.log(
+          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+          chalk.magenta(`🎫 Tipster detectado: ${tipsterInfo.tipsterName}`)
+        );
+      }
+    } else if (text) {
+      await sock.sendMessage(config.whatsappGroupId, {
+        text: formattedText
+      });
+    }
+  }
+
+  /**
+   * Maneja errores - mantiene el mensaje en cola para reintentar
+   */
+  private async handleError(item: ProcessedMessageData, error: unknown): Promise<void> {
+    const isConnectionError = this.isConnectionError(error);
+    this.consecutiveErrors++;
+    item.retries++;
+
+    // Si hay muchos errores consecutivos, pausar la cola (pero NO limpiarla)
+    if (isConnectionError && this.consecutiveErrors >= this.maxConsecutiveErrors) {
+      console.log(
+        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+        chalk.red(`🛑 Demasiados errores de conexión. Pausando cola (${this.queue.length} mensajes guardados)...`)
+      );
+
+      this.isPaused = true;
+      // NO limpiamos la cola - los mensajes se mantienen para cuando se reconecte
+      return;
+    }
+
+    if (isConnectionError && item.retries < this.maxRetries) {
+      const delayIndex = Math.min(item.retries - 1, this.retryDelays.length - 1);
+      const delay = this.retryDelays[delayIndex];
+
+      console.log(
+        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+        chalk.yellow(`⏳ Reintento ${item.retries}/${this.maxRetries} en ${delay/1000}s... (${this.queue.length} en cola)`)
+      );
+
+      await this.delay(delay);
+      // El mensaje sigue al frente de la cola, se reintentará
+    } else if (item.retries >= this.maxRetries) {
+      // Después de muchos reintentos, eliminar el mensaje
+      this.queue.shift();
+      console.error(
+        chalk.red(`❌ Mensaje descartado después de ${this.maxRetries} reintentos:`),
+        `De: ${item.senderName}`
+      );
+    }
+  }
+
+  /**
+   * Detecta si es un error de conexión
    */
   private isConnectionError(error: unknown): boolean {
     if (error instanceof Error) {
@@ -125,18 +335,34 @@ class MessageQueue {
     return false;
   }
 
-  /**
-   * Utilidad de delay
-   */
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * Obtiene el número de mensajes pendientes
-   */
   get pendingCount(): number {
     return this.queue.length;
+  }
+
+  pause(): void {
+    this.isPaused = true;
+    console.log(
+      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+      chalk.yellow(`⏸️ Cola pausada (${this.queue.length} mensajes guardados)`)
+    );
+  }
+
+  resume(): void {
+    this.isPaused = false;
+    this.consecutiveErrors = 0;
+    console.log(
+      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+      chalk.green(`▶️ Cola reanudada (${this.queue.length} mensajes pendientes)`)
+    );
+    this.processQueue();
+  }
+
+  get paused(): boolean {
+    return this.isPaused;
   }
 }
 
@@ -185,33 +411,6 @@ function validateConfig(): TelegramBridgeConfig | null {
   };
 }
 
-/**
- * Formatea el mensaje para WhatsApp
- */
-function formatMessage(senderName: string, text: string): string {
-  return `*Reenvio de Telegram:*\n\n*${senderName}:* ${text}`;
-}
-
-/**
- * Obtiene el nombre del remitente
- */
-async function getSenderName(client: TelegramClient, event: NewMessageEvent): Promise<string> {
-  try {
-    const sender = await event.message.getSender();
-    if (sender) {
-      if ('firstName' in sender) {
-        const user = sender as Api.User;
-        return user.firstName + (user.lastName ? ` ${user.lastName}` : '');
-      }
-      if ('title' in sender) {
-        return (sender as Api.Channel).title || 'Canal';
-      }
-    }
-  } catch {
-    // Ignorar errores al obtener el remitente
-  }
-  return 'Desconocido';
-}
 
 /**
  * Maneja un mensaje nuevo de Telegram - Encola el mensaje para procesamiento secuencial
@@ -240,8 +439,15 @@ function handleTelegramMessage(
 
   if (!isFromConfiguredGroup) return;
 
-  // Encolar el mensaje para procesamiento secuencial
-  messageQueue.enqueue({ event, client, sock, config });
+  // Log del mensaje recibido
+  console.log(
+    chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+    chalk.blue(`[Telegram] `) +
+    chalk.white(`Nuevo mensaje recibido, encolando...`)
+  );
+
+  // Encolar el mensaje (pre-procesa y guarda los datos)
+  messageQueue.enqueue(event, client, sock, config);
 }
 
 /**
@@ -315,97 +521,6 @@ async function handleTipsterDetection(
   }
 }
 
-/**
- * Procesa el mensaje internamente (llamado desde la cola)
- */
-async function processMessageInternal(
-  event: NewMessageEvent,
-  client: TelegramClient,
-  sock: WASocket,
-  config: TelegramBridgeConfig
-): Promise<void> {
-  const message = event.message;
-  const senderName = await getSenderName(client, event);
-  const text = message.text || message.message || '';
-
-  // Log del mensaje recibido
-  console.log(
-    chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-    chalk.blue(`[Telegram] `) +
-    chalk.green(`${senderName}: `) +
-    chalk.white(text.substring(0, 100) + (text.length > 100 ? '...' : ''))
-  );
-
-  // Verificar si tiene media (foto o video)
-  if (message.photo || message.video) {
-    // Descargar el media como Buffer
-    const buffer = await client.downloadMedia(message, {}) as Buffer;
-
-    if (buffer) {
-      let caption = formatMessage(senderName, text || '');
-
-      // Detectar tipster y obtener menciones
-      const tipsterInfo = await handleTipsterDetection(
-        sock,
-        config,
-        text || '',
-        buffer,
-        !!message.photo
-      );
-
-      // Si hay menciones de seguidores, agregarlas al caption
-      if (tipsterInfo && tipsterInfo.mentions.length > 0) {
-        const mentionText = tipsterInfo.mentions
-          .map(jid => `@${jid.split('@')[0]}`)
-          .join(' ');
-        caption += `\n\n🔔 *Seguidores:* ${mentionText}`;
-      }
-
-      if (message.photo) {
-        await sock.sendMessage(config.whatsappGroupId, {
-          image: buffer,
-          caption: caption,
-          mentions: tipsterInfo?.mentions || []
-        });
-      } else if (message.video) {
-        await sock.sendMessage(config.whatsappGroupId, {
-          video: buffer,
-          caption: caption,
-          mentions: tipsterInfo?.mentions || []
-        });
-      }
-
-      // Log especial para tipsters
-      if (tipsterInfo) {
-        console.log(
-          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-          chalk.magenta(`🎫 Tipster detectado: ${tipsterInfo.tipsterName}`) +
-          (tipsterInfo.mentions.length > 0 ? chalk.cyan(` (${tipsterInfo.mentions.length} notificados)`) : '')
-        );
-      }
-
-      console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.green(`✅ Media reenviado a WhatsApp`)
-      );
-      return;
-    }
-  }
-
-  // Enviar mensaje de texto
-  if (text) {
-    const formattedText = formatMessage(senderName, text);
-
-    await sock.sendMessage(config.whatsappGroupId, {
-      text: formattedText,
-    });
-
-    console.log(
-      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-      chalk.green(`✅ Mensaje reenviado a WhatsApp`)
-    );
-  }
-}
 
 /**
  * Inicia el cliente de Telegram y el puente de reenvío
@@ -474,4 +589,32 @@ export function getTelegramClient(): TelegramClient | null {
  */
 export function getPendingMessagesCount(): number {
   return messageQueue.pendingCount;
+}
+
+/**
+ * Pausa la cola de mensajes (llamar durante reconexiones de WhatsApp)
+ */
+export function pauseMessageQueue(): void {
+  messageQueue.pause();
+}
+
+/**
+ * Reanuda la cola de mensajes (llamar después de reconectarse a WhatsApp)
+ */
+export function resumeMessageQueue(): void {
+  messageQueue.resume();
+}
+
+/**
+ * Verifica si la cola está pausada
+ */
+export function isMessageQueuePaused(): boolean {
+  return messageQueue.paused;
+}
+
+/**
+ * Actualiza el socket de WhatsApp en la cola (llamar después de reconexión)
+ */
+export function updateQueueSocket(sock: WASocket): void {
+  messageQueue.updateSocket(sock);
 }
