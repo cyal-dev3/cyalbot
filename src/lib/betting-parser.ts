@@ -1,12 +1,12 @@
-export const TIPSTER_REGEX = /^#([^\s][^\n]*)/;
+// Matches #TipsterName anywhere in text.
+// Name = letter followed by 2+ alphanumeric/accented chars (excludes #1, #ok, etc.)
+export const TIPSTER_REGEX = /#([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9]{2,})/i;
 
 export function extractTipsterName(text: string | undefined | null): string | null {
   if (!text) return null;
-  const firstLine = text.split('\n', 1)[0];
-  const m = firstLine.match(TIPSTER_REGEX);
+  const m = text.match(TIPSTER_REGEX);
   if (!m) return null;
-  const name = m[1].replace(/^#+/, '').trim();
-  return name || null;
+  return m[1].trim() || null;
 }
 
 // Fallback para mensajes históricos con 🎫 — solo para /pick y /tipster add/remove.

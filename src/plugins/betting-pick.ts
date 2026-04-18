@@ -27,7 +27,7 @@ export const pickPlugin: PluginHandler = {
 
     // Verificar que hay un mensaje citado
     if (!m.quoted) {
-      return m.reply('❌ Debes responder a un mensaje de tipster para registrar el pick.\n\n_Busca un mensaje con 🎫 y responde con /pick_');
+      return m.reply('❌ Debes responder a un mensaje de tipster para registrar el pick.\n\n_Responde con /pick a un mensaje que contenga #NombreTipster_');
     }
 
     const quotedText = m.quoted.text || '';
