@@ -11,7 +11,7 @@ import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import type { WASocket } from 'baileys';
 import chalk from 'chalk';
 import { getDatabase } from './database.js';
-import { extractTipsterName } from './betting-parser.js';
+import { extractTipsterName, buildTipsterStatCard } from './betting-parser.js';
 
 interface TelegramBridgeConfig {
   apiId: number;
@@ -269,19 +269,28 @@ class MessageQueue {
     const sock = this.currentSock;
     const { senderName, text, mediaBuffer, mediaType, config } = item;
 
-    // Formatear mensaje
-    const formattedText = `*Reenvio de Telegram:*\n\n*${senderName}:* ${text}`;
-
     // Detectar tipster
     const tipsterInfo = await handleTipsterDetection(sock, config, text, mediaBuffer, mediaType === 'photo');
 
-    let caption = formattedText;
+    // Construir tarjeta de stats si hay tipster detectado
+    let statCard = '';
+    if (tipsterInfo) {
+      const db = getDatabase();
+      const tipster = db.getTipster(config.whatsappGroupId, tipsterInfo.tipsterName);
+      statCard = '\n\n' + buildTipsterStatCard(tipsterInfo.tipsterName, tipster);
+    }
+
+    // Línea de seguidores
+    let followerLine = '';
     if (tipsterInfo && tipsterInfo.mentions.length > 0) {
       const mentionText = tipsterInfo.mentions
         .map(jid => `@${jid.split('@')[0]}`)
         .join(' ');
-      caption += `\n\n🔔 *Seguidores:* ${mentionText}`;
+      followerLine = `\n\n🔔 *Seguidores:* ${mentionText}`;
     }
+
+    const header = `*${senderName}:* ${text}`;
+    const caption = header + statCard + followerLine;
 
     // Enviar según tipo de contenido
     if (mediaBuffer && mediaType) {
@@ -305,14 +314,14 @@ class MessageQueue {
           chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
           chalk.magenta(`🎫 Tipster detectado: ${tipsterInfo.tipsterName}`)
         );
-        // Back-patch messageId on auto-registered picks so they can be resolved by reply
         if (tipsterInfo.pickId && sent?.key?.id) {
           getDatabase().setPickMessageId(config.whatsappGroupId, tipsterInfo.pickId, sent.key.id);
         }
       }
     } else if (text) {
+      // Mensaje de texto puro: incluir header + tarjeta si hay tipster, o solo header
       await sock.sendMessage(config.whatsappGroupId, {
-        text: formattedText
+        text: caption
       });
     }
   }
