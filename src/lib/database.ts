@@ -638,6 +638,19 @@ export class Database {
     return system.picks.find(p => p.messageId === messageId) || null;
   }
 
+  setPickMessageId(chatId: string, pickId: string, messageId: string): boolean {
+    const system = this.getBettingSystem(chatId);
+    const pick = system.picks.find(p => p.id === pickId);
+    if (!pick) return false;
+    pick.messageId = messageId;
+    this.isDirty = true;
+    return true;
+  }
+
+  getAllChatIds(): string[] {
+    return Object.keys(this.db.data.chats);
+  }
+
   /**
    * Obtiene un pick por ID
    */

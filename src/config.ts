@@ -18,7 +18,7 @@ export const CONFIG = {
   },
 
   // 📝 Prefijos de comandos aceptados
-  prefix: /^[#!/.]/,
+  prefix: /^[!/.]/,
 
   // 📁 Carpeta de sesión de WhatsApp
   authFolder: 'CyaltronicSession',

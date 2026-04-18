@@ -102,9 +102,10 @@ import { bancoPlugin, transferirPlugin, esclavizarPlugin, liberarPlugin, esclavo
 import ownerRpgPlugins from './owner-rpg.js';
 
 // Importar plugins de betting
-import { pickPlugin, verdePlugin, rojaPlugin, pendientesPlugin, seguirPickPlugin } from './betting-pick.js';
+import { pickPlugin, verdePlugin, rojaPlugin, pendientesPlugin, seguirPickPlugin, cancelarPlugin } from './betting-pick.js';
 import { tipsterPlugin, misTipstersPlugin, tipstersDePlugin } from './betting-tipster.js';
 import { tipstatsPlugin, rankingTipstersPlugin, historialPlugin, bettingPlugin, bettingStatsPlugin } from './betting-stats.js';
+import { myBetsPlugin } from './betting-mybets.js';
 
 // Nuevos plugins: mascotas, gremios, admin-stats
 import { adoptarPlugin, mascotaPlugin, alimentarPlugin, entrenarPlugin } from './rpg-mascotas.js';
@@ -448,6 +449,8 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('betting-roja', rojaPlugin);
   handler.registerPlugin('betting-pendientes', pendientesPlugin);
   handler.registerPlugin('betting-seguir', seguirPickPlugin);
+  handler.registerPlugin('betting-cancelar', cancelarPlugin);
+  handler.registerPlugin('betting-mybets', myBetsPlugin);
   handler.registerPlugin('betting-tipster', tipsterPlugin);
   handler.registerPlugin('betting-mistipsters', misTipstersPlugin);
   handler.registerPlugin('betting-tipstersde', tipstersDePlugin);
@@ -456,7 +459,7 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('betting-historial', historialPlugin);
   handler.registerPlugin('betting-toggle', bettingPlugin);
   handler.registerPlugin('betting-stats', bettingStatsPlugin);
-  console.log('      ✅ pick, verde, roja, pendientes, seguir');
+  console.log('      ✅ pick, verde, roja, pendientes, seguir, cancelar, misapuestas');
   console.log('      ✅ tipster, mistipsters, tipsters');
   console.log('      ✅ tipstats, rankingtipsters, historial');
   console.log('      ✅ betting, bettingstats');
@@ -505,7 +508,7 @@ export function loadPlugins(handler: MessageHandler): void {
     2 +                            // forja y fumar
     1 +                            // logs
     ownerRpgPlugins.length +       // owner RPG (22 comandos)
-    13;                            // betting (pick, verde, roja, pendientes, seguir, tipster, mistipsters, tipstersde, tipstats, ranking, historial, betting, bettingstats)
+    15;                            // betting (pick, verde, roja, pendientes, seguir, cancelar, misapuestas, tipster, mistipsters, tipstersde, tipstats, ranking, historial, betting, bettingstats)
 
   console.log('');
   console.log(`📦 Total: ${totalPlugins} comandos cargados`);

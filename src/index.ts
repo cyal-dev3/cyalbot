@@ -19,6 +19,7 @@ import { startTelegramBridge, stopTelegramBridge, pauseMessageQueue, resumeMessa
 import { downloadMediaMessage, type WASocket, type proto, type GroupMetadata } from 'baileys';
 import { LRUCache } from './lib/lru-cache.js';
 import { startCleanupScheduler, stopCleanupScheduler } from './lib/cleanup-scheduler.js';
+import { registerReactionHandler } from './lib/reaction-handler.js';
 
 // Variables globales para reconexión
 let db: Database;
@@ -333,6 +334,9 @@ async function connectBot(): Promise<WASocket> {
   // Crear nuevo handler con la nueva conexión
   handler = new MessageHandler(conn, db);
   loadPlugins(handler);
+
+  // Resolver picks por reacción emoji (✅/🟢 = verde, ❌/🔴 = roja)
+  registerReactionHandler(conn, db);
 
   // Escuchar mensajes entrantes
   conn.ev.on('messages.upsert', async ({ messages, type }) => {

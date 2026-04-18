@@ -5,6 +5,7 @@
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
+import { extractTipsterNameLegacy } from '../lib/betting-parser.js';
 
 /**
  * Comando /pick - Registrar un pick (respondiendo a imagen de tipster)
@@ -31,15 +32,10 @@ export const pickPlugin: PluginHandler = {
 
     const quotedText = m.quoted.text || '';
 
-    // Buscar 🎫 en el mensaje citado
-    const tipsterMatch = quotedText.match(/🎫\s*([^\n]+)/);
-    if (!tipsterMatch) {
-      return m.reply('❌ El mensaje citado no contiene un tipster válido.\n\n_Busca un mensaje con el formato: 🎫 NombreTipster_');
-    }
-
-    const tipsterName = tipsterMatch[1].trim();
+    // Buscar tipster en el mensaje citado (#Nombre o 🎫 Nombre para compatibilidad)
+    const tipsterName = extractTipsterNameLegacy(quotedText);
     if (!tipsterName) {
-      return m.reply('❌ No se pudo extraer el nombre del tipster.');
+      return m.reply('❌ El mensaje citado no contiene un tipster válido.\n\n_Busca un mensaje que comience con #NombreTipster_');
     }
 
     // Parsear unidades (default 1)
@@ -80,8 +76,20 @@ export const pickPlugin: PluginHandler = {
     const userBetting = db.getUserBetting(m.sender);
     userBetting.stats.totalFollowed++;
 
+    // Auto-seguir al tipster para recibir notificaciones futuras
+    const userBettingAfter = db.getUserBetting(m.sender);
+    const alreadyFollowing = userBettingAfter.favoriteTipsters.includes(db.normalizeTipsterName(tipsterName));
+    const autoFollowed = !alreadyFollowing ? db.followTipster(m.chat, tipsterName, m.sender) : false;
+
     const tipster = db.getTipster(m.chat, tipsterName);
     const record = tipster ? `${tipster.wins}W - ${tipster.losses}L` : 'Nuevo tipster';
+
+    let followNote = '';
+    if (autoFollowed) {
+      followNote = '\n_🔔 Auto-seguido a este tipster._';
+    } else if (!alreadyFollowing && userBettingAfter.favoriteTipsters.length >= 20) {
+      followNote = '\n_ℹ️ No se agregó a favoritos (límite 20)._';
+    }
 
     await m.reply(
       `✅ *PICK REGISTRADO*\n\n` +
@@ -89,7 +97,8 @@ export const pickPlugin: PluginHandler = {
       `📊 *Record:* ${record}\n` +
       `💰 *Unidades:* ${units}\n` +
       `🆔 *ID:* \`${pick.id.slice(-8)}\`\n\n` +
-      `_Usa /verde o /roja para marcar el resultado_`
+      `_Usa /verde o /roja para marcar el resultado_` +
+      followNote
     );
   }
 };

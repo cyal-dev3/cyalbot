@@ -5,6 +5,7 @@
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
+import { extractTipsterNameLegacy } from '../lib/betting-parser.js';
 
 /**
  * Comando /tipster - Gestionar tipsters favoritos
@@ -40,15 +41,11 @@ export const tipsterPlugin: PluginHandler = {
 
         // Si no hay nombre, intentar extraerlo del mensaje citado
         if (!finalTipsterName && m.quoted) {
-          const quotedText = m.quoted.text || '';
-          const tipsterMatch = quotedText.match(/🎫\s*([^\n]+)/);
-          if (tipsterMatch) {
-            finalTipsterName = tipsterMatch[1].trim();
-          }
+          finalTipsterName = extractTipsterNameLegacy(m.quoted.text) || '';
         }
 
         if (!finalTipsterName) {
-          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster add NombreTipster*\n\n_También puedes responder a una imagen con 🎫_');
+          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster add NombreTipster*\n\n_También puedes responder a un mensaje que comience con #NombreTipster_');
         }
 
         const userBetting = db.getUserBetting(m.sender);
@@ -86,15 +83,11 @@ export const tipsterPlugin: PluginHandler = {
 
         // Si no hay nombre, intentar extraerlo del mensaje citado
         if (!finalRemoveName && m.quoted) {
-          const quotedText = m.quoted.text || '';
-          const tipsterMatch = quotedText.match(/🎫\s*([^\n]+)/);
-          if (tipsterMatch) {
-            finalRemoveName = tipsterMatch[1].trim();
-          }
+          finalRemoveName = extractTipsterNameLegacy(m.quoted.text) || '';
         }
 
         if (!finalRemoveName) {
-          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster remove NombreTipster*\n\n_También puedes responder a una imagen con 🎫_');
+          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster remove NombreTipster*\n\n_También puedes responder a un mensaje que comience con #NombreTipster_');
         }
 
         const success = db.unfollowTipster(m.chat, finalRemoveName, m.sender);

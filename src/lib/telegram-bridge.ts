@@ -11,6 +11,7 @@ import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import type { WASocket } from 'baileys';
 import chalk from 'chalk';
 import { getDatabase } from './database.js';
+import { extractTipsterName } from './betting-parser.js';
 
 interface TelegramBridgeConfig {
   apiId: number;
@@ -284,14 +285,15 @@ class MessageQueue {
 
     // Enviar según tipo de contenido
     if (mediaBuffer && mediaType) {
+      let sent;
       if (mediaType === 'photo') {
-        await sock.sendMessage(config.whatsappGroupId, {
+        sent = await sock.sendMessage(config.whatsappGroupId, {
           image: mediaBuffer,
           caption,
           mentions: tipsterInfo?.mentions || []
         });
       } else {
-        await sock.sendMessage(config.whatsappGroupId, {
+        sent = await sock.sendMessage(config.whatsappGroupId, {
           video: mediaBuffer,
           caption,
           mentions: tipsterInfo?.mentions || []
@@ -303,6 +305,10 @@ class MessageQueue {
           chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
           chalk.magenta(`🎫 Tipster detectado: ${tipsterInfo.tipsterName}`)
         );
+        // Back-patch messageId on auto-registered picks so they can be resolved by reply
+        if (tipsterInfo.pickId && sent?.key?.id) {
+          getDatabase().setPickMessageId(config.whatsappGroupId, tipsterInfo.pickId, sent.key.id);
+        }
       }
     } else if (text) {
       await sock.sendMessage(config.whatsappGroupId, {
@@ -483,12 +489,7 @@ function handleTelegramMessage(
 }
 
 /**
- * Regex para detectar tipsters en el formato 🎫 NombreTipster
- */
-const TIPSTER_REGEX = /🎫\s*([^\n]+)/;
-
-/**
- * Detecta y notifica sobre picks de tipsters
+ * Detecta y notifica sobre picks de tipsters (formato: #NombreTipster en primera línea)
  */
 async function handleTipsterDetection(
   sock: WASocket,
@@ -496,28 +497,21 @@ async function handleTipsterDetection(
   text: string,
   mediaBuffer?: Buffer,
   isPhoto?: boolean
-): Promise<{ tipsterName: string; mentions: string[] } | null> {
-  const match = text.match(TIPSTER_REGEX);
-  if (!match) return null;
-
-  const tipsterName = match[1].trim();
+): Promise<{ tipsterName: string; mentions: string[]; pickId?: string } | null> {
+  const tipsterName = extractTipsterName(text);
   if (!tipsterName) return null;
 
   try {
     const db = getDatabase();
     const system = db.getBettingSystem(config.whatsappGroupId);
 
-    // Si el sistema no está habilitado, no hacer nada extra
     if (!system.enabled) return null;
 
     const normalized = db.normalizeTipsterName(tipsterName);
     const tipster = db.getTipster(config.whatsappGroupId, tipsterName);
 
-    // Obtener seguidores para mencionar
     const mentions: string[] = [];
-
     if (tipster && tipster.followers.length > 0) {
-      // Mencionar a los seguidores que tienen notificaciones activas
       for (const followerJid of tipster.followers) {
         const userBetting = db.getUserBetting(followerJid);
         if (userBetting.notifyOnFavorite) {
@@ -526,9 +520,9 @@ async function handleTipsterDetection(
       }
     }
 
-    // Auto-registrar pick si está habilitado
+    let pickId: string | undefined;
     if (system.autoRegister && mediaBuffer) {
-      db.registerPick(config.whatsappGroupId, {
+      const pick = db.registerPick(config.whatsappGroupId, {
         tipster: normalized,
         tipsterOriginal: tipsterName,
         description: text.substring(0, 500),
@@ -537,8 +531,9 @@ async function handleTipsterDetection(
         createdAt: Date.now(),
         createdBy: 'TELEGRAM_BRIDGE',
         followers: [],
-        messageId: undefined // Se actualizará después de enviar
+        messageId: undefined
       });
+      pickId = pick.id;
 
       console.log(
         chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
@@ -546,7 +541,7 @@ async function handleTipsterDetection(
       );
     }
 
-    return { tipsterName, mentions };
+    return { tipsterName, mentions, pickId };
   } catch (error) {
     console.error('Error en detección de tipster:', error);
     return null;
