@@ -104,7 +104,7 @@ import ownerRpgPlugins from './owner-rpg.js';
 // Importar plugins de betting
 import { pickPlugin, verdePlugin, rojaPlugin, pendientesPlugin, seguirPickPlugin, cancelarPlugin } from './betting-pick.js';
 import { tipsterPlugin, misTipstersPlugin, tipstersDePlugin } from './betting-tipster.js';
-import { tipstatsPlugin, rankingTipstersPlugin, historialPlugin, bettingPlugin, bettingStatsPlugin } from './betting-stats.js';
+import { tipstatsPlugin, rankingTipstersPlugin, historialPlugin, bettingPlugin, bettingStatsPlugin, clearPicksPlugin } from './betting-stats.js';
 import { myBetsPlugin } from './betting-mybets.js';
 
 // Nuevos plugins: mascotas, gremios, admin-stats
@@ -459,6 +459,7 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('betting-historial', historialPlugin);
   handler.registerPlugin('betting-toggle', bettingPlugin);
   handler.registerPlugin('betting-stats', bettingStatsPlugin);
+  handler.registerPlugin('betting-clearpicks', clearPicksPlugin);
   console.log('      ✅ pick, verde, roja, pendientes, seguir, cancelar, misapuestas');
   console.log('      ✅ tipster, mistipsters, tipsters');
   console.log('      ✅ tipstats, rankingtipsters, historial');
@@ -508,7 +509,7 @@ export function loadPlugins(handler: MessageHandler): void {
     2 +                            // forja y fumar
     1 +                            // logs
     ownerRpgPlugins.length +       // owner RPG (22 comandos)
-    15;                            // betting (pick, verde, roja, pendientes, seguir, cancelar, misapuestas, tipster, mistipsters, tipstersde, tipstats, ranking, historial, betting, bettingstats)
+    16;                            // betting (pick, verde, roja, pendientes, seguir, cancelar, misapuestas, tipster, mistipsters, tipstersde, tipstats, ranking, historial, betting, bettingstats, clearpicks)
 
   console.log('');
   console.log(`📦 Total: ${totalPlugins} comandos cargados`);

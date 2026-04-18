@@ -647,6 +647,21 @@ export class Database {
     return true;
   }
 
+  clearPendingPicks(chatId: string): number {
+    const system = this.getBettingSystem(chatId);
+    const pending = system.picks.filter(p => p.status === 'pending');
+    for (const pick of pending) {
+      const tipster = system.tipsters[pick.tipster];
+      if (tipster) {
+        tipster.pending = Math.max(0, tipster.pending - 1);
+        tipster.totalUnits = Math.max(0, tipster.totalUnits - pick.units);
+      }
+    }
+    system.picks = system.picks.filter(p => p.status !== 'pending');
+    this.isDirty = true;
+    return pending.length;
+  }
+
   getAllChatIds(): string[] {
     return Object.keys(this.db.data.chats);
   }

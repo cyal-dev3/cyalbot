@@ -286,7 +286,7 @@ class MessageQueue {
       const mentionText = tipsterInfo.mentions
         .map(jid => `@${jid.split('@')[0]}`)
         .join(' ');
-      followerLine = `\n\n🔔 *Seguidores:* ${mentionText}`;
+      followerLine = `\n\n🔔 Seguidores: ${mentionText}`;
     }
 
     const header = `*${senderName}:* ${text}`;

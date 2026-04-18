@@ -5,6 +5,7 @@
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
+import { BETTING_SEPARATOR } from '../lib/betting-parser.js';
 
 /**
  * Comando /tipstats - Stats de un tipster
@@ -25,13 +26,13 @@ export const tipstatsPlugin: PluginHandler = {
     }
 
     if (!text) {
-      return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipstats NombreTipster*');
+      return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: /tipstats NombreTipster');
     }
 
     const tipster = db.getTipster(m.chat, text);
 
     if (!tipster) {
-      return m.reply(`❌ No se encontró el tipster *${text}*\n\n_Usa /rankingtipsters para ver los tipsters disponibles._`);
+      return m.reply(`❌ No se encontró el tipster ${text}\n\nUsa /rankingtipsters para ver los tipsters disponibles.`);
     }
 
     const total = tipster.wins + tipster.losses;
@@ -45,7 +46,6 @@ export const tipstatsPlugin: PluginHandler = {
     const streakEmoji = streak > 0 ? '🔥' : streak < 0 ? '❄️' : '➖';
     const streakText = streak > 0 ? `+${streak} (ganando)` : streak < 0 ? `${streak} (perdiendo)` : '0';
 
-    // Calcular tiempo desde último pick
     let lastPickStr = 'Nunca';
     if (tipster.lastPickDate > 0) {
       const diff = Date.now() - tipster.lastPickDate;
@@ -60,30 +60,29 @@ export const tipstatsPlugin: PluginHandler = {
       }
     }
 
-    let msg = `🎫 *ESTADÍSTICAS DE TIPSTER*\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `📛 *${tipster.name}*\n\n`;
+    let msg = `🎫 ESTADÍSTICAS DE TIPSTER\n${BETTING_SEPARATOR}\n\n`;
+    msg += `📛 ${tipster.name}\n\n`;
 
-    msg += `📊 *RECORD*\n`;
-    msg += `├ ✅ Victorias: ${tipster.wins}\n`;
-    msg += `├ ❌ Derrotas: ${tipster.losses}\n`;
-    msg += `├ ⏳ Pendientes: ${tipster.pending}\n`;
-    msg += `╰ 📈 Winrate: *${winrate}%*\n\n`;
+    msg += `📊 RECORD\n`;
+    msg += `  ✅ Victorias: ${tipster.wins}\n`;
+    msg += `  ❌ Derrotas: ${tipster.losses}\n`;
+    msg += `  ⏳ Pendientes: ${tipster.pending}\n`;
+    msg += `  📈 Winrate: ${winrate}%\n\n`;
 
-    msg += `💰 *UNIDADES*\n`;
-    msg += `├ Total apostado: ${tipster.totalUnits.toFixed(1)}u\n`;
-    msg += `├ Ganadas: +${tipster.wonUnits.toFixed(1)}u\n`;
-    msg += `├ Perdidas: -${tipster.lostUnits.toFixed(1)}u\n`;
-    msg += `├ Profit: ${parseFloat(profitUnits) >= 0 ? '+' : ''}${profitUnits}u\n`;
-    msg += `╰ ROI: *${parseFloat(roi) >= 0 ? '+' : ''}${roi}%*\n\n`;
+    msg += `💰 UNIDADES\n`;
+    msg += `  Total apostado: ${tipster.totalUnits.toFixed(1)}u\n`;
+    msg += `  Ganadas: +${tipster.wonUnits.toFixed(1)}u\n`;
+    msg += `  Perdidas: -${tipster.lostUnits.toFixed(1)}u\n`;
+    msg += `  Profit: ${parseFloat(profitUnits) >= 0 ? '+' : ''}${profitUnits}u\n`;
+    msg += `  ROI: ${parseFloat(roi) >= 0 ? '+' : ''}${roi}%\n\n`;
 
-    msg += `${streakEmoji} *RACHAS*\n`;
-    msg += `├ Actual: ${streakText}\n`;
-    msg += `├ Mejor: 🏆 +${tipster.bestStreak}\n`;
-    msg += `╰ Peor: 💀 ${tipster.worstStreak}\n\n`;
+    msg += `${streakEmoji} RACHAS\n`;
+    msg += `  Actual: ${streakText}\n`;
+    msg += `  🏆 Mejor: +${tipster.bestStreak}\n`;
+    msg += `  💀 Peor: ${tipster.worstStreak}\n\n`;
 
-    msg += `👥 *Seguidores:* ${tipster.followers.length}\n`;
-    msg += `⏰ *Último pick:* ${lastPickStr}`;
+    msg += `👥 Seguidores: ${tipster.followers.length}\n`;
+    msg += `⏰ Último pick: ${lastPickStr}`;
 
     await m.reply(msg);
   }
@@ -107,7 +106,6 @@ export const rankingTipstersPlugin: PluginHandler = {
       return m.reply('❌ El sistema de betting no está habilitado.');
     }
 
-    // Determinar criterio de ordenamiento
     let sortBy: 'winrate' | 'roi' | 'wins' | 'streak' = 'winrate';
     const sortArg = text?.toLowerCase();
 
@@ -122,7 +120,7 @@ export const rankingTipstersPlugin: PluginHandler = {
     const tipsters = db.getTipsterRanking(m.chat, sortBy, 15);
 
     if (tipsters.length === 0) {
-      return m.reply('📊 No hay tipsters con historial todavía.\n\n_Los tipsters aparecerán aquí cuando tengan picks resueltos._');
+      return m.reply('📊 No hay tipsters con historial todavía.\n\nLos tipsters aparecerán aquí cuando tengan picks resueltos.');
     }
 
     const sortLabels = {
@@ -132,16 +130,16 @@ export const rankingTipstersPlugin: PluginHandler = {
       streak: 'MEJOR RACHA'
     };
 
-    let msg = `🏆 *RANKING DE TIPSTERS*\n`;
+    let msg = `🏆 RANKING DE TIPSTERS\n`;
     msg += `📊 Ordenado por: ${sortLabels[sortBy]}\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `${BETTING_SEPARATOR}\n\n`;
 
     const medals = ['🥇', '🥈', '🥉'];
 
     tipsters.forEach((tipster, index) => {
       const medal = medals[index] || `${index + 1}.`;
       const total = tipster.wins + tipster.losses;
-      const winrate = ((tipster.wins / total) * 100).toFixed(1);
+      const winrate = total > 0 ? ((tipster.wins / total) * 100).toFixed(1) : '0.0';
       const roi = tipster.totalUnits > 0
         ? (((tipster.wonUnits - tipster.lostUnits) / tipster.totalUnits) * 100).toFixed(1)
         : '0.0';
@@ -149,11 +147,11 @@ export const rankingTipstersPlugin: PluginHandler = {
       const streak = tipster.currentStreak;
       const streakEmoji = streak > 0 ? '🔥' : streak < 0 ? '❄️' : '';
 
-      msg += `${medal} *${tipster.name}*\n`;
+      msg += `${medal} ${tipster.name}\n`;
       msg += `   ${tipster.wins}W-${tipster.losses}L | ${winrate}% | ROI: ${parseFloat(roi) >= 0 ? '+' : ''}${roi}% ${streakEmoji}\n\n`;
     });
 
-    msg += `_Usa /rankingtipsters [winrate|roi|wins|streak]_`;
+    msg += `Usa /rankingtipsters [winrate|roi|wins|streak]`;
 
     await m.reply(msg);
   }
@@ -181,30 +179,30 @@ export const historialPlugin: PluginHandler = {
 
     if (picks.length === 0) {
       return m.reply(text
-        ? `📋 No hay historial de *${text}*`
+        ? `📋 No hay historial de ${text}`
         : '📋 No hay picks resueltos todavía.'
       );
     }
 
     let msg = text
-      ? `📋 *HISTORIAL DE ${text.toUpperCase()}*\n`
-      : `📋 *ÚLTIMOS PICKS RESUELTOS*\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      ? `📋 HISTORIAL DE ${text.toUpperCase()}\n`
+      : `📋 ÚLTIMOS PICKS RESUELTOS\n`;
+    msg += `${BETTING_SEPARATOR}\n\n`;
 
     for (const pick of picks) {
       const emoji = pick.status === 'won' ? '✅' : '❌';
       const date = new Date(pick.resolvedAt || pick.createdAt);
       const dateStr = `${date.getDate()}/${date.getMonth() + 1}`;
 
-      msg += `${emoji} *${pick.tipsterOriginal}* | ${pick.units}u | ${dateStr}\n`;
+      msg += `${emoji} ${pick.tipsterOriginal} | ${pick.units}u | ${dateStr}\n`;
     }
 
-    // Calcular stats del historial mostrado
     const won = picks.filter(p => p.status === 'won').length;
     const lost = picks.filter(p => p.status === 'lost').length;
-    const winrate = ((won / (won + lost)) * 100).toFixed(1);
+    const totalResolved = won + lost;
+    const winrate = totalResolved > 0 ? ((won / totalResolved) * 100).toFixed(1) : '0.0';
 
-    msg += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `\n${BETTING_SEPARATOR}\n`;
     msg += `📊 Últimos ${picks.length}: ${won}W-${lost}L (${winrate}%)`;
 
     await m.reply(msg);
@@ -237,7 +235,7 @@ export const bettingPlugin: PluginHandler = {
         }
         db.updateBettingSystem(m.chat, { enabled: true });
         await m.reply(
-          `✅ *Sistema de Betting ACTIVADO*\n\n` +
+          `✅ Sistema de Betting ACTIVADO\n\n` +
           `Comandos disponibles:\n` +
           `• /pick - Registrar pick\n` +
           `• /verde /roja - Resolver picks\n` +
@@ -245,7 +243,7 @@ export const bettingPlugin: PluginHandler = {
           `• /tipster - Gestionar favoritos\n` +
           `• /tipstats - Stats de tipster\n` +
           `• /rankingtipsters - Top tipsters\n\n` +
-          `_Los picks de Telegram con 🎫 serán detectados automáticamente._`
+          `Los picks de Telegram con 🎫 serán detectados automáticamente.`
         );
         break;
       }
@@ -257,7 +255,7 @@ export const bettingPlugin: PluginHandler = {
           return m.reply('❌ El sistema de betting ya está desactivado.');
         }
         db.updateBettingSystem(m.chat, { enabled: false });
-        await m.reply('❌ *Sistema de Betting DESACTIVADO*');
+        await m.reply('❌ Sistema de Betting DESACTIVADO');
         break;
       }
 
@@ -267,8 +265,8 @@ export const bettingPlugin: PluginHandler = {
         db.updateBettingSystem(m.chat, { autoRegister: newValue });
         await m.reply(
           newValue
-            ? '✅ *Auto-registro ACTIVADO*\n\n_Los picks de Telegram se registrarán automáticamente._'
-            : '❌ *Auto-registro DESACTIVADO*\n\n_Los picks deberán registrarse manualmente con /pick._'
+            ? '✅ Auto-registro ACTIVADO\n\nLos picks de Telegram se registrarán automáticamente.'
+            : '❌ Auto-registro DESACTIVADO\n\nLos picks deberán registrarse manualmente con /pick.'
         );
         break;
       }
@@ -281,16 +279,15 @@ export const bettingPlugin: PluginHandler = {
         const pendingPicks = system.picks.filter(p => p.status === 'pending').length;
         const resolvedPicks = totalPicks - pendingPicks;
 
-        let msg = `🎫 *ESTADO DEL SISTEMA DE BETTING*\n`;
-        msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-        msg += `📊 *Estado:* ${system.enabled ? '✅ Activo' : '❌ Inactivo'}\n`;
-        msg += `🤖 *Auto-registro:* ${system.autoRegister ? '✅ Sí' : '❌ No'}\n\n`;
-        msg += `📈 *Estadísticas:*\n`;
-        msg += `├ Tipsters: ${totalTipsters}\n`;
-        msg += `├ Total picks: ${totalPicks}\n`;
-        msg += `├ Pendientes: ${pendingPicks}\n`;
-        msg += `╰ Resueltos: ${resolvedPicks}\n\n`;
-        msg += `*Comandos:*\n`;
+        let msg = `🎫 ESTADO DEL SISTEMA DE BETTING\n${BETTING_SEPARATOR}\n\n`;
+        msg += `📊 Estado: ${system.enabled ? '✅ Activo' : '❌ Inactivo'}\n`;
+        msg += `🤖 Auto-registro: ${system.autoRegister ? '✅ Sí' : '❌ No'}\n\n`;
+        msg += `📈 Estadísticas:\n`;
+        msg += `  Tipsters: ${totalTipsters}\n`;
+        msg += `  Total picks: ${totalPicks}\n`;
+        msg += `  Pendientes: ${pendingPicks}\n`;
+        msg += `  Resueltos: ${resolvedPicks}\n\n`;
+        msg += `Comandos:\n`;
         msg += `• /betting on - Activar\n`;
         msg += `• /betting off - Desactivar\n`;
         msg += `• /betting auto - Toggle auto-registro`;
@@ -322,7 +319,6 @@ export const bettingStatsPlugin: PluginHandler = {
     const tipsters = Object.values(system.tipsters);
     const picks = system.picks;
 
-    // Calcular estadísticas globales
     const totalTipsters = tipsters.length;
     const totalPicks = picks.length;
     const pendingPicks = picks.filter(p => p.status === 'pending').length;
@@ -332,7 +328,6 @@ export const bettingStatsPlugin: PluginHandler = {
 
     const globalWinrate = resolvedPicks > 0 ? ((wonPicks / resolvedPicks) * 100).toFixed(2) : '0.00';
 
-    // Calcular unidades totales
     let totalUnits = 0;
     let wonUnits = 0;
     let lostUnits = 0;
@@ -346,7 +341,6 @@ export const bettingStatsPlugin: PluginHandler = {
     const profitUnits = wonUnits - lostUnits;
     const globalRoi = totalUnits > 0 ? ((profitUnits / totalUnits) * 100).toFixed(2) : '0.00';
 
-    // Encontrar mejor y peor tipster
     const sortedByWinrate = tipsters
       .filter(t => t.wins + t.losses >= 3)
       .sort((a, b) => {
@@ -358,39 +352,69 @@ export const bettingStatsPlugin: PluginHandler = {
     const bestTipster = sortedByWinrate[0];
     const worstTipster = sortedByWinrate[sortedByWinrate.length - 1];
 
-    let msg = `📊 *ESTADÍSTICAS GLOBALES DE BETTING*\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    let msg = `📊 ESTADÍSTICAS GLOBALES DE BETTING\n${BETTING_SEPARATOR}\n\n`;
 
-    msg += `🎫 *TIPSTERS*\n`;
-    msg += `├ Total: ${totalTipsters}\n`;
-    msg += `├ Con historial: ${sortedByWinrate.length}\n`;
+    msg += `🎫 TIPSTERS\n`;
+    msg += `  Total: ${totalTipsters}\n`;
+    msg += `  Con historial: ${sortedByWinrate.length}\n`;
     if (bestTipster) {
       const bestWr = ((bestTipster.wins / (bestTipster.wins + bestTipster.losses)) * 100).toFixed(0);
-      msg += `├ 🏆 Mejor: ${bestTipster.name} (${bestWr}%)\n`;
+      msg += `  🏆 Mejor: ${bestTipster.name} (${bestWr}%)\n`;
     }
     if (worstTipster && worstTipster !== bestTipster) {
       const worstWr = ((worstTipster.wins / (worstTipster.wins + worstTipster.losses)) * 100).toFixed(0);
-      msg += `╰ 💀 Peor: ${worstTipster.name} (${worstWr}%)\n`;
-    } else {
-      msg += `╰ ────────────────\n`;
+      msg += `  💀 Peor: ${worstTipster.name} (${worstWr}%)\n`;
     }
 
-    msg += `\n📈 *PICKS*\n`;
-    msg += `├ Total: ${totalPicks}\n`;
-    msg += `├ ✅ Ganados: ${wonPicks}\n`;
-    msg += `├ ❌ Perdidos: ${lostPicks}\n`;
-    msg += `├ ⏳ Pendientes: ${pendingPicks}\n`;
-    msg += `╰ 📊 Winrate: *${globalWinrate}%*\n`;
+    msg += `\n📈 PICKS\n`;
+    msg += `  Total: ${totalPicks}\n`;
+    msg += `  ✅ Ganados: ${wonPicks}\n`;
+    msg += `  ❌ Perdidos: ${lostPicks}\n`;
+    msg += `  ⏳ Pendientes: ${pendingPicks}\n`;
+    msg += `  📊 Winrate: ${globalWinrate}%\n`;
 
-    msg += `\n💰 *UNIDADES*\n`;
-    msg += `├ Total apostado: ${totalUnits.toFixed(1)}u\n`;
-    msg += `├ Ganadas: +${wonUnits.toFixed(1)}u\n`;
-    msg += `├ Perdidas: -${lostUnits.toFixed(1)}u\n`;
-    msg += `├ Profit: ${profitUnits >= 0 ? '+' : ''}${profitUnits.toFixed(1)}u\n`;
-    msg += `╰ ROI: *${parseFloat(globalRoi) >= 0 ? '+' : ''}${globalRoi}%*`;
+    msg += `\n💰 UNIDADES\n`;
+    msg += `  Total apostado: ${totalUnits.toFixed(1)}u\n`;
+    msg += `  Ganadas: +${wonUnits.toFixed(1)}u\n`;
+    msg += `  Perdidas: -${lostUnits.toFixed(1)}u\n`;
+    msg += `  Profit: ${profitUnits >= 0 ? '+' : ''}${profitUnits.toFixed(1)}u\n`;
+    msg += `  ROI: ${parseFloat(globalRoi) >= 0 ? '+' : ''}${globalRoi}%`;
 
     await m.reply(msg);
   }
 };
 
-export default [tipstatsPlugin, rankingTipstersPlugin, historialPlugin, bettingPlugin, bettingStatsPlugin];
+/**
+ * Comando /clearpicks - Borrar todos los picks pendientes (admin)
+ */
+export const clearPicksPlugin: PluginHandler = {
+  command: /^(clearpicks|borrarpicks|limpiar picks|clearbets)$/i,
+  tags: ['betting'],
+  help: ['clearpicks - Eliminar todos los picks pendientes (admin)'],
+  group: true,
+  admin: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m } = ctx;
+    const db = getDatabase();
+
+    const system = db.getBettingSystem(m.chat);
+    if (!system.enabled) {
+      return m.reply('❌ El sistema de betting no está habilitado.');
+    }
+
+    const count = db.clearPendingPicks(m.chat);
+
+    if (count === 0) {
+      return m.reply('📋 No había picks pendientes que eliminar.');
+    }
+
+    await m.reply(
+      `🗑️ PICKS ELIMINADOS\n\n` +
+      `Se eliminaron ${count} pick${count === 1 ? '' : 's'} pendiente${count === 1 ? '' : 's'}.\n\n` +
+      `Los registros ganados/perdidos y las stats de los tipsters no se modificaron.`
+    );
+  }
+};
+
+export default [tipstatsPlugin, rankingTipstersPlugin, historialPlugin, bettingPlugin, bettingStatsPlugin, clearPicksPlugin];

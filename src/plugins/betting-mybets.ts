@@ -36,34 +36,35 @@ export const myBetsPlugin: PluginHandler = {
     }
 
     const userBet = db.getUserBetting(me);
-    const { wonFollowed, lostFollowed, totalFollowed } = userBet.stats;
-    const winrate = (wonFollowed + lostFollowed) > 0
-      ? ((wonFollowed / (wonFollowed + lostFollowed)) * 100).toFixed(1)
+    const { wonFollowed, lostFollowed } = userBet.stats;
+    const resolvedTotal = wonFollowed + lostFollowed;
+    const winrate = resolvedTotal > 0
+      ? ((wonFollowed / resolvedTotal) * 100).toFixed(1)
       : '-';
 
-    let msg = `🎰 *MIS APUESTAS*\n\n`;
+    let msg = `🎰 MIS APUESTAS\n\n`;
 
     if (active.length > 0) {
-      msg += `⏳ *ACTIVAS (${active.length})*\n`;
+      msg += `⏳ ACTIVAS (${active.length})\n`;
       for (const p of active) {
         const role = p.createdBy === me ? '[creador]' : '[seguidor]';
-        msg += `• ${role} 🎫 *${p.tipsterOriginal}* — ${p.units}u — ID: \`${p.id.slice(-8)}\`\n`;
+        msg += `• ${role} 🎫 ${p.tipsterOriginal} — ${p.units}u — ID: ${p.id.slice(-8)}\n`;
       }
       msg += '\n';
     }
 
     if (recent.length > 0) {
-      msg += `📜 *RECIENTES (${recent.length})*\n`;
+      msg += `📜 RECIENTES (${recent.length})\n`;
       for (const p of recent) {
         const icon = p.status === 'won' ? '✅' : '❌';
         const role = p.createdBy === me ? '[creador]' : '[seguidor]';
-        msg += `• ${icon} ${role} 🎫 *${p.tipsterOriginal}* — ${p.units}u\n`;
+        msg += `• ${icon} ${role} 🎫 ${p.tipsterOriginal} — ${p.units}u\n`;
       }
       msg += '\n';
     }
 
     msg +=
-      `📊 *TOTALES*\n` +
+      `📊 TOTALES\n` +
       `✅ Ganados: ${wonFollowed} | ❌ Perdidos: ${lostFollowed}\n` +
       `🏆 Winrate: ${winrate}%`;
 

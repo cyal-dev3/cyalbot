@@ -5,7 +5,7 @@
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { extractTipsterNameLegacy } from '../lib/betting-parser.js';
+import { extractTipsterNameLegacy, BETTING_SEPARATOR } from '../lib/betting-parser.js';
 
 /**
  * Comando /tipster - Gestionar tipsters favoritos
@@ -39,25 +39,24 @@ export const tipsterPlugin: PluginHandler = {
       case 'seguir': {
         let finalTipsterName = tipsterName;
 
-        // Si no hay nombre, intentar extraerlo del mensaje citado
         if (!finalTipsterName && m.quoted) {
           finalTipsterName = extractTipsterNameLegacy(m.quoted.text) || '';
         }
 
         if (!finalTipsterName) {
-          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster add NombreTipster*\n\n_También puedes responder a un mensaje que comience con #NombreTipster_');
+          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: /tipster add NombreTipster\n\nTambién puedes responder a un mensaje que comience con #NombreTipster');
         }
 
         const userBetting = db.getUserBetting(m.sender);
 
         if (userBetting.favoriteTipsters.length >= 20) {
-          return m.reply('❌ Has alcanzado el límite de 20 tipsters favoritos.\n\n_Usa /tipster remove para quitar alguno._');
+          return m.reply('❌ Has alcanzado el límite de 20 tipsters favoritos.\n\nUsa /tipster remove para quitar alguno.');
         }
 
         const success = db.followTipster(m.chat, finalTipsterName, m.sender);
 
         if (!success) {
-          return m.reply(`❌ Ya sigues a *${finalTipsterName}*`);
+          return m.reply(`❌ Ya sigues a ${finalTipsterName}`);
         }
 
         const tipster = db.getTipster(m.chat, finalTipsterName);
@@ -66,11 +65,11 @@ export const tipsterPlugin: PluginHandler = {
           : 'Sin historial';
 
         await m.reply(
-          `✅ *Tipster agregado a favoritos*\n\n` +
-          `🎫 *${finalTipsterName}*\n` +
+          `✅ Tipster agregado a favoritos\n\n` +
+          `🎫 ${finalTipsterName}\n` +
           `📊 Record: ${record}\n` +
           `👥 Seguidores: ${tipster?.followers.length || 1}\n\n` +
-          `_Recibirás notificaciones cuando llegue un pick de este tipster._`
+          `Recibirás notificaciones cuando llegue un pick de este tipster.`
         );
         break;
       }
@@ -81,22 +80,21 @@ export const tipsterPlugin: PluginHandler = {
       case 'dejar': {
         let finalRemoveName = tipsterName;
 
-        // Si no hay nombre, intentar extraerlo del mensaje citado
         if (!finalRemoveName && m.quoted) {
           finalRemoveName = extractTipsterNameLegacy(m.quoted.text) || '';
         }
 
         if (!finalRemoveName) {
-          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: */tipster remove NombreTipster*\n\n_También puedes responder a un mensaje que comience con #NombreTipster_');
+          return m.reply('❌ Debes especificar el nombre del tipster.\n\nEjemplo: /tipster remove NombreTipster\n\nTambién puedes responder a un mensaje que comience con #NombreTipster');
         }
 
         const success = db.unfollowTipster(m.chat, finalRemoveName, m.sender);
 
         if (!success) {
-          return m.reply(`❌ No sigues a *${finalRemoveName}*`);
+          return m.reply(`❌ No sigues a ${finalRemoveName}`);
         }
 
-        await m.reply(`✅ Has dejado de seguir a *${finalRemoveName}*`);
+        await m.reply(`✅ Has dejado de seguir a ${finalRemoveName}`);
         break;
       }
 
@@ -106,11 +104,10 @@ export const tipsterPlugin: PluginHandler = {
         const userBetting = db.getUserBetting(m.sender);
 
         if (userBetting.favoriteTipsters.length === 0) {
-          return m.reply('📋 No tienes tipsters favoritos.\n\n_Usa /tipster add <nombre> para agregar uno._');
+          return m.reply('📋 No tienes tipsters favoritos.\n\nUsa /tipster add <nombre> para agregar uno.');
         }
 
-        let msg = `🎫 *TUS TIPSTERS FAVORITOS* (${userBetting.favoriteTipsters.length}/20)\n`;
-        msg += '━━━━━━━━━━━━━━━━━━━━━\n\n';
+        let msg = `🎫 TUS TIPSTERS FAVORITOS (${userBetting.favoriteTipsters.length}/20)\n${BETTING_SEPARATOR}\n\n`;
 
         for (const normalized of userBetting.favoriteTipsters) {
           const tipster = system.tipsters[normalized];
@@ -120,15 +117,15 @@ export const tipsterPlugin: PluginHandler = {
             const streak = tipster.currentStreak;
             const streakStr = streak > 0 ? `🔥+${streak}` : streak < 0 ? `❄️${streak}` : '';
 
-            msg += `• *${tipster.name}*\n`;
+            msg += `• ${tipster.name}\n`;
             msg += `   ${tipster.wins}W-${tipster.losses}L (${winrate}%) ${streakStr}\n`;
           } else {
-            msg += `• *${normalized}* _(sin datos)_\n`;
+            msg += `• ${normalized} (sin datos)\n`;
           }
         }
 
         msg += `\n🔔 Notificaciones: ${userBetting.notifyOnFavorite ? '✅ Activas' : '❌ Desactivadas'}`;
-        msg += '\n\n_Usa /tipster notify para cambiar notificaciones_';
+        msg += '\n\nUsa /tipster notify para cambiar notificaciones';
 
         await m.reply(msg);
         break;
@@ -141,22 +138,22 @@ export const tipsterPlugin: PluginHandler = {
         userBetting.notifyOnFavorite = !userBetting.notifyOnFavorite;
 
         await m.reply(
-          `🔔 *Notificaciones ${userBetting.notifyOnFavorite ? 'ACTIVADAS' : 'DESACTIVADAS'}*\n\n` +
+          `🔔 Notificaciones ${userBetting.notifyOnFavorite ? 'ACTIVADAS' : 'DESACTIVADAS'}\n\n` +
           (userBetting.notifyOnFavorite
-            ? '_Recibirás @menciones cuando lleguen picks de tus tipsters favoritos._'
-            : '_Ya no recibirás menciones cuando lleguen picks._')
+            ? 'Recibirás @menciones cuando lleguen picks de tus tipsters favoritos.'
+            : 'Ya no recibirás menciones cuando lleguen picks.')
         );
         break;
       }
 
       default:
         await m.reply(
-          `🎫 *GESTIÓN DE TIPSTERS*\n\n` +
+          `🎫 GESTIÓN DE TIPSTERS\n\n` +
           `Comandos disponibles:\n` +
-          `• */tipster add <nombre>* - Agregar favorito\n` +
-          `• */tipster remove <nombre>* - Quitar favorito\n` +
-          `• */tipster list* - Ver mis favoritos\n` +
-          `• */tipster notify* - Toggle notificaciones`
+          `• /tipster add <nombre> - Agregar favorito\n` +
+          `• /tipster remove <nombre> - Quitar favorito\n` +
+          `• /tipster list - Ver mis favoritos\n` +
+          `• /tipster notify - Toggle notificaciones`
         );
     }
   }
@@ -184,16 +181,14 @@ export const misTipstersPlugin: PluginHandler = {
 
     if (userBetting.favoriteTipsters.length === 0) {
       return m.reply(
-        '📋 *No tienes tipsters favoritos*\n\n' +
-        'Usa */tipster add <nombre>* para agregar tipsters.\n\n' +
-        '_Al agregar favoritos, recibirás notificaciones cuando lleguen sus picks._'
+        '📋 No tienes tipsters favoritos\n\n' +
+        'Usa /tipster add <nombre> para agregar tipsters.\n\n' +
+        'Al agregar favoritos, recibirás notificaciones cuando lleguen sus picks.'
       );
     }
 
-    let msg = `🎫 *MIS TIPSTERS FAVORITOS*\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    let msg = `🎫 MIS TIPSTERS FAVORITOS\n${BETTING_SEPARATOR}\n\n`;
 
-    // Ordenar por winrate
     const tipstersData = userBetting.favoriteTipsters
       .map(norm => system.tipsters[norm])
       .filter(t => t)
@@ -212,24 +207,23 @@ export const misTipstersPlugin: PluginHandler = {
       const streak = tipster.currentStreak;
       const streakEmoji = streak > 0 ? '🔥' : streak < 0 ? '❄️' : '➖';
 
-      msg += `🎫 *${tipster.name}*\n`;
-      msg += `├ 📊 ${tipster.wins}W - ${tipster.losses}L (${winrate}%)\n`;
-      msg += `├ 💰 ROI: ${parseFloat(roi) >= 0 ? '+' : ''}${roi}%\n`;
-      msg += `├ ${streakEmoji} Racha: ${streak > 0 ? '+' : ''}${streak}\n`;
-      msg += `╰ ⏳ Pendientes: ${tipster.pending}\n\n`;
+      msg += `🎫 ${tipster.name}\n`;
+      msg += `  📊 ${tipster.wins}W - ${tipster.losses}L (${winrate}%)\n`;
+      msg += `  💰 ROI: ${parseFloat(roi) >= 0 ? '+' : ''}${roi}%\n`;
+      msg += `  ${streakEmoji} Racha: ${streak > 0 ? '+' : ''}${streak}\n`;
+      msg += `  ⏳ Pendientes: ${tipster.pending}\n\n`;
     }
 
-    // Stats del usuario
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    msg += `📈 *Tus stats de seguimiento:*\n`;
-    msg += `├ Total seguidos: ${userBetting.stats.totalFollowed}\n`;
-    msg += `├ ✅ Ganados: ${userBetting.stats.wonFollowed}\n`;
-    msg += `╰ ❌ Perdidos: ${userBetting.stats.lostFollowed}`;
+    msg += `${BETTING_SEPARATOR}\n`;
+    msg += `📈 Tus stats de seguimiento:\n`;
+    msg += `  Total seguidos: ${userBetting.stats.totalFollowed}\n`;
+    msg += `  ✅ Ganados: ${userBetting.stats.wonFollowed}\n`;
+    msg += `  ❌ Perdidos: ${userBetting.stats.lostFollowed}`;
 
     const userTotal = userBetting.stats.wonFollowed + userBetting.stats.lostFollowed;
     if (userTotal > 0) {
       const userWinrate = ((userBetting.stats.wonFollowed / userTotal) * 100).toFixed(1);
-      msg += `\n\n_Tu winrate siguiendo picks: ${userWinrate}%_`;
+      msg += `\n\nTu winrate siguiendo picks: ${userWinrate}%`;
     }
 
     await m.reply(msg);
@@ -254,7 +248,6 @@ export const tipstersDePlugin: PluginHandler = {
       return m.reply('❌ El sistema de betting no está habilitado.');
     }
 
-    // Verificar si hay mención o quoted
     let targetJid = m.sender;
     let targetName = m.pushName || 'Usuario';
 
@@ -272,28 +265,28 @@ export const tipstersDePlugin: PluginHandler = {
     if (userBetting.favoriteTipsters.length === 0) {
       return m.reply(
         isSelf
-          ? '📋 No tienes tipsters favoritos.\n\n_Usa /tipster add <nombre> para agregar._'
-          : `📋 *@${targetName}* no tiene tipsters favoritos.`
+          ? '📋 No tienes tipsters favoritos.\n\nUsa /tipster add <nombre> para agregar.'
+          : `📋 @${targetName} no tiene tipsters favoritos.`
       );
     }
 
     let msg = isSelf
-      ? `🎫 *TUS TIPSTERS FAVORITOS*\n`
-      : `🎫 *TIPSTERS DE @${targetName}*\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      ? `🎫 TUS TIPSTERS FAVORITOS\n`
+      : `🎫 TIPSTERS DE @${targetName}\n`;
+    msg += `${BETTING_SEPARATOR}\n\n`;
 
     for (const normalized of userBetting.favoriteTipsters) {
       const tipster = system.tipsters[normalized];
       if (tipster) {
         const total = tipster.wins + tipster.losses;
         const winrate = total > 0 ? ((tipster.wins / total) * 100).toFixed(0) : '0';
-        msg += `• *${tipster.name}* - ${tipster.wins}W/${tipster.losses}L (${winrate}%)\n`;
+        msg += `• ${tipster.name} - ${tipster.wins}W/${tipster.losses}L (${winrate}%)\n`;
       } else {
-        msg += `• *${normalized}*\n`;
+        msg += `• ${normalized}\n`;
       }
     }
 
-    msg += `\n_Total: ${userBetting.favoriteTipsters.length} tipsters_`;
+    msg += `\nTotal: ${userBetting.favoriteTipsters.length} tipsters`;
 
     await m.reply(msg);
   }

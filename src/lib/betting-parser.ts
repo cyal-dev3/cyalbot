@@ -1,4 +1,5 @@
-import type { TipsterStats } from '../types/database.js';
+import type { BettingPick, TipsterStats } from '../types/database.js';
+import type { Database } from './database.js';
 
 // Matches #TipsterName anywhere in text.
 // Name = letter followed by 2+ alphanumeric/accented chars (excludes #1, #ok, etc.)
@@ -21,17 +22,18 @@ export function extractTipsterNameLegacy(text: string | undefined | null): strin
   return m ? m[1].trim() || null : null;
 }
 
+const SEP = '──────────────────────';
+
 export function buildTipsterStatCard(tipsterName: string, tipster: TipsterStats | null | undefined): string {
-  const displayName = `*#${tipsterName.toUpperCase()}*`;
+  const displayName = `#${tipsterName.toUpperCase()}`;
 
   if (!tipster || (tipster.wins + tipster.losses) === 0) {
-    return `${displayName} | 🆕 *Nuevo Tipster*\n━━━━━━━━━━━━━━━━━━━━━━\n_Sin historial aún — sé el primero en seguirlo_`;
+    return `${displayName} | 🆕 Nuevo Tipster\n${SEP}\nSin historial aún — sé el primero en seguirlo`;
   }
 
   const total = tipster.wins + tipster.losses;
   const winrate = Math.round((tipster.wins / total) * 100);
 
-  // Nivel basado en winrate
   let nivelEmoji: string;
   let nivelText: string;
   if (winrate < 35)      { nivelEmoji = '🚨'; nivelText = 'Tipster Deficiente'; }
@@ -41,7 +43,6 @@ export function buildTipsterStatCard(tipsterName: string, tipster: TipsterStats 
   else if (winrate < 75) { nivelEmoji = '🏆'; nivelText = 'Tipster Experto'; }
   else                   { nivelEmoji = '🌟'; nivelText = 'Tipster Élite'; }
 
-  // Racha: 8 cuadros mostrando racha actual (más reciente a la izquierda)
   const streak = tipster.currentStreak;
   const BOXES = 8;
   let rachaStr: string;
@@ -56,10 +57,41 @@ export function buildTipsterStatCard(tipsterName: string, tipster: TipsterStats 
   }
 
   return (
-    `${displayName} | 💎 *${winrate}% Win Rate*\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `✅ *G:* ${tipster.wins}  |  ❌ *P:* ${tipster.losses}  |  🏁 *Total:* ${total}\n` +
-    `📊 *Racha:* ${rachaStr}\n` +
-    `${nivelEmoji} *Nivel:* ${nivelText}`
+    `${displayName} | 💎 ${winrate}% Win Rate\n` +
+    `${SEP}\n` +
+    `✅ G: ${tipster.wins}  |  ❌ P: ${tipster.losses}  |  🏁 Total: ${total}\n` +
+    `📊 Racha: ${rachaStr}\n` +
+    `${nivelEmoji} Nivel: ${nivelText}`
   );
 }
+
+// Busca un pick pendiente: primero por mensaje citado, luego por ID parcial, luego por tipster,
+// y como fallback el último pendiente del chat. Centraliza la lógica repetida en verde/roja/cancelar.
+export function findPickFromContext(
+  db: Database,
+  chatId: string,
+  quotedMsgId: string | null | undefined,
+  text: string | undefined
+): BettingPick | null {
+  if (quotedMsgId) {
+    const byQuote = db.getPickByMessageId(chatId, quotedMsgId);
+    if (byQuote) return byQuote;
+  }
+
+  if (text && text.trim()) {
+    const needle = text.trim().toLowerCase();
+    const pending = db.getPendingPicks(chatId);
+    const byId = pending.find(p => {
+      const id = p.id.toLowerCase();
+      return id.endsWith(needle) || id.includes(needle);
+    });
+    if (byId) return byId;
+    const byTipster = db.getLastPendingPick(chatId, text);
+    if (byTipster) return byTipster;
+    return null;
+  }
+
+  return db.getLastPendingPick(chatId);
+}
+
+export const BETTING_SEPARATOR = SEP;
