@@ -71,7 +71,7 @@ import { facebookPlugin } from './download-facebook.js';
 import { twitterPlugin } from './download-twitter.js';
 import { pinterestPlugin } from './download-pinterest.js';
 import { threadsPlugin } from './download-threads.js';
-import { universalDownloadPlugin, cobaltPlugin } from './download-universal.js';
+import { universalDownloadPlugin, cobaltPlugin, audioDownloadPlugin, downloadStatusPlugin } from './download-universal.js';
 
 // Importar plugins de herramientas
 import { translatePlugin } from './tools-translate.js';
@@ -362,8 +362,11 @@ export function loadPlugins(handler: MessageHandler): void {
   handler.registerPlugin('download-threads', threadsPlugin);
   handler.registerPlugin('download-universal', universalDownloadPlugin);
   handler.registerPlugin('download-cobalt', cobaltPlugin);
+  handler.registerPlugin('download-audio', audioDownloadPlugin);
+  handler.registerPlugin('download-status', downloadStatusPlugin);
   console.log('      ✅ tiktok, ig, fb, twitter, pinterest, threads');
   console.log('      ✅ dl (universal), cobalt (all-in-one)');
+  console.log('      ✅ audio/mp3 (extraer audio), dlstatus (estado API)');
 
   // Cargar plugins de herramientas
   console.log('');

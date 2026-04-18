@@ -5,7 +5,8 @@
  */
 
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { downloadAuto, detectPlatform, downloadWithCobalt, type Platform } from '../lib/downloaders.js';
+import { downloadAuto, detectPlatform, downloadWithCobalt, downloadWithDev3Api, isDev3ApiAvailable, type Platform } from '../lib/downloaders.js';
+import { ensureWhatsAppCompatible, forceConvertForWhatsApp } from '../lib/video-converter.js';
 
 const URL_REGEX = /https?:\/\/[^\s]+/i;
 
@@ -93,11 +94,25 @@ export const universalDownloadPlugin: PluginHandler = {
       for (let i = 0; i < result.medias.length && i < 10; i++) {
         const media = result.medias[i];
         const response = await fetch(media.url);
-        const buffer = Buffer.from(await response.arrayBuffer());
+        let buffer = Buffer.from(await response.arrayBuffer());
 
         if (media.type === 'video') {
+          // Convertir video para compatibilidad con WhatsApp/Android
+          let videoBuffer: Buffer = buffer;
+          try {
+            // Forzar conversión para YouTube (siempre tiene problemas en Android)
+            if (result.platform === 'youtube') {
+              videoBuffer = await forceConvertForWhatsApp(buffer) as Buffer;
+            } else {
+              videoBuffer = await ensureWhatsAppCompatible(buffer) as Buffer;
+            }
+          } catch (convError) {
+            console.error('Error convirtiendo video:', convError);
+            // Continuar con el buffer original si falla la conversión
+          }
+
           await conn.sendMessage(m.chat, {
-            video: buffer,
+            video: videoBuffer,
             caption: i === 0 ? caption : undefined,
             mimetype: 'video/mp4'
           }, { quoted: m.rawMessage });
@@ -214,5 +229,105 @@ export const cobaltPlugin: PluginHandler = {
       await m.react('❌');
       await m.reply('❌ Error al enviar el contenido. Intenta de nuevo.');
     }
+  }
+};
+
+/**
+ * Comando /audio - Descarga solo el audio de un video
+ */
+export const audioDownloadPlugin: PluginHandler = {
+  command: ['audio', 'mp3', 'musica', 'music'],
+  description: 'Descargar solo el audio de un video',
+  category: 'download',
+
+  async handler(ctx: MessageContext) {
+    const { m, text, conn } = ctx;
+
+    let url = text.trim();
+
+    if (!url && m.quoted?.text) {
+      const match = m.quoted.text.match(URL_REGEX);
+      if (match) url = match[0];
+    }
+
+    if (!url) {
+      await m.reply('🎵 *AUDIO DOWNLOADER*\n\n📝 Uso: /audio <url>\n\n📌 Plataformas soportadas:\n• YouTube\n• TikTok\n• Instagram\n• Twitter/X\n• SoundCloud\n• Y más...\n\n💡 Extrae el audio de cualquier video!');
+      return;
+    }
+
+    if (!URL_REGEX.test(url)) {
+      await m.reply('❌ Proporciona una URL válida.');
+      return;
+    }
+
+    const platform = detectPlatform(url);
+    const emoji = PLATFORM_EMOJI[platform];
+    const name = PLATFORM_NAME[platform];
+
+    await m.react('⏳');
+    await m.reply(`🎵 Extrayendo audio de *${name}*...`);
+
+    // Usar API local con audioOnly=true
+    const result = await downloadAuto(url, true);
+
+    if (!result.success || !result.medias || result.medias.length === 0) {
+      await m.react('❌');
+      await m.reply(`❌ ${result.error || 'No se pudo extraer el audio'}`);
+      return;
+    }
+
+    try {
+      const media = result.medias[0];
+      const response = await fetch(media.url);
+      const buffer = Buffer.from(await response.arrayBuffer());
+
+      const caption = `🎵 *Audio de ${name}*\n${result.title ? `📝 ${result.title}` : ''}`;
+
+      await conn.sendMessage(m.chat, {
+        audio: buffer,
+        mimetype: 'audio/mpeg',
+        ptt: false
+      }, { quoted: m.rawMessage });
+
+      await m.reply(caption);
+      await m.react('✅');
+    } catch (error) {
+      console.error('Error enviando audio:', error);
+      await m.react('❌');
+      await m.reply('❌ Error al enviar el audio. Intenta de nuevo.');
+    }
+  }
+};
+
+/**
+ * Comando /dlstatus - Verificar estado de los servicios de descarga
+ */
+export const downloadStatusPlugin: PluginHandler = {
+  command: ['dlstatus', 'downloadstatus'],
+  description: 'Ver estado de los servicios de descarga',
+  category: 'download',
+
+  async handler(ctx: MessageContext) {
+    const { m } = ctx;
+
+    await m.react('🔍');
+
+    // Verificar API local
+    const dev3Available = await isDev3ApiAvailable();
+
+    let status = '📊 *ESTADO DE SERVICIOS DE DESCARGA*\n\n';
+    status += `🚀 *API Local (dev3-downloader)*\n`;
+    status += `   Estado: ${dev3Available ? '🟢 Online' : '🔴 Offline'}\n`;
+    status += `   Motor: Cobalt + yt-dlp\n\n`;
+    status += `🌐 *APIs Públicas (Fallback)*\n`;
+    status += `   Estado: 🟢 Disponibles\n\n`;
+    status += `📌 *Plataformas soportadas:*\n`;
+    status += `   YouTube, TikTok, Instagram, Twitter/X,\n`;
+    status += `   Facebook, Pinterest, Threads, Reddit,\n`;
+    status += `   Twitch, Vimeo, SoundCloud, y más...\n\n`;
+    status += `💡 La API local ofrece descargas más rápidas y confiables.`;
+
+    await m.reply(status);
+    await m.react('✅');
   }
 };

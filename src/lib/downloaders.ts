@@ -3,6 +3,8 @@
  * APIs múltiples con fallbacks para máxima confiabilidad
  */
 
+import { CONFIG } from '../config.js';
+
 // Tipos comunes
 export interface DownloadResult {
   success: boolean;
@@ -24,11 +26,107 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const TIMEOUT = 15000;
 
 // ============================================================
+// 🚀 DEV3-DOWNLOADER API (LOCAL - PRINCIPAL)
+// ============================================================
+
+interface Dev3ApiResponse {
+  success: boolean;
+  data?: {
+    url: string;
+    type: 'video' | 'audio';
+    filename: string;
+    size?: number;
+    duration?: number;
+    thumbnail?: string;
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+  meta?: {
+    engine: string;
+    requestId: string;
+    durationMs: number;
+  };
+}
+
+/**
+ * Descarga usando la API local dev3-downloader (Cobalt + yt-dlp)
+ * Esta es la opción más rápida y confiable
+ */
+export async function downloadWithDev3Api(url: string, audioOnly = false, quality: 'best' | 'medium' | 'low' = 'medium'): Promise<DownloadResult> {
+  try {
+    const response = await fetch(`${CONFIG.downloaderApi.url}/v1/download`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url,
+        quality, // medium = 720p (compatible con WhatsApp)
+        audioOnly,
+      }),
+      signal: AbortSignal.timeout(CONFIG.downloaderApi.timeout),
+    });
+
+    const data = await response.json() as Dev3ApiResponse;
+
+    if (!data.success || !data.data) {
+      return {
+        success: false,
+        error: data.error?.message || 'dev3-downloader: respuesta inválida',
+      };
+    }
+
+    return {
+      success: true,
+      medias: [{
+        url: data.data.url,
+        type: data.data.type === 'audio' ? 'audio' : 'video',
+        quality,
+        thumbnail: data.data.thumbnail,
+      }],
+      title: data.data.filename,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Error desconocido';
+    console.log('❌ dev3-downloader API falló:', message);
+    return { success: false, error: `dev3-downloader: ${message}` };
+  }
+}
+
+/**
+ * Verifica si la API local está disponible
+ */
+export async function isDev3ApiAvailable(): Promise<boolean> {
+  try {
+    const response = await fetch(`${CONFIG.downloaderApi.url}/health`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await response.json() as { status: string };
+    return data.status === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================
 // 🎵 TIKTOK DOWNLOADERS
 // ============================================================
 
 export async function downloadTikTok(url: string): Promise<DownloadResult> {
-  // API 1: TikWM (principal)
+  // 🚀 PRIMERA OPCIÓN: API local dev3-downloader
+  try {
+    const result = await downloadWithDev3Api(url);
+    if (result.success) {
+      console.log('✅ dev3-downloader: TikTok descargado');
+      return result;
+    }
+  } catch (e) {
+    console.log('⚠️ dev3-downloader no disponible para TikTok');
+  }
+
+  // API 2: TikWM (fallback)
   try {
     const result = await tikwmDownload(url);
     if (result.success) return result;
@@ -36,7 +134,7 @@ export async function downloadTikTok(url: string): Promise<DownloadResult> {
     console.log('❌ TikWM falló:', (e as Error).message);
   }
 
-  // API 2: SnapTik
+  // API 3: SnapTik
   try {
     const result = await snaptikDownload(url);
     if (result.success) return result;
@@ -44,7 +142,7 @@ export async function downloadTikTok(url: string): Promise<DownloadResult> {
     console.log('❌ SnapTik falló:', (e as Error).message);
   }
 
-  // API 3: SSSTik
+  // API 4: SSSTik
   try {
     const result = await ssstikDownload(url);
     if (result.success) return result;
@@ -175,7 +273,18 @@ async function ssstikDownload(url: string): Promise<DownloadResult> {
 // ============================================================
 
 export async function downloadInstagram(url: string): Promise<DownloadResult> {
-  // API 1: IGDownloader
+  // 🚀 PRIMERA OPCIÓN: API local dev3-downloader
+  try {
+    const result = await downloadWithDev3Api(url);
+    if (result.success) {
+      console.log('✅ dev3-downloader: Instagram descargado');
+      return result;
+    }
+  } catch (e) {
+    console.log('⚠️ dev3-downloader no disponible para Instagram');
+  }
+
+  // API 2: IGDownloader (fallback)
   try {
     const result = await igdownloaderDownload(url);
     if (result.success && result.medias && result.medias.length > 0) return result;
@@ -183,7 +292,7 @@ export async function downloadInstagram(url: string): Promise<DownloadResult> {
     console.log('❌ IGDownloader falló:', (e as Error).message);
   }
 
-  // API 2: SaveIG
+  // API 3: SaveIG
   try {
     const result = await saveigDownload(url);
     if (result.success && result.medias && result.medias.length > 0) return result;
@@ -191,7 +300,7 @@ export async function downloadInstagram(url: string): Promise<DownloadResult> {
     console.log('❌ SaveIG falló:', (e as Error).message);
   }
 
-  // API 3: FastDL
+  // API 4: FastDL
   try {
     const result = await fastdlInstagramDownload(url);
     if (result.success && result.medias && result.medias.length > 0) return result;
@@ -199,7 +308,7 @@ export async function downloadInstagram(url: string): Promise<DownloadResult> {
     console.log('❌ FastDL falló:', (e as Error).message);
   }
 
-  // API 4: SnapInsta
+  // API 5: SnapInsta
   try {
     const result = await snapinstaDownload(url);
     if (result.success && result.medias && result.medias.length > 0) return result;
@@ -341,7 +450,18 @@ async function snapinstaDownload(url: string): Promise<DownloadResult> {
 // ============================================================
 
 export async function downloadFacebook(url: string): Promise<DownloadResult> {
-  // API 1: FDown
+  // 🚀 PRIMERA OPCIÓN: API local dev3-downloader
+  try {
+    const result = await downloadWithDev3Api(url);
+    if (result.success) {
+      console.log('✅ dev3-downloader: Facebook descargado');
+      return result;
+    }
+  } catch (e) {
+    console.log('⚠️ dev3-downloader no disponible para Facebook');
+  }
+
+  // API 2: FDown (fallback)
   try {
     const result = await fdownDownload(url);
     if (result.success) return result;
@@ -349,7 +469,7 @@ export async function downloadFacebook(url: string): Promise<DownloadResult> {
     console.log('❌ FDown falló:', (e as Error).message);
   }
 
-  // API 2: SnapSave
+  // API 3: SnapSave
   try {
     const result = await snapsaveFacebookDownload(url);
     if (result.success) return result;
@@ -357,7 +477,7 @@ export async function downloadFacebook(url: string): Promise<DownloadResult> {
     console.log('❌ SnapSave falló:', (e as Error).message);
   }
 
-  // API 3: GetFVid
+  // API 4: GetFVid
   try {
     const result = await getfvidDownload(url);
     if (result.success) return result;
@@ -457,7 +577,18 @@ async function getfvidDownload(url: string): Promise<DownloadResult> {
 // ============================================================
 
 export async function downloadTwitter(url: string): Promise<DownloadResult> {
-  // API 1: TwitSave
+  // 🚀 PRIMERA OPCIÓN: API local dev3-downloader
+  try {
+    const result = await downloadWithDev3Api(url);
+    if (result.success) {
+      console.log('✅ dev3-downloader: Twitter descargado');
+      return result;
+    }
+  } catch (e) {
+    console.log('⚠️ dev3-downloader no disponible para Twitter');
+  }
+
+  // API 2: TwitSave (fallback)
   try {
     const result = await twitsaveDownload(url);
     if (result.success) return result;
@@ -465,7 +596,7 @@ export async function downloadTwitter(url: string): Promise<DownloadResult> {
     console.log('❌ TwitSave falló:', (e as Error).message);
   }
 
-  // API 2: SSSTwitter
+  // API 3: SSSTwitter
   try {
     const result = await ssstwitterDownload(url);
     if (result.success) return result;
@@ -473,7 +604,7 @@ export async function downloadTwitter(url: string): Promise<DownloadResult> {
     console.log('❌ SSSTwitter falló:', (e as Error).message);
   }
 
-  // API 3: SaveTwitter
+  // API 4: SaveTwitter
   try {
     const result = await savetwitterDownload(url);
     if (result.success) return result;
@@ -954,9 +1085,24 @@ export function detectPlatform(url: string): Platform {
   return 'unknown';
 }
 
-export async function downloadAuto(url: string): Promise<DownloadResult & { platform: Platform }> {
+export async function downloadAuto(url: string, audioOnly = false): Promise<DownloadResult & { platform: Platform }> {
   const platform = detectPlatform(url);
 
+  // 🚀 PRIMERA OPCIÓN: API local dev3-downloader (más rápida y confiable)
+  // Soporta: YouTube, TikTok, Instagram, Twitter, Facebook
+  if (['youtube', 'tiktok', 'instagram', 'twitter', 'facebook'].includes(platform)) {
+    try {
+      const dev3Result = await downloadWithDev3Api(url, audioOnly);
+      if (dev3Result.success) {
+        console.log(`✅ dev3-downloader: descarga exitosa (${platform})`);
+        return { ...dev3Result, platform };
+      }
+    } catch (e) {
+      console.log('⚠️ dev3-downloader no disponible, usando fallback...');
+    }
+  }
+
+  // FALLBACK: APIs públicas específicas por plataforma
   let result: DownloadResult;
 
   switch (platform) {
@@ -979,11 +1125,19 @@ export async function downloadAuto(url: string): Promise<DownloadResult & { plat
       result = await downloadThreads(url);
       break;
     case 'youtube':
-      // YouTube requiere manejo especial, usar Cobalt como fallback
+      // YouTube: intentar con Cobalt público como fallback
       result = await downloadWithCobalt(url);
       break;
     default:
-      // Intentar con Cobalt para URLs desconocidas
+      // Intentar primero con API local para URLs desconocidas
+      try {
+        const dev3Result = await downloadWithDev3Api(url, audioOnly);
+        if (dev3Result.success) {
+          return { ...dev3Result, platform };
+        }
+      } catch {
+        // Continuar con Cobalt público
+      }
       result = await downloadWithCobalt(url);
   }
 

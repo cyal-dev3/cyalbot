@@ -60,6 +60,10 @@ class MessageQueue {
       chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
       chalk.cyan(`🔄 Socket de WhatsApp actualizado en la cola`)
     );
+    // Si hay mensajes pendientes y no estamos pausados, intentar procesar
+    if (this.queue.length > 0 && !this.isPaused && !this.isProcessing) {
+      this.processQueue();
+    }
   }
 
   /**
@@ -68,11 +72,9 @@ class MessageQueue {
   async enqueue(
     event: NewMessageEvent,
     client: TelegramClient,
-    sock: WASocket,
     config: TelegramBridgeConfig
   ): Promise<void> {
-    // Actualizar socket actual
-    this.currentSock = sock;
+    // NO actualizar el socket aquí - usar el que se actualiza vía updateSocket()
 
     // Verificar límite de cola
     if (this.queue.length >= this.maxQueueSize) {
@@ -161,6 +163,15 @@ class MessageQueue {
    */
   private async processQueue(): Promise<void> {
     if (this.isProcessing || this.queue.length === 0 || this.isPaused) return;
+
+    // Verificar que tenemos socket antes de procesar
+    if (!this.currentSock?.user) {
+      console.log(
+        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+        chalk.yellow(`⏸️ Socket de WhatsApp no disponible, esperando...`)
+      );
+      return;
+    }
 
     this.isProcessing = true;
 
@@ -418,7 +429,6 @@ function validateConfig(): TelegramBridgeConfig | null {
 function handleTelegramMessage(
   event: NewMessageEvent,
   client: TelegramClient,
-  sock: WASocket,
   config: TelegramBridgeConfig
 ): void {
   const message = event.message;
@@ -446,8 +456,8 @@ function handleTelegramMessage(
     chalk.white(`Nuevo mensaje recibido, encolando...`)
   );
 
-  // Encolar el mensaje (pre-procesa y guarda los datos)
-  messageQueue.enqueue(event, client, sock, config);
+  // Encolar el mensaje (pre-procesa y guarda los datos) - el socket se obtiene de la cola
+  messageQueue.enqueue(event, client, config);
 }
 
 /**
@@ -522,19 +532,17 @@ async function handleTipsterDetection(
 }
 
 
+// Variables para reconexión de Telegram
+let currentConfig: TelegramBridgeConfig | null = null;
+let telegramReconnectAttempts = 0;
+const MAX_TELEGRAM_RECONNECT_ATTEMPTS = 10;
+const TELEGRAM_RECONNECT_DELAYS = [5000, 10000, 30000, 60000, 120000]; // Backoff exponencial
+
 /**
- * Inicia el cliente de Telegram y el puente de reenvío
+ * Conecta el cliente de Telegram con manejo de reconexión
  */
-export async function startTelegramBridge(sock: WASocket): Promise<TelegramClient | null> {
-  const config = validateConfig();
-  if (!config) {
-    console.log(chalk.gray('   Telegram Bridge deshabilitado'));
-    return null;
-  }
-
+async function connectTelegramClient(config: TelegramBridgeConfig): Promise<boolean> {
   try {
-    console.log(chalk.yellow('🔌 Conectando a Telegram...'));
-
     const session = new StringSession(config.stringSession);
 
     telegramClient = new TelegramClient(session, config.apiId, config.apiHash, {
@@ -549,15 +557,160 @@ export async function startTelegramBridge(sock: WASocket): Promise<TelegramClien
       console.log(chalk.green(`   ✅ Conectado como: ${me.firstName} ${me.lastName || ''}`));
     }
 
-    // Configurar el handler de mensajes nuevos
+    // Configurar el handler de mensajes nuevos (sin pasar socket - se usa el de la cola)
     telegramClient.addEventHandler(
-      (event: NewMessageEvent) => handleTelegramMessage(event, telegramClient!, sock, config),
+      (event: NewMessageEvent) => handleTelegramMessage(event, telegramClient!, config),
       new NewMessage({})
     );
+
+    // Monitorear estado de conexión de Telegram
+    setupTelegramConnectionMonitor(config);
+
+    telegramReconnectAttempts = 0; // Reset en conexión exitosa
+    return true;
+  } catch (error) {
+    console.error(chalk.red('❌ Error conectando a Telegram:'), error);
+    return false;
+  }
+}
+
+// Intervalo de monitoreo de conexión
+let telegramHealthCheckInterval: NodeJS.Timeout | null = null;
+
+/**
+ * Configura el monitoreo de conexión de Telegram para reconexión automática
+ */
+function setupTelegramConnectionMonitor(config: TelegramBridgeConfig): void {
+  // Limpiar intervalo anterior si existe
+  if (telegramHealthCheckInterval) {
+    clearInterval(telegramHealthCheckInterval);
+  }
+
+  // Monitoreo periódico de salud de la conexión cada 30 segundos
+  telegramHealthCheckInterval = setInterval(async () => {
+    try {
+      if (!telegramClient) {
+        console.log(
+          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+          chalk.yellow(`⚠️ Cliente de Telegram no existe, reconectando...`)
+        );
+        await attemptTelegramReconnect(config);
+        return;
+      }
+
+      if (!telegramClient.connected) {
+        console.log(
+          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+          chalk.yellow(`⚠️ Telegram desconectado, reconectando...`)
+        );
+        await attemptTelegramReconnect(config);
+        return;
+      }
+
+      // Ping de salud - intentar obtener información del usuario
+      try {
+        await telegramClient.getMe();
+      } catch (pingError) {
+        console.log(
+          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+          chalk.yellow(`⚠️ Telegram no responde al ping, reconectando...`)
+        );
+        await attemptTelegramReconnect(config);
+      }
+    } catch (error) {
+      console.error(
+        chalk.red(`❌ Error en health check de Telegram:`),
+        error instanceof Error ? error.message : error
+      );
+    }
+  }, 30000); // Verificar cada 30 segundos
+}
+
+/**
+ * Intenta reconectar a Telegram con backoff exponencial
+ */
+async function attemptTelegramReconnect(config: TelegramBridgeConfig): Promise<void> {
+  if (telegramReconnectAttempts >= MAX_TELEGRAM_RECONNECT_ATTEMPTS) {
+    console.log(
+      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+      chalk.red(`❌ Máximo de intentos de reconexión de Telegram alcanzado. Reinicia el bot manualmente.`)
+    );
+    return;
+  }
+
+  telegramReconnectAttempts++;
+  const delayIndex = Math.min(telegramReconnectAttempts - 1, TELEGRAM_RECONNECT_DELAYS.length - 1);
+  const delay = TELEGRAM_RECONNECT_DELAYS[delayIndex];
+
+  console.log(
+    chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+    chalk.yellow(`🔄 Reconectando Telegram (intento ${telegramReconnectAttempts}/${MAX_TELEGRAM_RECONNECT_ATTEMPTS}) en ${delay/1000}s...`)
+  );
+
+  await new Promise(resolve => setTimeout(resolve, delay));
+
+  try {
+    // Desconectar cliente actual si existe
+    if (telegramClient) {
+      try {
+        await telegramClient.disconnect();
+      } catch {
+        // Ignorar errores de desconexión
+      }
+      telegramClient = null;
+    }
+
+    // Reconectar
+    const success = await connectTelegramClient(config);
+    if (success) {
+      console.log(
+        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+        chalk.green(`✅ Telegram reconectado exitosamente`)
+      );
+      // Reanudar cola si estaba pausada por errores de conexión
+      if (messageQueue.paused) {
+        messageQueue.resume();
+      }
+    } else {
+      // Reintentar
+      await attemptTelegramReconnect(config);
+    }
+  } catch (error) {
+    console.error(
+      chalk.red(`❌ Error en reconexión de Telegram:`),
+      error instanceof Error ? error.message : error
+    );
+    await attemptTelegramReconnect(config);
+  }
+}
+
+/**
+ * Inicia el cliente de Telegram y el puente de reenvío
+ */
+export async function startTelegramBridge(sock: WASocket): Promise<TelegramClient | null> {
+  const config = validateConfig();
+  if (!config) {
+    console.log(chalk.gray('   Telegram Bridge deshabilitado'));
+    return null;
+  }
+
+  currentConfig = config;
+
+  // Actualizar el socket en la cola ANTES de conectar
+  messageQueue.updateSocket(sock);
+
+  try {
+    console.log(chalk.yellow('🔌 Conectando a Telegram...'));
+
+    const success = await connectTelegramClient(config);
+    if (!success) {
+      return null;
+    }
 
     console.log(chalk.green(`   ✅ Escuchando ${config.telegramGroupIds.length} grupo(s) de Telegram`));
     console.log(chalk.green(`   ✅ Reenviando a: ${config.whatsappGroupId}`));
     console.log(chalk.green(`   ✅ Cola de mensajes habilitada (procesamiento secuencial)`));
+    console.log(chalk.green(`   ✅ Reconexión automática de Telegram habilitada`));
 
     return telegramClient;
   } catch (error) {
@@ -570,8 +723,18 @@ export async function startTelegramBridge(sock: WASocket): Promise<TelegramClien
  * Detiene el cliente de Telegram
  */
 export async function stopTelegramBridge(): Promise<void> {
+  // Detener el monitoreo de salud
+  if (telegramHealthCheckInterval) {
+    clearInterval(telegramHealthCheckInterval);
+    telegramHealthCheckInterval = null;
+  }
+
   if (telegramClient) {
-    await telegramClient.disconnect();
+    try {
+      await telegramClient.disconnect();
+    } catch {
+      // Ignorar errores de desconexión
+    }
     telegramClient = null;
     console.log(chalk.yellow('🔌 Telegram Bridge desconectado'));
   }
@@ -617,4 +780,30 @@ export function isMessageQueuePaused(): boolean {
  */
 export function updateQueueSocket(sock: WASocket): void {
   messageQueue.updateSocket(sock);
+}
+
+/**
+ * Reinicia el Telegram Bridge manualmente
+ */
+export async function restartTelegramBridge(sock: WASocket): Promise<TelegramClient | null> {
+  console.log(
+    chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+    chalk.yellow(`🔄 Reiniciando Telegram Bridge...`)
+  );
+
+  // Detener el bridge actual
+  await stopTelegramBridge();
+
+  // Resetear intentos de reconexión
+  telegramReconnectAttempts = 0;
+
+  // Reiniciar
+  return startTelegramBridge(sock);
+}
+
+/**
+ * Verifica si el cliente de Telegram está conectado
+ */
+export function isTelegramConnected(): boolean {
+  return telegramClient?.connected ?? false;
 }

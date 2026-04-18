@@ -1,11 +1,13 @@
 /**
  * 🎵 Plugin de Música - CYALTRONIC
- * Busca y envía música desde SoundCloud (principal) y YouTube (respaldo)
- * Usa play-dl para streaming directo sin APIs externas
+ * Busca con play-dl, descarga con API local (Cobalt)
+ * SoundCloud como fallback para búsquedas
  */
 
-import play, { SoundCloudTrack } from 'play-dl';
+import play, { SoundCloudTrack, YouTubeVideo } from 'play-dl';
 import type { PluginHandler, MessageContext } from '../types/message.js';
+import { downloadWithDev3Api } from '../lib/downloaders.js';
+import { extractAudioFromVideo } from '../lib/video-converter.js';
 
 // Inicializar cliente de SoundCloud al cargar
 let scInitialized = false;
@@ -28,16 +30,6 @@ async function initSoundCloud(): Promise<boolean> {
 initSoundCloud().catch(() => {});
 
 /**
- * Formatea duración de milisegundos a mm:ss
- */
-function formatDuration(ms: number): string {
-  const totalSecs = Math.floor(ms / 1000);
-  const mins = Math.floor(totalSecs / 60);
-  const secs = totalSecs % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
-
-/**
  * Formatea duración de segundos a mm:ss
  */
 function formatDurationSecs(seconds: number): string {
@@ -47,24 +39,95 @@ function formatDurationSecs(seconds: number): string {
 }
 
 /**
- * Convierte un stream a Buffer
+ * Formatea duración de milisegundos a mm:ss
  */
-async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
+function formatDuration(ms: number): string {
+  const totalSecs = Math.floor(ms / 1000);
+  return formatDurationSecs(totalSecs);
 }
 
 /**
- * Descarga audio desde SoundCloud usando play-dl
+ * Verifica si una URL es de YouTube
+ */
+function isYouTubeUrl(url: string): boolean {
+  return url.includes('youtube.com') || url.includes('youtu.be');
+}
+
+/**
+ * Descarga audio usando la API local (Cobalt)
+ * Para YouTube: si falla audioOnly, descarga video y extrae audio
+ */
+async function downloadWithApi(url: string, title?: string, duration?: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
+  try {
+    console.log('🎵 Descargando con API (Cobalt):', url);
+
+    // Intentar descargar como audio
+    let result = await downloadWithDev3Api(url, true); // audioOnly = true
+
+    // Si falla y es YouTube, intentar descargar video y extraer audio
+    if ((!result.success || !result.medias || result.medias.length === 0) && isYouTubeUrl(url)) {
+      console.log('⚠️ Audio falló, intentando video + extracción para YouTube...');
+      result = await downloadWithDev3Api(url, false, 'low'); // video en baja calidad
+
+      if (result.success && result.medias && result.medias.length > 0) {
+        const media = result.medias[0];
+        const response = await fetch(media.url);
+        const videoBuffer = Buffer.from(await response.arrayBuffer());
+
+        if (videoBuffer.length > 10000) {
+          // Extraer audio del video
+          const audioBuffer = await extractAudioFromVideo(videoBuffer);
+
+          if (audioBuffer.length > 10000) {
+            console.log('✅ Audio extraído exitosamente del video');
+            return {
+              buffer: audioBuffer,
+              title: title || result.title || 'Audio',
+              duration: duration || '0:00'
+            };
+          }
+        }
+      }
+
+      console.log('❌ También falló el fallback de video');
+      return null;
+    }
+
+    if (!result.success || !result.medias || result.medias.length === 0) {
+      console.log('❌ API falló:', result.error);
+      return null;
+    }
+
+    const media = result.medias[0];
+    const response = await fetch(media.url);
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    if (buffer.length < 10000) {
+      console.log('❌ Buffer muy pequeño');
+      return null;
+    }
+
+    console.log('✅ Descarga exitosa con API');
+    return {
+      buffer,
+      title: title || result.title || 'Audio',
+      duration: duration || '0:00'
+    };
+  } catch (err) {
+    console.log('❌ Error descargando con API:', (err as Error).message);
+    return null;
+  }
+}
+
+/**
+ * Descarga audio desde SoundCloud usando la API
  */
 async function downloadFromSoundCloud(url: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
   try {
     await initSoundCloud();
 
-    console.log('🎵 Descargando desde SoundCloud...');
+    // Obtener info del track para el título
+    console.log('🎵 Obteniendo info de SoundCloud...');
     const trackInfo = await play.soundcloud(url);
 
     if (!trackInfo || trackInfo.type !== 'track') {
@@ -73,21 +136,10 @@ async function downloadFromSoundCloud(url: string): Promise<{ buffer: Buffer; ti
     }
 
     const track = trackInfo as SoundCloudTrack;
-    const stream = await play.stream_from_info(track);
+    const duration = formatDuration(track.durationInMs || 0);
 
-    const buffer = await streamToBuffer(stream.stream);
-
-    if (buffer.length < 10000) {
-      console.log('❌ Buffer muy pequeño');
-      return null;
-    }
-
-    console.log('✅ SoundCloud exitoso');
-    return {
-      buffer,
-      title: track.name || 'Audio',
-      duration: formatDuration(track.durationInMs || 0)
-    };
+    // Descargar usando la API
+    return await downloadWithApi(url, track.name, duration);
   } catch (err) {
     console.log('❌ SoundCloud falló:', (err as Error).message);
     return null;
@@ -95,7 +147,7 @@ async function downloadFromSoundCloud(url: string): Promise<{ buffer: Buffer; ti
 }
 
 /**
- * Busca en SoundCloud y descarga el primer resultado
+ * Busca en SoundCloud y descarga usando la API
  */
 async function searchAndDownloadSoundCloud(query: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
   try {
@@ -110,22 +162,12 @@ async function searchAndDownloadSoundCloud(query: string): Promise<{ buffer: Buf
     }
 
     const track = results[0] as SoundCloudTrack;
-    console.log('🎵 Encontrado:', track.name);
+    console.log('🎵 Encontrado en SoundCloud:', track.name);
 
-    const stream = await play.stream_from_info(track);
-    const buffer = await streamToBuffer(stream.stream);
+    const duration = formatDuration(track.durationInMs || 0);
 
-    if (buffer.length < 10000) {
-      console.log('❌ Buffer muy pequeño');
-      return null;
-    }
-
-    console.log('✅ SoundCloud exitoso');
-    return {
-      buffer,
-      title: track.name || 'Audio',
-      duration: formatDuration(track.durationInMs || 0)
-    };
+    // Descargar usando la API
+    return await downloadWithApi(track.url, track.name, duration);
   } catch (err) {
     console.log('❌ Búsqueda SoundCloud falló:', (err as Error).message);
     return null;
@@ -133,36 +175,27 @@ async function searchAndDownloadSoundCloud(query: string): Promise<{ buffer: Buf
 }
 
 /**
- * Descarga audio desde YouTube usando play-dl (respaldo)
+ * Descarga audio desde YouTube usando la API (Cobalt)
  */
 async function downloadFromYouTube(url: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
   try {
-    console.log('🎵 Intentando YouTube con play-dl...');
-
+    // Obtener info del video para título y duración
+    console.log('🎵 Obteniendo info de YouTube...');
     const info = await play.video_basic_info(url);
-    const stream = await play.stream(url, { quality: 2 }); // quality 2 = audio only
+    const title = info.video_details.title || 'Audio';
+    const duration = formatDurationSecs(info.video_details.durationInSec || 0);
 
-    const buffer = await streamToBuffer(stream.stream);
-
-    if (buffer.length < 10000) {
-      console.log('❌ Buffer muy pequeño');
-      return null;
-    }
-
-    console.log('✅ YouTube exitoso');
-    return {
-      buffer,
-      title: info.video_details.title || 'Audio',
-      duration: formatDurationSecs(info.video_details.durationInSec || 0)
-    };
+    // Descargar usando la API (Cobalt)
+    return await downloadWithApi(url, title, duration);
   } catch (err) {
-    console.log('❌ YouTube falló:', (err as Error).message);
-    return null;
+    // Si falla obtener info, intentar descargar directamente
+    console.log('⚠️ No se pudo obtener info, descargando directamente...');
+    return await downloadWithApi(url);
   }
 }
 
 /**
- * Busca en YouTube y descarga el primer resultado (respaldo)
+ * Busca en YouTube y descarga usando la API (Cobalt)
  */
 async function searchAndDownloadYouTube(query: string): Promise<{ buffer: Buffer; title: string; duration: string } | null> {
   try {
@@ -174,23 +207,11 @@ async function searchAndDownloadYouTube(query: string): Promise<{ buffer: Buffer
       return null;
     }
 
-    const video = results[0];
-    console.log('🎵 Encontrado:', video.title);
+    const video = results[0] as YouTubeVideo;
+    console.log('🎵 Encontrado en YouTube:', video.title);
 
-    const stream = await play.stream(video.url, { quality: 2 });
-    const buffer = await streamToBuffer(stream.stream);
-
-    if (buffer.length < 10000) {
-      console.log('❌ Buffer muy pequeño');
-      return null;
-    }
-
-    console.log('✅ YouTube exitoso');
-    return {
-      buffer,
-      title: video.title || 'Audio',
-      duration: video.durationRaw || '0:00'
-    };
+    // Descargar usando la API (Cobalt)
+    return await downloadWithApi(video.url, video.title, video.durationRaw || '0:00');
   } catch (err) {
     console.log('❌ Búsqueda YouTube falló:', (err as Error).message);
     return null;

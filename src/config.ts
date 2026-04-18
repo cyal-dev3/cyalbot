@@ -11,6 +11,12 @@ export const CONFIG = {
   botName: 'CYALTRONIC',
   version: '3.0.0',
 
+  // 📥 API de descarga local (dev3-downloader)
+  downloaderApi: {
+    url: process.env.DOWNLOADER_API_URL || 'http://localhost:3002',
+    timeout: 30000, // 30 segundos
+  },
+
   // 📝 Prefijos de comandos aceptados
   prefix: /^[#!/.]/,
 
