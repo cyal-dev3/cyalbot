@@ -106,6 +106,11 @@ import { pickPlugin, verdePlugin, rojaPlugin, pendientesPlugin, seguirPickPlugin
 import { tipsterPlugin, misTipstersPlugin, tipstersDePlugin } from './betting-tipster.js';
 import { tipstatsPlugin, rankingTipstersPlugin, historialPlugin, bettingPlugin, bettingStatsPlugin } from './betting-stats.js';
 
+// Nuevos plugins: mascotas, gremios, admin-stats
+import { adoptarPlugin, mascotaPlugin, alimentarPlugin, entrenarPlugin } from './rpg-mascotas.js';
+import { gremioPlugin } from './rpg-gremios.js';
+import { adminStatsPlugin } from './admin-stats.js';
+
 /**
  * Lista de plugins RPG básicos
  */
@@ -455,6 +460,19 @@ export function loadPlugins(handler: MessageHandler): void {
   console.log('      ✅ tipster, mistipsters, tipsters');
   console.log('      ✅ tipstats, rankingtipsters, historial');
   console.log('      ✅ betting, bettingstats');
+
+  // Nuevos: mascotas, gremios, admin-stats
+  console.log('');
+  console.log('   🐾 Mascotas / 🏰 Gremios / 📊 Stats:');
+  handler.registerPlugin('rpg-adoptar', adoptarPlugin);
+  handler.registerPlugin('rpg-mascota', mascotaPlugin);
+  handler.registerPlugin('rpg-alimentar', alimentarPlugin);
+  handler.registerPlugin('rpg-entrenar', entrenarPlugin);
+  handler.registerPlugin('rpg-gremio', gremioPlugin);
+  handler.registerPlugin('admin-stats', adminStatsPlugin);
+  console.log('      ✅ adoptar, mascota, alimentar, entrenar');
+  console.log('      ✅ gremio (crear/unirse/salir/tesoro/...)');
+  console.log('      ✅ stats (owner)');
 
   // Calcular total de plugins
   const totalPlugins =

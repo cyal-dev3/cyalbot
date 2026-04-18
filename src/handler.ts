@@ -38,19 +38,41 @@ export class MessageHandler {
   private readonly MAX_TRACKED_MESSAGES = 150; // Máximo de mensajes a rastrear por grupo
   private readonly MESSAGE_EXPIRY = 60 * 60 * 1000; // 1 hora de expiración (límite de WhatsApp)
   private readonly AUTOCLEAR_DELAY = 2 * 60 * 1000; // 2 minutos para autoclear
+  private readonly SPAM_TRACKER_EXPIRY: number;
+  private cleanupInterval: NodeJS.Timeout | null = null;
+  private autoclearInterval: NodeJS.Timeout | null = null;
 
   constructor(
     private conn: WASocket,
     private db: Database
   ) {
+    this.SPAM_TRACKER_EXPIRY = CONFIG.protection.intervalMs * 10;
+
     // Cargar datos de mute desde la base de datos al iniciar
     this.loadMuteDataFromDB();
 
     // Limpiar mensajes viejos cada 5 minutos
-    setInterval(() => this.cleanupOldMessages(), 5 * 60 * 1000);
+    this.cleanupInterval = setInterval(() => this.cleanupOldMessages(), 5 * 60 * 1000);
 
     // Ejecutar autoclear cada 30 segundos
-    setInterval(() => this.processAutoClear(), 30 * 1000);
+    this.autoclearInterval = setInterval(() => this.processAutoClear(), 30 * 1000);
+  }
+
+  /**
+   * Detiene los intervalos internos. Debe llamarse antes de reemplazar el handler
+   * (reconexión) o durante apagado graceful para evitar fugas de memoria.
+   */
+  stop(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    if (this.autoclearInterval) {
+      clearInterval(this.autoclearInterval);
+      this.autoclearInterval = null;
+    }
+    this.spamTracker.clear();
+    this.messageTracker.clear();
   }
 
   /**
@@ -85,13 +107,24 @@ export class MessageHandler {
   }
 
   /**
-   * Limpia mensajes viejos de todos los grupos
+   * Limpia mensajes viejos de todos los grupos y entradas inactivas del spam tracker
    */
   private cleanupOldMessages(): void {
     const now = Date.now();
     for (const [chatId, messages] of this.messageTracker.entries()) {
       const filtered = messages.filter(m => now - m.timestamp < this.MESSAGE_EXPIRY);
-      this.messageTracker.set(chatId, filtered);
+      if (filtered.length === 0) {
+        this.messageTracker.delete(chatId);
+      } else {
+        this.messageTracker.set(chatId, filtered);
+      }
+    }
+    // Podar spamTracker: eliminar entradas cuya marca más reciente está caduca
+    for (const [key, timestamps] of this.spamTracker.entries()) {
+      const latest = timestamps.length ? timestamps[timestamps.length - 1] : 0;
+      if (now - latest > this.SPAM_TRACKER_EXPIRY) {
+        this.spamTracker.delete(key);
+      }
     }
   }
 

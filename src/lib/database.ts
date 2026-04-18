@@ -37,6 +37,7 @@ export class Database {
     if (!this.db.data.users) this.db.data.users = {};
     if (!this.db.data.chats) this.db.data.chats = {};
     if (!this.db.data.stats) this.db.data.stats = {};
+    if (!this.db.data.guilds) this.db.data.guilds = {};
     if (!this.db.data.settings) this.db.data.settings = DEFAULT_DATABASE.settings;
 
     // Auto-guardado cada 30 segundos
@@ -299,12 +300,16 @@ export class Database {
   }
 
   /**
-   * Detiene el auto-guardado
+   * Detiene el auto-guardado y hace flush final a disco
    */
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.saveInterval) {
       clearInterval(this.saveInterval);
       this.saveInterval = null;
+    }
+    if (this.isDirty) {
+      await this.save();
+      this.isDirty = false;
     }
   }
 
@@ -358,6 +363,11 @@ export class Database {
   addWarning(chatId: string, warning: UserWarning): number {
     const chat = this.getChatSettings(chatId);
     chat.warnings.push(warning);
+    // Cap duro para evitar crecimiento ilimitado en grupos longevos
+    const MAX_WARNINGS_PER_GROUP = 1000;
+    if (chat.warnings.length > MAX_WARNINGS_PER_GROUP) {
+      chat.warnings.splice(0, chat.warnings.length - MAX_WARNINGS_PER_GROUP);
+    }
     this.isDirty = true;
     // Retornar el número de advertencias del usuario
     return chat.warnings.filter(w => w.odTo === warning.odTo).length;

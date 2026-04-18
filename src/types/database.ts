@@ -109,6 +109,22 @@ export interface CommandStats {
 }
 
 /**
+ * Gremio (guild) — grupo de jugadores con tesorería compartida
+ */
+export interface Guild {
+  id: string;
+  name: string;
+  tag: string;               // tag corto [ABC]
+  leader: string;            // JID del líder
+  members: string[];         // JIDs de todos los miembros (incluye al líder)
+  treasury: number;          // Dinero compartido
+  level: number;             // Nivel del gremio (desbloquea perks)
+  exp: number;
+  createdAt: number;
+  description: string;
+}
+
+/**
  * Esquema principal de la base de datos
  */
 export interface DatabaseSchema {
@@ -117,6 +133,9 @@ export interface DatabaseSchema {
 
   /** Configuración de chats/grupos indexados por JID */
   chats: Record<string, ChatSettings>;
+
+  /** Gremios indexados por id (opcional para compatibilidad con DBs antiguas) */
+  guilds?: Record<string, Guild>;
 
   /** Estadísticas de uso de comandos */
   stats: Record<string, CommandStats>;

@@ -5,13 +5,16 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeFile, unlink, readFile } from 'node:fs/promises';
+import { writeFile, unlink, readFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 const execFileAsync = promisify(execFile);
 
-const TMP_DIR = '/home/dev3/cyalbot/tmp';
+// Relativo al cwd para que funcione en cualquier VPS/OS sin rutas absolutas
+const TMP_DIR = join(process.cwd(), 'tmp');
+// Crear directorio (idempotente) al cargar el módulo
+mkdir(TMP_DIR, { recursive: true }).catch(() => {});
 
 /**
  * Convierte un buffer de video a formato compatible con WhatsApp

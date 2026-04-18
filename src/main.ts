@@ -25,8 +25,22 @@ import { CONFIG } from './config.js';
 // Logger silencioso para Baileys
 const logger = pino({ level: 'silent' });
 
-// Caché para reintentos de mensajes
-const msgRetryCounterCache = new NodeCache();
+// Caché para reintentos de mensajes — bounded para VPS de larga duración
+export const msgRetryCounterCache = new NodeCache({
+  stdTTL: 300,
+  useClones: false,
+  maxKeys: 5000
+});
+
+// setTimeout activo para solicitar el código de emparejamiento (trackeado para poder cancelarlo)
+let pairingTimeout: NodeJS.Timeout | null = null;
+
+export function cancelPairingTimeout(): void {
+  if (pairingTimeout) {
+    clearTimeout(pairingTimeout);
+    pairingTimeout = null;
+  }
+}
 
 // Variable global para el readline
 let rl: readline.Interface | null = null;
@@ -175,7 +189,8 @@ export async function startBot(): Promise<WASocket> {
   if (!useQR && !hasExistingSession() && phoneNumber) {
     console.log(chalk.yellow('\n⏳ Solicitando código de emparejamiento...\n'));
 
-    setTimeout(async () => {
+    pairingTimeout = setTimeout(async () => {
+      pairingTimeout = null;
       try {
         const code = await conn.requestPairingCode(phoneNumber!);
         const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;

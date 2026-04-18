@@ -18,18 +18,31 @@ import { startAutoRegen } from './lib/auto-regen.js';
 import { startTelegramBridge, stopTelegramBridge, pauseMessageQueue, resumeMessageQueue, updateQueueSocket } from './lib/telegram-bridge.js';
 import { downloadMediaMessage, type WASocket, type proto, type GroupMetadata } from 'baileys';
 import { LRUCache } from './lib/lru-cache.js';
+import { startCleanupScheduler, stopCleanupScheduler } from './lib/cleanup-scheduler.js';
 
 // Variables globales para reconexión
 let db: Database;
 let handler: MessageHandler;
+let currentConn: WASocket | null = null;
 let isFirstConnection = true;
+let isReconnecting = false;
+let reconnectAttempts = 0;
+let reconnectTimeout: NodeJS.Timeout | null = null;
+let reconnectCount = 0;
+const RECONNECT_BACKOFF_MS = [3000, 6000, 12000, 24000, 30000];
 
 // Caché de metadatos de grupos con límite de 1000 entradas (LRU)
 const groupMetadataCache = new LRUCache<string, GroupMetadata>(1000);
 
-// 🗑️ Caché de mensajes recientes para anti-delete (por grupo, últimos 200 mensajes)
-const messageCache = new Map<string, Map<string, proto.IWebMessageInfo>>();
-const MAX_CACHED_PER_CHAT = 200;
+// 🗑️ Caché de mensajes recientes para anti-delete — LRU plano 'chatId|msgId' → msg
+const MAX_ANTIDELETE_CACHE = 5000;
+const MAX_ANTIDELETE_MEDIA_BYTES = 15 * 1024 * 1024; // 15 MB
+const messageCache = new LRUCache<string, proto.IWebMessageInfo>(MAX_ANTIDELETE_CACHE);
+const antiDeleteKey = (chatId: string, msgId: string): string => `${chatId}|${msgId}`;
+
+export function getReconnectStats(): { count: number; attempts: number } {
+  return { count: reconnectCount, attempts: reconnectAttempts };
+}
 
 /**
  * Muestra el banner de inicio
@@ -286,10 +299,36 @@ async function handleGroupsUpdate(
 }
 
 /**
+ * Cierra el socket y handler previos antes de reconectar
+ * Evita listeners duplicados y fugas de intervalos
+ */
+function teardownPrevious(): void {
+  if (handler) {
+    try {
+      handler.stop();
+    } catch {}
+  }
+  if (currentConn) {
+    try {
+      currentConn.ev.removeAllListeners('messages.upsert');
+      currentConn.ev.removeAllListeners('messages.update');
+      currentConn.ev.removeAllListeners('group-participants.update');
+      currentConn.ev.removeAllListeners('groups.update');
+      currentConn.ev.removeAllListeners('connection.update');
+      currentConn.end(undefined);
+    } catch {}
+    currentConn = null;
+  }
+}
+
+/**
  * Conecta el bot a WhatsApp
  */
 async function connectBot(): Promise<WASocket> {
+  teardownPrevious();
+
   const conn = await startBot();
+  currentConn = conn;
 
   // Crear nuevo handler con la nueva conexión
   handler = new MessageHandler(conn, db);
@@ -304,19 +343,9 @@ async function connectBot(): Promise<WASocket> {
       if (!msg.key.fromMe && msg.key.remoteJid && msg.key.id && msg.message) {
         const chatId = msg.key.remoteJid;
 
-        // Solo cachear en grupos con anti-delete activo
+        // Solo cachear en grupos (el LRU global se encarga del tamaño)
         if (chatId.endsWith('@g.us')) {
-          if (!messageCache.has(chatId)) {
-            messageCache.set(chatId, new Map());
-          }
-          const chatCache = messageCache.get(chatId)!;
-          chatCache.set(msg.key.id, msg);
-
-          // Limitar tamaño del caché
-          if (chatCache.size > MAX_CACHED_PER_CHAT) {
-            const firstKey = chatCache.keys().next().value;
-            if (firstKey) chatCache.delete(firstKey);
-          }
+          messageCache.set(antiDeleteKey(chatId, msg.key.id), msg);
         }
 
         await logMessage(conn, msg);
@@ -343,16 +372,28 @@ async function connectBot(): Promise<WASocket> {
           if (!chatSettings.antiDelete) continue;
 
           // Buscar mensaje en caché
-          const chatCache = messageCache.get(chatId);
-          if (!chatCache) continue;
-
-          const cachedMsg = chatCache.get(msgId);
+          const cacheKey = antiDeleteKey(chatId, msgId);
+          const cachedMsg = messageCache.get(cacheKey);
           if (!cachedMsg) continue;
 
           const content = cachedMsg.message;
           if (!content) continue;
 
           const pushName = cachedMsg.pushName || 'Usuario';
+
+          // Guardia de tamaño: no reenviar medios gigantes (OOM protection)
+          const mediaSize = Number(
+            content.imageMessage?.fileLength ??
+            content.videoMessage?.fileLength ??
+            content.audioMessage?.fileLength ??
+            content.documentMessage?.fileLength ??
+            0
+          );
+          if (mediaSize > MAX_ANTIDELETE_MEDIA_BYTES) {
+            console.log(`🗑️ AntiDelete: media de ${pushName} omitida (${(mediaSize / 1024 / 1024).toFixed(1)} MB > 15 MB)`);
+            messageCache.delete(cacheKey);
+            continue;
+          }
 
           // Intentar reenviar el contenido original sin texto adicional
           try {
@@ -454,7 +495,7 @@ async function connectBot(): Promise<WASocket> {
           }
 
           // Limpiar del caché
-          chatCache.delete(msgId);
+          messageCache.delete(cacheKey);
         }
       } catch (error) {
         console.error('❌ Error en anti-delete:', error);
@@ -480,9 +521,23 @@ async function connectBot(): Promise<WASocket> {
       // Pausar cola de Telegram antes de reconectar
       pauseMessageQueue();
 
+      if (isReconnecting) return; // guard: evitar reconexiones superpuestas
+
       if (shouldReconnect(lastDisconnect?.error)) {
-        console.log(chalk.yellow('\n🔄 Reconectando en 3 segundos...\n'));
-        setTimeout(() => connectBot(), 3000);
+        isReconnecting = true;
+        const delay = RECONNECT_BACKOFF_MS[Math.min(reconnectAttempts, RECONNECT_BACKOFF_MS.length - 1)];
+        reconnectAttempts++;
+        console.log(chalk.yellow(`\n🔄 Reconectando en ${Math.round(delay / 1000)}s (intento ${reconnectAttempts})...\n`));
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        reconnectTimeout = setTimeout(async () => {
+          reconnectTimeout = null;
+          try {
+            await connectBot();
+          } catch (err) {
+            console.error(chalk.red('❌ Error al reconectar:'), err);
+            isReconnecting = false; // permitir siguiente intento
+          }
+        }, delay);
       } else {
         console.log(chalk.red('\n❌ Sesión cerrada permanentemente.\n'));
         console.log(chalk.yellow('   Elimina la carpeta CyaltronicSession y reinicia.\n'));
@@ -491,6 +546,9 @@ async function connectBot(): Promise<WASocket> {
     }
 
     if (connection === 'open') {
+      isReconnecting = false;
+      reconnectAttempts = 0;
+
       if (isFirstConnection) {
         isFirstConnection = false;
         showCommands();
@@ -506,6 +564,7 @@ async function connectBot(): Promise<WASocket> {
           console.error(chalk.red('❌ Error en Telegram Bridge:'), err);
         });
       } else {
+        reconnectCount++;
         // Reconexión - actualizar socket y reanudar cola (sin perder mensajes)
         console.log(chalk.yellow('🔄 Actualizando conexión del Telegram Bridge...'));
         updateQueueSocket(conn);
@@ -530,6 +589,9 @@ async function main(): Promise<void> {
     console.log(chalk.green('   ✅ Base de datos lista'));
     console.log('');
 
+    // 1.5 Arrancar tareas de mantenimiento (sweep de tmp/, poda de sesión)
+    startCleanupScheduler();
+
     // 2. Conectar a WhatsApp
     console.log(chalk.yellow('🔌 Conectando a WhatsApp...'));
     await connectBot();
@@ -550,17 +612,25 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // Manejar cierre graceful
-process.on('SIGINT', async () => {
-  console.log(chalk.yellow('\n\n👋 Cerrando CYALTRONIC...\n'));
-  await stopTelegramBridge();
+async function gracefulShutdown(signal: string): Promise<void> {
+  console.log(chalk.yellow(`\n\n👋 Cerrando CYALTRONIC (${signal})...\n`));
+  try {
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
+    }
+    if (handler) handler.stop();
+    stopCleanupScheduler();
+    await stopTelegramBridge();
+    if (db) await db.stop(); // flush pendiente + detener intervalo
+  } catch (err) {
+    console.error(chalk.red('❌ Error durante apagado:'), err);
+  }
   process.exit(0);
-});
+}
 
-process.on('SIGTERM', async () => {
-  console.log(chalk.yellow('\n\n👋 Cerrando CYALTRONIC...\n'));
-  await stopTelegramBridge();
-  process.exit(0);
-});
+process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 
 // ¡Iniciar el bot!
 main();

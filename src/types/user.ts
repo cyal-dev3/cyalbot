@@ -167,6 +167,25 @@ export interface UserRPG {
 
   // 🎰 Sistema de Betting
   betting?: UserBetting;
+
+  // 🐾 Mascota (opcional — se adopta vía /adoptar)
+  pet?: UserPet;
+
+  // 🏰 Gremio al que pertenece (opcional — null si no está en ninguno)
+  guildId?: string | null;
+}
+
+/**
+ * Mascota del jugador. Sube de nivel alimentándola y ganando combates con el dueño.
+ */
+export interface UserPet {
+  species: string;         // rata | gato | lobo | fenix | dragon
+  name: string;
+  level: number;
+  exp: number;
+  hunger: number;          // 0-100; por debajo de 30 no aplica buff
+  lastFed: number;
+  adoptedAt: number;
 }
 
 /**
@@ -343,7 +362,13 @@ export const DEFAULT_USER: UserRPG = {
   forgeMaterials: {},
 
   // Betting
-  betting: undefined
+  betting: undefined,
+
+  // Pet
+  pet: undefined,
+
+  // Gremio
+  guildId: null
 };
 
 /**

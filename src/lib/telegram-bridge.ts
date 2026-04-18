@@ -97,16 +97,38 @@ class MessageQueue {
       let mediaBuffer: Buffer | undefined;
       let mediaType: 'photo' | 'video' | undefined;
 
+      // Cap de tamaño para pre-buffering (evita OOM en cola con muchos videos)
+      const MAX_BRIDGE_MEDIA_BYTES = 5 * 1024 * 1024; // 5 MB
+
       // Descargar media ahora para no perderlo
       if (message.photo || message.video) {
-        try {
-          mediaBuffer = await client.downloadMedia(message, {}) as Buffer;
-          mediaType = message.photo ? 'photo' : 'video';
-        } catch (err) {
+        const docSize = (message.document as unknown as { size?: unknown })?.size;
+        const vidSize = (message.video as unknown as { size?: unknown })?.size;
+        const rawSize = docSize ?? vidSize ?? 0;
+        const mediaSize = typeof rawSize === 'bigint' ? Number(rawSize) : Number(rawSize);
+        if (mediaSize > MAX_BRIDGE_MEDIA_BYTES) {
           console.log(
             chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-            chalk.yellow(`⚠️ No se pudo descargar media, guardando solo texto`)
+            chalk.yellow(`⚠️ Media de ${Math.round(mediaSize / 1024 / 1024)}MB omitida (> 5MB), se envía solo texto`)
           );
+        } else {
+          try {
+            mediaBuffer = await client.downloadMedia(message, {}) as Buffer;
+            if (mediaBuffer && mediaBuffer.length > MAX_BRIDGE_MEDIA_BYTES) {
+              console.log(
+                chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+                chalk.yellow(`⚠️ Media descargada supera 5MB, descartando buffer`)
+              );
+              mediaBuffer = undefined;
+            } else {
+              mediaType = message.photo ? 'photo' : 'video';
+            }
+          } catch (err) {
+            console.log(
+              chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
+              chalk.yellow(`⚠️ No se pudo descargar media, guardando solo texto`)
+            );
+          }
         }
       }
 
