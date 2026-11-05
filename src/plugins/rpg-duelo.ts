@@ -565,7 +565,8 @@ export const dueloPlugin: PluginHandler = {
     }
 
     let bet = 0;
-    const betArg = args.find(a => /^\d+$/.test(a));
+    // El número de teléfono del retado también es un token numérico: no es la apuesta
+    const betArg = args.find(a => /^\d+$/.test(a) && !targetJid.startsWith(a));
     if (betArg) {
       bet = Math.min(PVP.DUEL_BET.MAX, Math.max(PVP.DUEL_BET.MIN, parseInt(betArg, 10)));
       if (challenger.money < bet) {

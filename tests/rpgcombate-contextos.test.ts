@@ -69,6 +69,11 @@ function message(text: string, sender: string = A, chat: string = GROUP): proto.
   };
 }
 
+/** Último texto enviado (las reacciones se envían sin texto) */
+function lastText(sent: Sent[]): string {
+  return sent.filter(s => s.text).at(-1)?.text ?? '';
+}
+
 type HandlerInstance = InstanceType<typeof MessageHandler>;
 type Db = Awaited<ReturnType<typeof initDatabase>>;
 
@@ -128,7 +133,7 @@ test('duelo: "golpe brutal" sin prefijo lanza la habilidad y "a ver que pasa" no
       await h.handle([message('golpe brutal')]);
       assert.equal(duel.totalActions, 1);
       assert.match(duel.log.at(-1) ?? '', /Golpe Brutal/);
-      assert.ok(duel.players.challenger.mana < 100, 'gastó maná');
+      assert.ok(duel.players.challenger.skillCooldowns.has('golpe_brutal'), 'la habilidad entró en cooldown');
 
       duel.players.challenger.lastAction = 0;
       await h.handle([message('a ver que pasa'), message('d nada'), message('estado del tiempo')]);
@@ -165,12 +170,13 @@ test('aceptar: sin reto pendiente el alias queda libre para otros juegos; con re
     assert.equal(sent.length, 0, 'el duelo no responde sin reto');
 
     await h.handle([message(`/duelo ${B.split('@')[0]} 100`, A)]);
-    assert.match(sent.at(-1)?.text ?? '', /DESAFÍO/);
+    assert.match(lastText(sent), /DESAFÍO/);
     await h.handle([message('/aceptar', B, GROUP2)]);
     assert.equal(activeDuels.has(GROUP), false, 'aceptar desde otro grupo no vale');
+    assert.deepEqual(calls, [B, B], 'en el otro grupo no hay reto: el alias sigue siendo del juego');
     await h.handle([message('/aceptar', B)]);
     assert.equal(activeDuels.has(GROUP), true);
-    assert.deepEqual(calls, [B], 'con reto pendiente lo resuelve el duelo, no el juego');
+    assert.deepEqual(calls, [B, B], 'con reto pendiente lo resuelve el duelo, no el juego');
     assert.equal(db.getUser(A).money, 4900);
     assert.equal(db.getUser(B).money, 4900);
     assert.equal(activeDuels.get(GROUP)?.pot, 200);
@@ -212,8 +218,7 @@ test('forja: la confirmación sobrevive a mensajes en otros chats, "si claro" no
     db.updateUser(A, user);
 
     await h.handle([message('/forja mejorar arma')]);
-    console.log('DBG', JSON.stringify(sent));
-    assert.match(sent.at(-1)?.text ?? '', /MEJORA PELIGROSA/);
+    assert.match(lastText(sent), /MEJORA PELIGROSA/);
     const level = () => db.getUser(A).inventory.find(e => e.itemId === 'espada_hierro')?.enhanceLevel;
 
     await h.handle([message('hola a todos', A, GROUP2), message('si claro', A, GROUP)]);
@@ -223,11 +228,15 @@ test('forja: la confirmación sobrevive a mensajes en otros chats, "si claro" no
       await h.handle([message('si')]);
     });
     assert.equal(level(), 6, 'el "si" a secas sigue vigente y confirma');
-    assert.match(sent.at(-1)?.text ?? '', /MEJORA EXITOSA/);
+    assert.match(lastText(sent), /MEJORA EXITOSA/);
 
     // Con prefijo también vale, para cuando el contexto no está registrado
+    const again = db.getUser(A);
+    addMaterial(again, 'mithril', 3);
+    addMaterial(again, 'fragmento_alma', 2);
+    db.updateUser(A, again);
     await h.handle([message('/forja mejorar arma'), message('/forja cancelar')]);
-    assert.match(sent.at(-1)?.text ?? '', /cancelada/);
+    assert.match(lastText(sent), /cancelada/);
   });
 });
 
@@ -241,7 +250,7 @@ test('forja: craftear con el inventario lleno no cobra ni consume', async () => 
     db.updateUser(A, user);
 
     await h.handle([message('/forja craftear espada_hierro')]);
-    assert.match(sent.at(-1)?.text ?? '', /lleno/);
+    assert.match(lastText(sent), /lleno/);
     assert.equal(db.getUser(A).money, 1000);
     assert.equal(db.getUser(A).forgeMaterials.hierro, 5);
     assert.equal(countItem(db.getUser(A), 'espada_hierro'), 0);
