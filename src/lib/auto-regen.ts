@@ -53,6 +53,27 @@ export interface RegenResult {
 }
 
 /**
+ * Regeneración de un stat. Con el stat al máximo el timestamp avanza igualmente
+ * (en múltiplos del intervalo, para no marcar dirty cada minuto): si no, un
+ * usuario que lleva horas lleno recuperaría de golpe todo ese tiempo al recibir
+ * daño, y la regeneración sería un escudo tras cada pelea.
+ */
+function regenStat(current: number, max: number, lastRegen: number, perHour: number, now: number): {
+  regen: number;
+  value?: number;
+  timestamp?: number;
+} {
+  if (!lastRegen) return { regen: 0, timestamp: now };
+
+  const { amount, newTimestamp } = calculateRegen(lastRegen, perHour, now);
+  if (amount <= 0) return { regen: 0 };
+  if (current >= max) return { regen: 0, timestamp: newTimestamp };
+
+  const regen = Math.min(amount, max - current);
+  return { regen, value: current + regen, timestamp: newTimestamp };
+}
+
+/**
  * Cálculo puro de regeneración: no toca la BD ni muta `user`.
  * Inicializa los timestamps a `now` cuando valen 0, aunque el stat esté al máximo,
  * para que el contador empiece a correr desde la primera vez que se ve al usuario.
@@ -61,45 +82,40 @@ export function regenUser(user: UserRPG, now: number = Date.now()): RegenResult 
   const result: RegenResult = { healthRegen: 0, staminaRegen: 0, updates: {} };
   const realMax = calculateTotalStats(user);
 
-  if (!user.lastHealthRegen) {
-    result.updates.lastHealthRegen = now;
-  } else if (user.health < realMax.maxHealth) {
-    const regen = calculateRegen(user.lastHealthRegen, regenConfig.healthPerHour, now);
-    if (regen.amount > 0) {
-      result.healthRegen = Math.min(regen.amount, realMax.maxHealth - user.health);
-      result.updates.health = user.health + result.healthRegen;
-      result.updates.lastHealthRegen = regen.newTimestamp;
-    }
-  }
+  const health = regenStat(user.health, realMax.maxHealth, user.lastHealthRegen, regenConfig.healthPerHour, now);
+  result.healthRegen = health.regen;
+  if (health.value !== undefined) result.updates.health = health.value;
+  if (health.timestamp !== undefined) result.updates.lastHealthRegen = health.timestamp;
 
-  if (!user.lastStaminaRegen) {
-    result.updates.lastStaminaRegen = now;
-  } else if (user.stamina < realMax.maxStamina) {
-    const regen = calculateRegen(user.lastStaminaRegen, regenConfig.staminaPerHour, now);
-    if (regen.amount > 0) {
-      result.staminaRegen = Math.min(regen.amount, realMax.maxStamina - user.stamina);
-      result.updates.stamina = user.stamina + result.staminaRegen;
-      result.updates.lastStaminaRegen = regen.newTimestamp;
-    }
-  }
+  const stamina = regenStat(user.stamina, realMax.maxStamina, user.lastStaminaRegen, regenConfig.staminaPerHour, now);
+  result.staminaRegen = stamina.regen;
+  if (stamina.value !== undefined) result.updates.stamina = stamina.value;
+  if (stamina.timestamp !== undefined) result.updates.lastStaminaRegen = stamina.timestamp;
 
   return result;
 }
 
-function applyRegenToAllUsers(): void {
+/**
+ * Barrido periódico sobre todos los registrados: regenUser ya devuelve updates
+ * vacío cuando no hay nada que hacer, y los usuarios al máximo también necesitan
+ * visita (inicializar o avanzar sus timestamps).
+ */
+export function applyRegenToAllUsers(): void {
   try {
     const db = getDatabase();
     const now = Date.now();
     let usersRegenerated = 0;
 
     for (const [jid, user] of db.getRegisteredUsers()) {
-      const realMax = calculateTotalStats(user);
-      if (user.health >= realMax.maxHealth && user.stamina >= realMax.maxStamina) continue;
-
-      const result = regenUser(user, now);
-      if (Object.keys(result.updates).length > 0) {
-        db.updateUser(jid, result.updates);
-        if (result.healthRegen > 0 || result.staminaRegen > 0) usersRegenerated++;
+      // Un usuario corrupto no debe abortar la regeneración de los demás
+      try {
+        const result = regenUser(user, now);
+        if (Object.keys(result.updates).length > 0) {
+          db.updateUser(jid, result.updates);
+          if (result.healthRegen > 0 || result.staminaRegen > 0) usersRegenerated++;
+        }
+      } catch (error) {
+        log.error(`error al regenerar a ${jid}:`, error);
       }
     }
 

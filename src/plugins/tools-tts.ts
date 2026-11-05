@@ -1,195 +1,135 @@
-/**
- * Plugin Text-to-Speech (TTS)
- * Convierte texto a voz usando Google Translate TTS
- * Comando: /tts [idioma] <texto>
- */
+import type { MessageContext, PluginHandler } from '../types/message.js';
+import { BROWSER_USER_AGENT, fetchWithTimeout } from '../lib/http.js';
+import { createLogger } from '../lib/logger.js';
+import { getQuotedText } from '../lib/media.js';
 
-import type { PluginHandler, MessageContext } from '../types/message.js';
+const log = createLogger('media');
 
-const LANGUAGES: Record<string, string> = {
+export const LANGUAGES: Record<string, string> = {
   es: 'Español', en: 'English', pt: 'Português', fr: 'Français',
-  de: 'Deutsch', it: 'Italiano', ja: 'Japanese', ko: 'Korean',
-  zh: 'Chinese', ru: 'Russian', ar: 'Arabic', hi: 'Hindi'
+  de: 'Deutsch', it: 'Italiano', ja: '日本語', ko: '한국어',
+  zh: '中文', ru: 'Русский', ar: 'العربية', hi: 'हिन्दी',
 };
 
-/**
- * Sanitiza texto para TTS (evita errores con ciertos caracteres/patrones)
- */
-function sanitizeTextForTTS(text: string): string {
-  // Agregar un espacio al inicio si empieza con ciertos caracteres problemáticos
-  // Google TTS tiene problemas con textos que empiezan con L, I, etc. solos
-  let sanitized = text.trim();
+export const DEFAULT_LANG = 'es';
+export const MAX_TEXT_LENGTH = 1000;
+/** Google TTS corta las peticiones largas; se trocea por frases. */
+const CHUNK_LENGTH = 200;
+const REQUEST_TIMEOUT_MS = 15_000;
 
-  // Si el texto es muy corto (1-2 caracteres), agregar contexto
-  if (sanitized.length <= 2) {
-    sanitized = `Dice: ${sanitized}`;
-  }
-
-  // Reemplazar caracteres que pueden causar problemas de encoding
-  sanitized = sanitized
-    .replace(/[\u200B-\u200D\uFEFF]/g, '') // Zero-width characters
-    .replace(/\s+/g, ' '); // Múltiples espacios a uno
-
-  return sanitized;
+export interface TtsInput {
+  lang: string;
+  text: string;
 }
 
 /**
- * Descarga audio TTS de Google Translate con fallback
+ * Idioma solo cuando se pide explícitamente: "en: texto" o "-en texto" con un
+ * código de LANGUAGES. Cualquier otra cosa es texto en español, así "la casa"
+ * no se lee en latín.
  */
-async function getTTSAudio(text: string, lang: string): Promise<Buffer> {
-  // Sanitizar texto
-  const sanitizedText = sanitizeTextForTTS(text);
+export function parseTtsInput(raw: string): TtsInput {
+  const text = raw.trim();
+  const match = text.match(/^(?:-([a-z]{2})\s+|([a-z]{2}):\s*)([\s\S]+)$/i);
+  if (match) {
+    const code = (match[1] ?? match[2]).toLowerCase();
+    if (code in LANGUAGES) return { lang: code, text: match[3].trim() };
+  }
+  return { lang: DEFAULT_LANG, text };
+}
 
-  // Google TTS tiene límite de ~200 caracteres, dividir si es necesario
-  const maxLen = 200;
+function sanitize(text: string): string {
+  const clean = text.replace(/[​-‍﻿]/g, '').replace(/\s+/g, ' ').trim();
+  // Con una o dos letras sueltas Google devuelve audio vacío; se les da contexto.
+  return clean.length <= 2 ? `Dice: ${clean}` : clean;
+}
+
+/** Trocea en fragmentos de hasta 200 caracteres cortando por frase o espacio. */
+export function splitTtsChunks(text: string, maxLen = CHUNK_LENGTH): string[] {
   const chunks: string[] = [];
-
-  if (sanitizedText.length <= maxLen) {
-    chunks.push(sanitizedText);
-  } else {
-    // Dividir por oraciones o espacios
-    let remaining = sanitizedText;
-    while (remaining.length > 0) {
-      if (remaining.length <= maxLen) {
-        chunks.push(remaining);
-        break;
-      }
-      // Buscar punto o espacio antes del límite
-      let cutIndex = remaining.lastIndexOf('.', maxLen);
-      if (cutIndex === -1 || cutIndex < 50) {
-        cutIndex = remaining.lastIndexOf(' ', maxLen);
-      }
-      if (cutIndex === -1 || cutIndex < 50) {
-        cutIndex = maxLen;
-      }
-      chunks.push(remaining.substring(0, cutIndex + 1).trim());
-      remaining = remaining.substring(cutIndex + 1).trim();
-    }
+  let remaining = sanitize(text);
+  while (remaining.length > maxLen) {
+    let cut = remaining.lastIndexOf('.', maxLen);
+    if (cut < maxLen / 4) cut = remaining.lastIndexOf(' ', maxLen);
+    if (cut < maxLen / 4) cut = maxLen - 1;
+    chunks.push(remaining.slice(0, cut + 1).trim());
+    remaining = remaining.slice(cut + 1).trim();
   }
-
-  const audioBuffers: Buffer[] = [];
-
-  // Lista de clientes TTS de Google para fallback
-  const clients = ['tw-ob', 'gtx'];
-
-  for (const chunk of chunks) {
-    let lastError: Error | null = null;
-    let buffer: Buffer | null = null;
-
-    for (const client of clients) {
-      try {
-        const encodedChunk = encodeURIComponent(chunk);
-        const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${lang}&client=${client}&q=${encodedChunk}`;
-
-        const response = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://translate.google.com/',
-            'Accept': 'audio/mpeg, audio/*;q=0.9, */*;q=0.8',
-            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
-          }
-        });
-
-        if (response.ok) {
-          buffer = Buffer.from(await response.arrayBuffer());
-          break; // Éxito, salir del loop de clientes
-        }
-
-        lastError = new Error(`HTTP ${response.status} con cliente ${client}`);
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-      }
-
-      // Pequeño delay antes de intentar con otro cliente
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    if (!buffer) {
-      throw new Error(`Error al obtener audio TTS: ${lastError?.message || 'Unknown error'}`);
-    }
-
-    audioBuffers.push(buffer);
-
-    // Delay entre chunks para evitar rate limiting
-    if (chunks.length > 1) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-  }
-
-  // Si solo hay un chunk, retornar directamente
-  if (audioBuffers.length === 1) {
-    return audioBuffers[0];
-  }
-
-  // Concatenar buffers
-  return Buffer.concat(audioBuffers);
+  if (remaining) chunks.push(remaining);
+  return chunks;
 }
 
-/**
- * Comando /tts - Text to Speech
- */
+const CLIENTS = ['tw-ob', 'gtx'];
+
+async function fetchChunk(chunk: string, lang: string): Promise<Buffer> {
+  let lastError = 'sin respuesta';
+  for (const client of CLIENTS) {
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${lang}&client=${client}&q=${encodeURIComponent(chunk)}`;
+    try {
+      const response = await fetchWithTimeout(url, {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        headers: {
+          'User-Agent': BROWSER_USER_AGENT,
+          Referer: 'https://translate.google.com/',
+          Accept: 'audio/mpeg, audio/*;q=0.9, */*;q=0.8',
+        },
+      });
+      if (response.ok) return Buffer.from(await response.arrayBuffer());
+      lastError = `HTTP ${response.status} (${client})`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  throw new Error(`Google TTS falló: ${lastError}`);
+}
+
+export async function getTtsAudio(text: string, lang: string): Promise<Buffer> {
+  const parts: Buffer[] = [];
+  for (const chunk of splitTtsChunks(text)) {
+    parts.push(await fetchChunk(chunk, lang));
+  }
+  return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+}
+
+function languageList(): string {
+  return Object.entries(LANGUAGES).map(([code, name]) => `• *${code}* - ${name}`).join('\n');
+}
+
 export const ttsPlugin: PluginHandler = {
   command: ['tts', 'voz', 'speak'],
   description: 'Convertir texto a voz',
   category: 'tools',
+  usage: ['tts <texto>', 'tts en: <texto>', 'tts -pt <texto>', 'tts idiomas'],
 
   async handler(ctx: MessageContext) {
-    const { m, text, args, conn } = ctx;
+    const { m, text, send } = ctx;
+    const trimmed = text.trim();
 
-    if (!text && !m.quoted?.text) {
-      let langList = '🔊 *TEXT TO SPEECH*\n\n📝 Uso:\n• /tts <texto> - Voz en español\n• /tts en <texto> - Voz en inglés\n• /tts (responder a msg) - Convertir mensaje\n\n🌐 Idiomas:\n';
-      for (const [code, name] of Object.entries(LANGUAGES)) {
-        langList += `• *${code}* - ${name}\n`;
-      }
-      await m.reply(langList);
+    if (/^idiomas?$|^langs?$/i.test(trimmed)) {
+      await m.reply(`🌐 *IDIOMAS DE /tts*\n\n${languageList()}\n\nUso: /tts en: hello o /tts -en hello`);
       return;
     }
 
-    // Determinar idioma y texto
-    let lang = 'es';
-    let ttsText = text;
-
-    if (args.length >= 2 && args[0].length === 2 && args[0].toLowerCase() in LANGUAGES) {
-      lang = args[0].toLowerCase();
-      ttsText = args.slice(1).join(' ');
-    } else if (args.length >= 2 && args[0].length === 2) {
-      // Idioma no reconocido pero formato correcto, intentar de todos modos
-      lang = args[0].toLowerCase();
-      ttsText = args.slice(1).join(' ');
-    }
-
-    // Si no hay texto, usar el mensaje citado
-    if (!ttsText && m.quoted?.text) {
-      ttsText = m.quoted.text;
-    }
-
-    if (!ttsText) {
-      await m.reply('❌ Escribe el texto que quieres convertir a voz.\n\n📝 Uso: /tts <texto>');
+    const parsed = parseTtsInput(trimmed);
+    // Sin texto propio se lee el mensaje citado (incluido el caption de un video) en el idioma pedido.
+    if (!parsed.text) parsed.text = getQuotedText(m).trim();
+    if (!parsed.text) {
+      await m.reply('🔊 *TEXT TO SPEECH*\n\n📝 Uso:\n• /tts <texto> → voz en español\n• /tts en: <texto> o /tts -en <texto> → otro idioma\n• /tts (respondiendo a un mensaje)\n• /tts idiomas → lista de idiomas');
       return;
     }
-
-    // Límite de caracteres
-    if (ttsText.length > 1000) {
-      await m.reply('⚠️ El texto es muy largo. Máximo 1000 caracteres.');
+    if (parsed.text.length > MAX_TEXT_LENGTH) {
+      await m.reply(`⚠️ El texto es muy largo (${parsed.text.length} caracteres). Máximo ${MAX_TEXT_LENGTH}.`);
       return;
     }
 
     await m.react('🔊');
-
     try {
-      const audioBuffer = await getTTSAudio(ttsText, lang);
-
-      await conn.sendMessage(m.chat, {
-        audio: audioBuffer,
-        mimetype: 'audio/mpeg',
-        ptt: true
-      }, { quoted: m.rawMessage });
-
+      const audio = await getTtsAudio(parsed.text, parsed.lang);
+      await send({ audio, mimetype: 'audio/mpeg', ptt: true }, { quoted: m.rawMessage });
       await m.react('✅');
     } catch (error) {
-      console.error('❌ Error en TTS:', error);
+      log.warn('tts:', error instanceof Error ? error.message : error);
       await m.react('❌');
-      await m.reply('❌ Error al generar el audio. Intenta de nuevo.');
+      await m.reply('❌ No se pudo generar el audio. Intenta de nuevo en un momento.');
     }
-  }
+  },
 };

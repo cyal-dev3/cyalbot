@@ -71,12 +71,29 @@ test('setLevel fija exp al mínimo del nivel y aplica/retira el bonus de forma c
   assert.equal(user.exp, xpRange(2).min);
   assert.equal(user.maxHealth, DEFAULT_USER.maxHealth + 2 * bonus.healthPerLevel);
   assert.equal(user.health, user.maxHealth);
-  assert.equal(user.money, DEFAULT_USER.money + 2 * bonus.moneyPerLevel);
+  // Bajar de nivel no confisca el dinero ya concedido
+  assert.equal(user.money, DEFAULT_USER.money + 5 * bonus.moneyPerLevel);
 
   setLevel(user, -3);
   assert.equal(user.level, 0);
   assert.equal(user.exp, 0);
-  assert.ok(user.maxHealth >= 1);
+  assert.equal(user.maxHealth, DEFAULT_USER.maxHealth);
+});
+
+test('setLevel hacia abajo no deja los máximos por debajo de DEFAULT_USER ni toca el dinero', () => {
+  // Usuario subido con el setnivel antiguo (level*level*100): nunca recibió el bonus por nivel
+  const user = newUser();
+  user.level = 3;
+  user.exp = xpRange(3).min;
+  user.money = 250;
+
+  setLevel(user, 0);
+  assert.equal(user.level, 0);
+  assert.equal(user.maxHealth, DEFAULT_USER.maxHealth);
+  assert.equal(user.maxStamina, DEFAULT_USER.maxStamina);
+  assert.equal(user.maxMana, DEFAULT_USER.maxMana);
+  assert.equal(user.money, 250);
+  assert.ok(user.health <= user.maxHealth);
 });
 
 test('loseExp nunca baja del mínimo del nivel actual', () => {

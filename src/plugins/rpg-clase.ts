@@ -1,347 +1,223 @@
-/**
- * Plugin de Clases - RPG
- * Comandos: clase, clases, elegirclase
- */
-
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, formatNumber } from '../lib/utils.js';
-import { CLASSES, SKILLS, type PlayerClass } from '../types/rpg.js';
+import { EMOJI, formatNumber, normalizeText } from '../lib/utils.js';
+import { CLASSES, SKILLS, type ClassInfo, type PlayerClass } from '../types/rpg.js';
+import { CLASS } from '../constants/rpg.js';
+import { calculateTotalStats } from '../lib/rpg-utils.js';
+import { updateQuestProgress } from '../lib/quests.js';
+import { usageError } from '../lib/rpg-actions.js';
 
-/**
- * Nivel mínimo para elegir clase
- */
-const MIN_LEVEL_FOR_CLASS = 5;
+const CLASS_IDS = Object.keys(CLASSES) as PlayerClass[];
 
-/**
- * Costo de cambiar de clase (después de la primera)
- */
-const CLASS_CHANGE_COST = 10000;
+const CLASS_ALIASES: Record<string, PlayerClass> = {
+  guerrero: 'guerrero', warrior: 'guerrero',
+  mago: 'mago', mage: 'mago', wizard: 'mago',
+  ladron: 'ladron', thief: 'ladron', rogue: 'ladron',
+  arquero: 'arquero', archer: 'arquero', ranger: 'arquero'
+};
 
-/**
- * Plugin: Clases - Ver información de las clases
- */
+/** Resuelve "Ladrón", "ladron", "thief" o el número de la lista (1-4) */
+export function resolveClass(input: string): PlayerClass | null {
+  const text = normalizeText(input.trim());
+  if (!text) return null;
+  if (/^\d+$/.test(text)) {
+    return CLASS_IDS[parseInt(text, 10) - 1] ?? null;
+  }
+  return CLASS_ALIASES[text] ?? null;
+}
+
+/** Lista de bonus de stats de una clase, una línea por stat distinto de cero */
+export function formatClassStats(classInfo: ClassInfo, indent: string = '   '): string {
+  const b = classInfo.baseStats;
+  const lines: string[] = [];
+  if (b.healthBonus) lines.push(`${indent}❤️ +${b.healthBonus} Vida`);
+  if (b.manaBonus) lines.push(`${indent}💠 +${b.manaBonus} Maná`);
+  if (b.staminaBonus) lines.push(`${indent}⚡ +${b.staminaBonus} Energía`);
+  if (b.attackBonus) lines.push(`${indent}⚔️ +${b.attackBonus} Ataque`);
+  if (b.defenseBonus) lines.push(`${indent}🛡️ +${b.defenseBonus} Defensa`);
+  return lines.join('\n');
+}
+
+/** Habilidades de una clase; con `detailed` incluye descripción y costes */
+export function formatClassSkills(classInfo: ClassInfo, detailed: boolean = false, indent: string = '   '): string {
+  return classInfo.skills
+    .map(id => SKILLS[id])
+    .filter(Boolean)
+    .map(skill => detailed
+      ? `${indent}${skill.emoji} *${skill.name}*\n${indent}   _${skill.description}_\n${indent}   💠 Maná: ${skill.manaCost} | ⚡ Energía: ${skill.staminaCost}`
+      : `${indent}${skill.emoji} ${skill.name}`)
+    .join('\n');
+}
+
+function classListForErrors(): string {
+  return CLASS_IDS.map((id, i) => `   ${i + 1}. ${CLASSES[id].emoji} ${CLASSES[id].name}`).join('\n');
+}
+
 export const clasesPlugin: PluginHandler = {
   command: ['clases', 'classes', 'verclases'],
   tags: ['rpg'],
-  help: [
-    'clases - Ver todas las clases disponibles',
-    'Cada clase tiene stats y habilidades únicas'
-  ],
+  help: ['clases - Ver todas las clases disponibles con sus stats y habilidades'],
+  usage: ['clases'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-    const db = getDatabase();
-    const user = db.getUser(m.sender);
+    const { m, usedPrefix } = ctx;
+    const user = getDatabase().getUser(m.sender);
 
-    let response = `🎭 *CLASES DISPONIBLES*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    let text = `🎭 *CLASES DISPONIBLES*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-    for (const [classId, classInfo] of Object.entries(CLASSES)) {
-      const isCurrentClass = user.playerClass === classId;
+    CLASS_IDS.forEach((classId, index) => {
+      const info = CLASSES[classId];
+      text += `${index + 1}. ${info.emoji} *${info.name}*${user.playerClass === classId ? ' ← Tu clase' : ''}\n`;
+      text += `   _${info.description}_\n\n`;
+      text += `   📊 *Bonus de stats:*\n${formatClassStats(info, '      ')}\n\n`;
+      text += `   ✨ *Habilidades:*\n${formatClassSkills(info, false, '      ')}\n\n`;
+    });
 
-      response += `${classInfo.emoji} *${classInfo.name}*`;
-      if (isCurrentClass) response += ` ← Tu clase`;
-      response += `\n`;
-      response += `   _${classInfo.description}_\n\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    text += `📝 *${usedPrefix}clase <nombre o número>* - Elegir clase\n`;
+    text += `📊 Nivel mínimo: *${CLASS.MIN_LEVEL}*`;
+    if (user.playerClass) text += `\n💰 Cambiar de clase cuesta *${formatNumber(CLASS.CHANGE_COST)}* monedas`;
 
-      response += `   📊 *Bonus de stats:*\n`;
-      if (classInfo.baseStats.healthBonus > 0) response += `      ❤️ +${classInfo.baseStats.healthBonus} Vida\n`;
-      if (classInfo.baseStats.manaBonus > 0) response += `      💠 +${classInfo.baseStats.manaBonus} Maná\n`;
-      if (classInfo.baseStats.staminaBonus > 0) response += `      ⚡ +${classInfo.baseStats.staminaBonus} Energía\n`;
-      if (classInfo.baseStats.attackBonus > 0) response += `      ⚔️ +${classInfo.baseStats.attackBonus} Ataque\n`;
-      if (classInfo.baseStats.defenseBonus > 0) response += `      🛡️ +${classInfo.baseStats.defenseBonus} Defensa\n`;
-
-      response += `\n   ✨ *Habilidades:*\n`;
-      for (const skillId of classInfo.skills) {
-        const skill = SKILLS[skillId];
-        if (skill) {
-          response += `      ${skill.emoji} ${skill.name}\n`;
-        }
-      }
-
-      response += '\n';
-    }
-
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📝 */clase [nombre]* - Elegir clase\n`;
-    response += `📊 Nivel mínimo: *${MIN_LEVEL_FOR_CLASS}*\n`;
-    if (user.playerClass) {
-      response += `💰 Cambiar clase: *${formatNumber(CLASS_CHANGE_COST)}* monedas`;
-    }
-
-    await m.reply(response);
+    await m.reply(text);
   }
 };
 
-/**
- * Plugin: Clase - Elegir o ver tu clase
- */
 export const clasePlugin: PluginHandler = {
   command: ['clase', 'class', 'elegirclase', 'selectclass'],
   tags: ['rpg'],
   help: [
     'clase - Ver tu clase actual y habilidades',
-    'clase [guerrero/mago/ladron/arquero] - Elegir clase'
+    'clase <guerrero|mago|ladron|arquero|1-4> - Elegir clase',
+    `Cambiar de clase cuesta ${formatNumber(CLASS.CHANGE_COST)} monedas`
   ],
+  usage: ['clase', 'clase <nombre o número>'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, text, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
-    // Si no se especifica clase, mostrar la clase actual
     if (!text.trim()) {
       if (!user.playerClass) {
-        await m.reply(
+        return m.reply(
           `${EMOJI.info} Aún no has elegido una clase.\n\n` +
-          `📝 Usa */clases* para ver las opciones.\n` +
-          `📝 Usa */clase [nombre]* para elegir.\n\n` +
-          `📊 Nivel requerido: *${MIN_LEVEL_FOR_CLASS}*\n` +
-          `📊 Tu nivel: *${user.level}*`
+          `📝 Usa *${usedPrefix}clases* para ver las opciones y *${usedPrefix}clase <nombre>* para elegir.\n\n` +
+          `📊 Nivel requerido: *${CLASS.MIN_LEVEL}* · Tu nivel: *${user.level}*`
         );
-        return;
       }
 
-      const classInfo = CLASSES[user.playerClass];
-      if (!classInfo) {
-        await m.reply(`${EMOJI.error} Error: Clase no encontrada.`);
-        return;
-      }
-
-      let response = `${classInfo.emoji} *Tu clase: ${classInfo.name}*\n`;
-      response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-      response += `📖 _${classInfo.description}_\n\n`;
-
-      response += `📊 *Tus bonus de clase:*\n`;
-      if (classInfo.baseStats.healthBonus > 0) response += `   ❤️ +${classInfo.baseStats.healthBonus} Vida máxima\n`;
-      if (classInfo.baseStats.manaBonus > 0) response += `   💠 +${classInfo.baseStats.manaBonus} Maná máximo\n`;
-      if (classInfo.baseStats.staminaBonus > 0) response += `   ⚡ +${classInfo.baseStats.staminaBonus} Energía máxima\n`;
-      if (classInfo.baseStats.attackBonus > 0) response += `   ⚔️ +${classInfo.baseStats.attackBonus} Ataque\n`;
-      if (classInfo.baseStats.defenseBonus > 0) response += `   🛡️ +${classInfo.baseStats.defenseBonus} Defensa\n`;
-
-      response += `\n✨ *Tus habilidades:*\n`;
-      for (const skillId of classInfo.skills) {
-        const skill = SKILLS[skillId];
-        if (skill) {
-          response += `\n   ${skill.emoji} *${skill.name}*\n`;
-          response += `      _${skill.description}_\n`;
-          response += `      💠 Maná: ${skill.manaCost} | ⚡ Energía: ${skill.staminaCost}\n`;
-        }
-      }
-
-      response += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
-      response += `💡 Las habilidades se usan automáticamente en combate.`;
-
-      await m.reply(response);
-      return;
-    }
-
-    // Elegir una clase
-    const classChoice = text.toLowerCase().trim();
-
-    const classMap: Record<string, PlayerClass> = {
-      'guerrero': 'guerrero',
-      'warrior': 'guerrero',
-      'mago': 'mago',
-      'mage': 'mago',
-      'wizard': 'mago',
-      'ladron': 'ladron',
-      'ladrón': 'ladron',
-      'thief': 'ladron',
-      'rogue': 'ladron',
-      'arquero': 'arquero',
-      'archer': 'arquero',
-      'ranger': 'arquero'
-    };
-
-    const selectedClass = classMap[classChoice];
-
-    if (!selectedClass) {
-      await m.reply(
-        `${EMOJI.error} Clase no válida.\n\n` +
-        `📝 Clases disponibles:\n` +
-        `   ⚔️ Guerrero\n` +
-        `   🔮 Mago\n` +
-        `   🗡️ Ladrón\n` +
-        `   🏹 Arquero\n\n` +
-        `💡 Usa */clases* para ver detalles.`
+      const info = CLASSES[user.playerClass];
+      return m.reply(
+        `${info.emoji} *Tu clase: ${info.name}*\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `📖 _${info.description}_\n\n` +
+        `📊 *Tus bonus de clase:*\n${formatClassStats(info)}\n\n` +
+        `✨ *Tus habilidades:*\n${formatClassSkills(info, true)}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n💡 Las habilidades se usan automáticamente en combate.`
       );
-      return;
     }
 
-    // Verificar nivel mínimo
-    if (user.level < MIN_LEVEL_FOR_CLASS) {
-      await m.reply(
-        `${EMOJI.error} Necesitas nivel *${MIN_LEVEL_FOR_CLASS}* para elegir una clase.\n\n` +
-        `📊 Tu nivel actual: *${user.level}*\n` +
-        `💡 Sigue trabajando y luchando para subir de nivel!`
+    const selected = resolveClass(text);
+    if (!selected) {
+      return usageError(ctx, clasePlugin, `Clase no válida. Clases disponibles:\n${classListForErrors()}`);
+    }
+
+    if (user.level < CLASS.MIN_LEVEL) {
+      return m.reply(
+        `${EMOJI.error} Necesitas nivel *${CLASS.MIN_LEVEL}* para elegir una clase.\n\n` +
+        `📊 Tu nivel actual: *${user.level}*`
       );
-      return;
     }
 
-    // Si ya tiene la misma clase
-    if (user.playerClass === selectedClass) {
-      await m.reply(`${EMOJI.warning} ¡Ya eres ${CLASSES[selectedClass].name}!`);
-      return;
+    if (user.playerClass === selected) {
+      return m.reply(`${EMOJI.warning} ¡Ya eres ${CLASSES[selected].name}!`);
     }
 
-    // Si ya tiene clase, cobrar el cambio
-    if (user.playerClass) {
-      if (user.money < CLASS_CHANGE_COST) {
-        await m.reply(
-          `${EMOJI.error} Cambiar de clase cuesta *${formatNumber(CLASS_CHANGE_COST)}* monedas.\n\n` +
-          `💰 Tu dinero: *${formatNumber(user.money)}* monedas\n` +
-          `❌ Te faltan: *${formatNumber(CLASS_CHANGE_COST - user.money)}* monedas`
+    const previous = user.playerClass;
+    let paid = 0;
+    if (previous) {
+      if (user.money < CLASS.CHANGE_COST) {
+        return m.reply(
+          `${EMOJI.error} Cambiar de clase cuesta *${formatNumber(CLASS.CHANGE_COST)}* monedas.\n\n` +
+          `💰 Tu dinero: *${formatNumber(user.money)}*\n` +
+          `❌ Te faltan: *${formatNumber(CLASS.CHANGE_COST - user.money)}*`
         );
-        return;
       }
-
-      user.money -= CLASS_CHANGE_COST;
+      paid = CLASS.CHANGE_COST;
     }
 
-    // Aplicar la nueva clase
-    const classInfo = CLASSES[selectedClass];
-    const previousClass = user.playerClass;
-
-    // Remover bonus de clase anterior si había
-    if (previousClass) {
-      const prevClassInfo = CLASSES[previousClass];
-      user.maxHealth -= prevClassInfo.baseStats.healthBonus;
-      user.maxMana -= prevClassInfo.baseStats.manaBonus;
-      user.maxStamina -= prevClassInfo.baseStats.staminaBonus;
-      user.attack -= prevClassInfo.baseStats.attackBonus;
-      user.defense -= prevClassInfo.baseStats.defenseBonus;
-    }
-
-    // Aplicar bonus de nueva clase
-    user.maxHealth += classInfo.baseStats.healthBonus;
-    user.maxMana += classInfo.baseStats.manaBonus;
-    user.maxStamina += classInfo.baseStats.staminaBonus;
-    user.attack += classInfo.baseStats.attackBonus;
-    user.defense += classInfo.baseStats.defenseBonus;
-
-    // Actualizar stats actuales si superan el máximo
-    user.health = Math.min(user.health, user.maxHealth);
-    user.mana = Math.min(user.mana, user.maxMana);
-    user.stamina = Math.min(user.stamina, user.maxStamina);
-
-    // Guardar
+    // La clase solo se aplica en calculateTotalStats; aquí solo se recortan los stats actuales al nuevo máximo
+    user.playerClass = selected;
+    user.money -= paid;
+    const total = calculateTotalStats(user);
     db.updateUser(m.sender, {
-      playerClass: selectedClass,
-      classSelectedAt: Date.now(),
+      playerClass: selected,
       money: user.money,
-      maxHealth: user.maxHealth,
-      maxMana: user.maxMana,
-      maxStamina: user.maxStamina,
-      health: user.health,
-      mana: user.mana,
-      stamina: user.stamina,
-      attack: user.attack,
-      defense: user.defense
+      health: Math.min(user.health, total.maxHealth),
+      mana: Math.min(user.mana, total.maxMana),
+      stamina: Math.min(user.stamina, total.maxStamina)
     });
 
-    let response = `${classInfo.emoji} *¡Ahora eres ${classInfo.name}!*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    const questLines = paid > 0 ? updateQuestProgress(db, m.sender, 'spend', paid).lines : [];
+    const info = CLASSES[selected];
 
-    if (previousClass) {
-      response += `🔄 Cambiaste de ${CLASSES[previousClass].emoji} ${CLASSES[previousClass].name}\n`;
-      response += `💰 Pagaste: *${formatNumber(CLASS_CHANGE_COST)}* monedas\n\n`;
+    let response = `${info.emoji} *¡Ahora eres ${info.name}!*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    if (previous) {
+      response += `🔄 Cambiaste desde ${CLASSES[previous].emoji} ${CLASSES[previous].name}\n`;
+      response += `💰 Pagaste: *${formatNumber(paid)}* monedas\n\n`;
     }
-
-    response += `📊 *Nuevos stats:*\n`;
-    response += `   ❤️ Vida: *${user.maxHealth}*\n`;
-    response += `   💠 Maná: *${user.maxMana}*\n`;
-    response += `   ⚡ Energía: *${user.maxStamina}*\n`;
-    response += `   ⚔️ Ataque: *${user.attack}*\n`;
-    response += `   🛡️ Defensa: *${user.defense}*\n\n`;
-
-    response += `✨ *Habilidades desbloqueadas:*\n`;
-    for (const skillId of classInfo.skills) {
-      const skill = SKILLS[skillId];
-      if (skill) {
-        response += `   ${skill.emoji} ${skill.name}\n`;
-      }
-    }
-
-    response += `\n💡 _Tus habilidades se activan automáticamente en combate._`;
+    response += `📊 *Stats totales:*\n`;
+    response += `   ❤️ Vida: *${total.maxHealth}*\n`;
+    response += `   💠 Maná: *${total.maxMana}*\n`;
+    response += `   ⚡ Energía: *${total.maxStamina}*\n`;
+    response += `   ⚔️ Ataque: *${total.attack}*\n`;
+    response += `   🛡️ Defensa: *${total.defense}*\n\n`;
+    response += `✨ *Habilidades desbloqueadas:*\n${formatClassSkills(info)}\n\n`;
+    response += `💡 _Tus habilidades se activan automáticamente en combate._`;
+    if (questLines.length) response += `\n\n${questLines.join('\n')}`;
 
     await m.reply(response);
     await m.react('✨');
-
-    // Verificar logro de clase
-    const achievementId = `class_${selectedClass === 'ladron' ? 'thief' : selectedClass}`;
-    if (!user.achievements.includes(achievementId)) {
-      // Aquí se podría llamar a una función de logros
-    }
   }
 };
 
-/**
- * Plugin: Habilidades - Ver tus habilidades
- */
 export const habilidadesPlugin: PluginHandler = {
   command: ['habilidades', 'skills', 'spells', 'poderes'],
   tags: ['rpg'],
-  help: [
-    'habilidades - Ver tus habilidades de clase',
-    'Las habilidades se usan automáticamente en combate'
-  ],
+  help: ['habilidades - Ver tus habilidades de clase (se usan automáticamente en combate)'],
+  usage: ['habilidades'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-    const db = getDatabase();
-    const user = db.getUser(m.sender);
+    const { m, usedPrefix } = ctx;
+    const user = getDatabase().getUser(m.sender);
 
     if (!user.playerClass) {
-      await m.reply(
+      return m.reply(
         `${EMOJI.info} No tienes habilidades porque no has elegido una clase.\n\n` +
-        `📝 Usa */clases* para ver las opciones.\n` +
-        `📊 Nivel mínimo: *${MIN_LEVEL_FOR_CLASS}*`
+        `📝 Usa *${usedPrefix}clases* para ver las opciones (nivel mínimo *${CLASS.MIN_LEVEL}*).`
       );
-      return;
     }
 
-    const classInfo = CLASSES[user.playerClass];
+    const info = CLASSES[user.playerClass];
+    let text = `✨ *TUS HABILIDADES*\n━━━━━━━━━━━━━━━━━━━━━\n🎭 Clase: ${info.emoji} ${info.name}\n\n`;
 
-    let response = `✨ *TUS HABILIDADES*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `🎭 Clase: ${classInfo.emoji} ${classInfo.name}\n\n`;
-
-    for (const skillId of classInfo.skills) {
+    for (const skillId of info.skills) {
       const skill = SKILLS[skillId];
-      if (skill) {
-        response += `${skill.emoji} *${skill.name}*\n`;
-        response += `   📖 _${skill.description}_\n`;
-        response += `   💠 Costo Maná: *${skill.manaCost}*\n`;
-        response += `   ⚡ Costo Energía: *${skill.staminaCost}*\n`;
-        response += `   ⏱️ Cooldown: *${skill.cooldown}* turnos\n`;
-
-        if (skill.effect.damageMultiplier) {
-          response += `   💥 Daño: *${Math.floor(skill.effect.damageMultiplier * 100)}%*\n`;
-        }
-        if (skill.effect.heal) {
-          response += `   💚 Cura: *${skill.effect.heal}%* del daño\n`;
-        }
-        if (skill.effect.buff) {
-          response += `   ⬆️ Buff: +${skill.effect.buff.value}% ${skill.effect.buff.stat}\n`;
-        }
-        if (skill.effect.debuff) {
-          response += `   ⬇️ Debuff: -${skill.effect.debuff.value}% ${skill.effect.debuff.stat} al enemigo\n`;
-        }
-
-        response += '\n';
-      }
+      if (!skill) continue;
+      text += `${skill.emoji} *${skill.name}*\n`;
+      text += `   📖 _${skill.description}_\n`;
+      text += `   💠 Maná: *${skill.manaCost}* · ⚡ Energía: *${skill.staminaCost}* · ⏱️ ${skill.cooldown} turnos\n`;
+      if (skill.effect.damageMultiplier) text += `   💥 Daño: *${Math.floor(skill.effect.damageMultiplier * 100)}%*\n`;
+      if (skill.effect.heal) text += `   💚 Cura: *${skill.effect.heal}%* del daño\n`;
+      if (skill.effect.buff) text += `   ⬆️ Buff: +${skill.effect.buff.value}% ${skill.effect.buff.stat}\n`;
+      if (skill.effect.debuff) text += `   ⬇️ Debuff: -${skill.effect.debuff.value}% ${skill.effect.debuff.stat} al enemigo\n`;
+      text += '\n';
     }
 
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `💡 Las habilidades se activan automáticamente\n`;
-    response += `   en combate cuando tienes suficientes recursos.`;
-
-    await m.reply(response);
+    text += `━━━━━━━━━━━━━━━━━━━━━\n💡 Se activan automáticamente en combate cuando tienes recursos suficientes.`;
+    await m.reply(text);
   }
 };
 

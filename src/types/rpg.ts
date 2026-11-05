@@ -1,8 +1,3 @@
-/**
- * Tipos del Sistema RPG Expandido
- * Define items, clases, monstruos, dungeons, misiones y logros
- */
-
 // ==================== CLASES ====================
 
 export type PlayerClass = 'guerrero' | 'mago' | 'ladron' | 'arquero';
@@ -804,48 +799,6 @@ export const ITEMS: Record<string, Item> = {
     consumeEffect: { forgeBoost: 10, duration: 60 * 60 * 1000 }
   },
 
-  // === MATERIALES ===
-  hierro: {
-    id: 'hierro',
-    name: 'Mineral de Hierro',
-    emoji: '🪨',
-    type: 'material',
-    rarity: 'comun',
-    description: 'Material básico para forja.',
-    price: 50,
-    sellPrice: 25
-  },
-  oro_material: {
-    id: 'oro_material',
-    name: 'Pepita de Oro',
-    emoji: '🥇',
-    type: 'material',
-    rarity: 'raro',
-    description: 'Valioso material de forja.',
-    price: 200,
-    sellPrice: 100
-  },
-  escama_dragon: {
-    id: 'escama_dragon',
-    name: 'Escama de Dragón',
-    emoji: '🐉',
-    type: 'material',
-    rarity: 'legendario',
-    description: 'Extremadamente rara y valiosa.',
-    price: 10000,
-    sellPrice: 5000
-  },
-  cristal_mana: {
-    id: 'cristal_mana',
-    name: 'Cristal de Maná',
-    emoji: '💎',
-    type: 'material',
-    rarity: 'epico',
-    description: 'Concentrado de energía mágica.',
-    price: 3000,
-    sellPrice: 1500
-  },
-
   // === ITEMS ESPECIALES (DIAMANTES) ===
   ticket_muteo: {
     id: 'ticket_muteo',
@@ -1040,7 +993,76 @@ export const ITEMS: Record<string, Item> = {
   }
 };
 
+// ==================== MATERIALES DE FORJA ====================
+
+export interface ForgeMaterial {
+  id: string;
+  name: string;
+  emoji: string;
+  rarity: ItemRarity;
+  description: string;
+  sellPrice: number;
+  /** Precio en la tienda; solo los materiales basicos se venden */
+  price?: number;
+}
+
+/**
+ * Materiales de forja. Viven en user.forgeMaterials (id -> cantidad), no en el
+ * inventario: se obtienen minando, como drop de monstruos/dungeons o en la tienda.
+ */
+export const FORGE_MATERIALS: Record<string, ForgeMaterial> = {
+  // Minerales basicos (minar, tienda)
+  carbon: { id: 'carbon', name: 'Carbón', emoji: '⬛', rarity: 'comun', description: 'Combustible para la forja', sellPrice: 5, price: 20 },
+  piedra: { id: 'piedra', name: 'Piedra', emoji: '🪨', rarity: 'comun', description: 'Material de construcción básico', sellPrice: 3, price: 12 },
+  cobre: { id: 'cobre', name: 'Cobre', emoji: '🟤', rarity: 'comun', description: 'Metal maleable y conductor', sellPrice: 10, price: 40 },
+  hierro: { id: 'hierro', name: 'Hierro', emoji: '⚪', rarity: 'comun', description: 'Metal versátil y resistente', sellPrice: 15, price: 60 },
+  cuero: { id: 'cuero', name: 'Cuero', emoji: '🟫', rarity: 'comun', description: 'Piel curtida de bestias', sellPrice: 20, price: 80 },
+
+  // Minerales raros
+  plata: { id: 'plata', name: 'Plata', emoji: '🩶', rarity: 'raro', description: 'Metal precioso y conductor mágico', sellPrice: 40 },
+  oro: { id: 'oro', name: 'Oro', emoji: '🟡', rarity: 'raro', description: 'Metal noble de gran valor', sellPrice: 60 },
+  cristal: { id: 'cristal', name: 'Cristal', emoji: '🔷', rarity: 'raro', description: 'Cristal mágico puro', sellPrice: 50 },
+  acero: { id: 'acero', name: 'Acero', emoji: '⬜', rarity: 'raro', description: 'Aleación superior al hierro', sellPrice: 75 },
+
+  // Minerales epicos
+  rubi: { id: 'rubi', name: 'Rubí', emoji: '🔴', rarity: 'epico', description: 'Gema de fuego interior', sellPrice: 150 },
+  esmeralda: { id: 'esmeralda', name: 'Esmeralda', emoji: '🟢', rarity: 'epico', description: 'Gema de la naturaleza', sellPrice: 150 },
+  zafiro: { id: 'zafiro', name: 'Zafiro', emoji: '🔵', rarity: 'epico', description: 'Gema del océano profundo', sellPrice: 150 },
+  titanio: { id: 'titanio', name: 'Titanio', emoji: '🔘', rarity: 'epico', description: 'Metal ligero y ultra resistente', sellPrice: 200 },
+
+  // Minerales legendarios
+  diamante: { id: 'diamante', name: 'Diamante', emoji: '💎', rarity: 'legendario', description: 'La gema más dura y valiosa', sellPrice: 500 },
+  mithril: { id: 'mithril', name: 'Mithril', emoji: '✨', rarity: 'legendario', description: 'Metal élfico legendario', sellPrice: 600 },
+  adamantita: { id: 'adamantita', name: 'Adamantita', emoji: '💠', rarity: 'legendario', description: 'El metal más resistente conocido', sellPrice: 800 },
+
+  // Materiales especiales (drops de monstruos/dungeons)
+  escama_dragon: { id: 'escama_dragon', name: 'Escama de Dragón', emoji: '🐉', rarity: 'legendario', description: 'Escama de un dragón ancestral', sellPrice: 1000 },
+  esencia_fuego: { id: 'esencia_fuego', name: 'Esencia de Fuego', emoji: '🔥', rarity: 'epico', description: 'Fuego elemental condensado', sellPrice: 250 },
+  esencia_hielo: { id: 'esencia_hielo', name: 'Esencia de Hielo', emoji: '❄️', rarity: 'epico', description: 'Hielo elemental condensado', sellPrice: 250 },
+  esencia_rayo: { id: 'esencia_rayo', name: 'Esencia de Rayo', emoji: '⚡', rarity: 'epico', description: 'Electricidad elemental condensada', sellPrice: 250 },
+  fragmento_alma: { id: 'fragmento_alma', name: 'Fragmento de Alma', emoji: '👻', rarity: 'epico', description: 'Esencia espiritual pura', sellPrice: 300 },
+  polvo_estelar: { id: 'polvo_estelar', name: 'Polvo Estelar', emoji: '⭐', rarity: 'legendario', description: 'Polvo de estrellas caídas', sellPrice: 750 },
+  nucleo_elemental: { id: 'nucleo_elemental', name: 'Núcleo Elemental', emoji: '🌀', rarity: 'legendario', description: 'Núcleo de poder elemental puro', sellPrice: 1200 }
+};
+
+/**
+ * Items de tipo material que existieron en el inventario antes de unificar los
+ * materiales en forgeMaterials: id antiguo -> id de FORGE_MATERIALS.
+ */
+export const LEGACY_MATERIAL_ITEMS: Record<string, string> = {
+  hierro: 'hierro',
+  oro_material: 'oro',
+  cristal_mana: 'cristal',
+  escama_dragon: 'escama_dragon'
+};
+
 // ==================== MONSTRUOS ====================
+
+/** Un drop puede ser un item de ITEMS o un material de FORGE_MATERIALS (va a forgeMaterials) */
+export interface Drop {
+  itemId: string;
+  chance: number;
+}
 
 export interface Monster {
   id: string;
@@ -1052,7 +1074,7 @@ export interface Monster {
   defense: number;
   expReward: number;
   moneyReward: [number, number];
-  drops: { itemId: string; chance: number }[];
+  drops: Drop[];
   description: string;
 }
 
@@ -1142,7 +1164,7 @@ export const MONSTERS: Record<string, Monster> = {
     expReward: 350,
     moneyReward: [300, 700],
     drops: [
-      { itemId: 'oro_material', chance: 0.3 },
+      { itemId: 'oro', chance: 0.3 },
       { itemId: 'anillo_fuerza', chance: 0.1 }
     ],
     description: 'Gigante de las cavernas.'
@@ -1158,7 +1180,7 @@ export const MONSTERS: Record<string, Monster> = {
     expReward: 500,
     moneyReward: [500, 1200],
     drops: [
-      { itemId: 'cristal_mana', chance: 0.25 },
+      { itemId: 'cristal', chance: 0.25 },
       { itemId: 'pocion_mana', chance: 0.4 }
     ],
     description: 'Criatura del inframundo.'
@@ -1196,7 +1218,7 @@ export interface Dungeon {
     expMultiplier: number;
     moneyMultiplier: number;
     guaranteedDrops: string[];
-    bonusDrops: { itemId: string; chance: number }[];
+    bonusDrops: Drop[];
   };
 }
 
@@ -1251,7 +1273,7 @@ export const DUNGEONS: Record<string, Dungeon> = {
       guaranteedDrops: ['pocion_salud_mayor'],
       bonusDrops: [
         { itemId: 'espada_acero', chance: 0.15 },
-        { itemId: 'oro_material', chance: 0.3 }
+        { itemId: 'oro', chance: 0.3 }
       ]
     }
   },
@@ -1267,7 +1289,7 @@ export const DUNGEONS: Record<string, Dungeon> = {
     rewards: {
       expMultiplier: 2.5,
       moneyMultiplier: 2.0,
-      guaranteedDrops: ['cristal_mana', 'pocion_mana'],
+      guaranteedDrops: ['cristal', 'pocion_mana'],
       bonusDrops: [
         { itemId: 'baston_arcano', chance: 0.1 },
         { itemId: 'amuleto_vida', chance: 0.15 }
@@ -1389,7 +1411,7 @@ export const WEEKLY_QUESTS: Quest[] = [
     type: 'weekly',
     objective: 'dungeon',
     target: 5,
-    rewards: { exp: 8000, money: 5000, diamonds: 150, items: ['cristal_mana'] }
+    rewards: { exp: 8000, money: 5000, diamonds: 150, items: ['pocion_forja'] }
   },
   {
     id: 'weekly_earn_10000',

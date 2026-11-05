@@ -176,6 +176,17 @@ export interface UserRPG {
 
   // 🏰 Gremio al que pertenece (opcional — null si no está en ninguno)
   guildId?: string | null;
+
+  /** ID público del jugador (md5 del JID); se fija al registrarse y se muestra en el perfil */
+  playerId?: string;
+
+  /** Días consecutivos reclamando /daily; el bonus crece hasta 7 */
+  dailyStreak?: number;
+
+  // ⏰ Cooldowns de las acciones de recolección nuevas (timestamps)
+  lastFish?: number;
+  lastHunt?: number;
+  lastExplore?: number;
 }
 
 /**
@@ -186,9 +197,11 @@ export interface UserPet {
   name: string;
   level: number;
   exp: number;
-  hunger: number;          // 0-100; por debajo de 30 no aplica buff
+  hunger: number;          // 0-100 en el momento de lastFed; decae con el tiempo (ver getPetHunger)
   lastFed: number;
   adoptedAt: number;
+  /** Último entrenamiento (cooldown COOLDOWNS.TRAIN) */
+  lastTrain?: number;
 }
 
 /**

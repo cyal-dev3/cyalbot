@@ -28,3 +28,13 @@ test('el prefijo acepta los caracteres configurados', () => {
   assert.ok(!CONFIG.prefix.test('menu'));
   assert.ok(!CONFIG.prefix.test('#menu'));
 });
+
+test('sameUser compara cuentas por dígitos exactos, con o sin dominio y dispositivo', async () => {
+  const { sameUser } = await import('../src/config.js');
+  assert.equal(sameUser('5213312345678:12@s.whatsapp.net', '5213312345678@s.whatsapp.net'), true);
+  assert.equal(sameUser('174912593502302@lid', '174912593502302:3@lid'), true);
+  assert.equal(sameUser('15213312345678@s.whatsapp.net', '5213312345678@s.whatsapp.net'), false);
+  assert.equal(sameUser('', '5213312345678@s.whatsapp.net'), false);
+  assert.equal(sameUser(undefined, null), false);
+  assert.equal(sameUser('@g.us', '@g.us'), false);
+});

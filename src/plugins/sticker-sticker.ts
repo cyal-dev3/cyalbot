@@ -1,189 +1,97 @@
-/**
- * Plugin de Stickers
- * Convierte imágenes, videos y GIFs a stickers
- * Comando: .s, .sticker, .stiker
- */
+import type { MessageContext, PluginHandler } from '../types/message.js';
+import { CONFIG } from '../config.js';
+import { fetchMedia } from '../lib/fetch-media.js';
+import { getQuotedOrOwnMedia, replyMediaError } from '../lib/media.js';
+import { addExif, createSticker, MAX_ANIMATED_SECONDS, type StickerMetadata } from '../lib/sticker.js';
+import { extractUrl, URL_REGEX } from '../lib/downloaders.js';
 
-import { downloadMediaMessage } from 'baileys';
-import type { PluginHandler, MessageContext } from '../types/message.js';
-import { createSticker, videoToSticker, imageToSticker } from '../lib/sticker.js';
+/** Un video de más de 5 MB no cabe en un sticker de 8 s sin destrozar la calidad. */
+const MAX_INPUT_BYTES = 5 * 1024 * 1024;
+const URL_TIMEOUT_MS = 15_000;
 
-/**
- * Verifica si una URL es válida para imágenes
- */
-function isImageUrl(text: string): boolean {
-  const urlPattern = /https?:\/\/[^\s]+\.(jpe?g|png|gif|webp)(\?[^\s]*)?/i;
-  return urlPattern.test(text);
+export interface StickerArgs {
+  crop: boolean;
+  packname?: string;
+  author?: string;
+  url: string | null;
 }
 
-/**
- * Descarga contenido de una URL
- */
-async function downloadFromUrl(url: string): Promise<Buffer> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Error descargando: ${response.statusText}`);
+/** "/s full", "/s Mi pack|Yo", "/s https://..." (y combinaciones). */
+export function parseStickerArgs(text: string): StickerArgs {
+  let rest = text.trim();
+  const url = extractUrl(rest, undefined, URL_REGEX);
+  if (url) rest = rest.replace(url, '').trim();
+  let crop = true;
+  const words = rest.split(/\s+/).filter(Boolean);
+  if (words[0]?.toLowerCase() === 'full') {
+    crop = false;
+    words.shift();
   }
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  rest = words.join(' ');
+  if (!rest) return { crop, url };
+  const [packname, author] = rest.split('|').map((s) => s.trim());
+  return { crop, url, packname: packname || undefined, author: author || undefined };
 }
+
+const HELP =
+  '🎨 *CREAR STICKER*\n\n' +
+  '• Responde a una imagen o video con /s\n' +
+  '• Envía una imagen con /s en el caption\n' +
+  '• /s <url de imagen>\n' +
+  '• /s full → sin recortar (bordes transparentes)\n' +
+  '• /s Mi pack|Mi nombre → pack y autor\n' +
+  '• Responde a un sticker con /steal para hacerlo tuyo\n\n' +
+  `📷 JPG, PNG, WEBP, GIF · 🎬 videos de hasta ${MAX_ANIMATED_SECONDS} s (máx 5 MB)`;
 
 export const stickerPlugin: PluginHandler = {
-  command: /^(s|sticker|stiker|stick)$/i,
-  tags: ['sticker', 'media'],
-  help: [
-    's - Responde a una imagen/video para crear sticker',
-    's <url> - Crea sticker desde una URL de imagen',
-    'sticker - Alias de s'
-  ],
+  command: ['s', 'sticker', 'stiker', 'stick', 'steal', 'robar'],
+  description: 'Crear sticker a partir de una imagen, video o URL',
+  category: 'media',
+  usage: ['s (respondiendo a imagen/video)', 's full', 's <pack>|<autor>', 's <url>', 'steal (respondiendo a sticker)'],
 
-  handler: async (ctx: MessageContext) => {
-    const { conn, m, text } = ctx;
-
-    // Obtener el mensaje que contiene la media
-    const quotedMsg = m.quoted;
-    let mediaBuffer: Buffer | null = null;
-    let mediaType: 'image' | 'video' | 'sticker' | null = null;
+  async handler(ctx: MessageContext) {
+    const { m, text, send } = ctx;
+    const args = parseStickerArgs(text);
+    const metadata: StickerMetadata = {
+      packname: args.packname ?? CONFIG.botName,
+      author: args.author ?? (m.pushName || 'Usuario'),
+      categories: ['🎨'],
+    };
 
     try {
-      // Caso 1: Se proporcionó una URL
-      if (text && isImageUrl(text)) {
-        await m.react('🔄');
-        mediaBuffer = await downloadFromUrl(text);
-        mediaType = 'image';
-      }
-      // Caso 2: Se respondió a un mensaje con media
-      else if (quotedMsg && quotedMsg.message) {
-        await m.react('🔄');
+      let input: Buffer | null = null;
+      let isSticker = false;
 
-        const message = quotedMsg.message;
-
-        // Detectar tipo de media
-        if (message.imageMessage) {
-          mediaType = 'image';
-        } else if (message.videoMessage) {
-          mediaType = 'video';
-        } else if (message.stickerMessage) {
-          // Si ya es sticker, lo devolvemos como está (útil para robar stickers)
-          mediaType = 'sticker';
-        } else {
+      if (args.url) {
+        await m.react('⏳');
+        const fetched = await fetchMedia(args.url, { maxBytes: MAX_INPUT_BYTES, timeoutMs: URL_TIMEOUT_MS });
+        if (!fetched || !fetched.mimetype.startsWith('image/')) {
           await m.react('❌');
-          return m.reply(
-            '❌ *Error*\n\n' +
-            'Debes responder a una imagen, video o GIF.\n\n' +
-            '*Ejemplo:*\n' +
-            '• Responde a una imagen con .s\n' +
-            '• .s https://ejemplo.com/imagen.jpg'
-          );
+          await m.reply('❌ No pude bajar una imagen de ese enlace (debe ser una imagen de hasta 5 MB).');
+          return;
         }
-
-        // Descargar la media
-        const downloadMsg = {
-          key: quotedMsg.key,
-          message: quotedMsg.message
-        };
-
-        mediaBuffer = await downloadMediaMessage(
-          downloadMsg,
-          'buffer',
-          {},
-          {
-            logger: console as any,
-            reuploadRequest: conn.updateMediaMessage
-          }
-        ) as Buffer;
-      }
-      // Caso 3: Mensaje actual tiene media (enviaron imagen con comando en caption)
-      else if (m.rawMessage?.message) {
-        const rawMsg = m.rawMessage;
-
-        if (rawMsg.message?.imageMessage) {
-          await m.react('🔄');
-          mediaType = 'image';
-          mediaBuffer = await downloadMediaMessage(
-            rawMsg,
-            'buffer',
-            {},
-            {
-              logger: console as any,
-              reuploadRequest: conn.updateMediaMessage
-            }
-          ) as Buffer;
-        } else if (rawMsg.message?.videoMessage) {
-          await m.react('🔄');
-          mediaType = 'video';
-          mediaBuffer = await downloadMediaMessage(
-            rawMsg,
-            'buffer',
-            {},
-            {
-              logger: console as any,
-              reuploadRequest: conn.updateMediaMessage
-            }
-          ) as Buffer;
-        }
-      }
-
-      // Si no hay media, mostrar ayuda
-      if (!mediaBuffer) {
-        return m.reply(
-          '🎨 *CREAR STICKER*\n\n' +
-          '*Uso:*\n' +
-          '• Responde a una imagen/video con .s\n' +
-          '• Envía una imagen con .s en el caption\n' +
-          '• .s <url de imagen>\n\n' +
-          '*Tipos soportados:*\n' +
-          '📷 Imágenes (JPG, PNG, WEBP)\n' +
-          '🎬 Videos cortos (máx 6 segundos)\n' +
-          '🎞️ GIFs animados'
-        );
-      }
-
-      // Verificar tamaño (máximo 5MB para videos, el sticker se comprimirá)
-      if (mediaBuffer.length > 5 * 1024 * 1024 && mediaType === 'video') {
-        await m.react('⚠️');
-        return m.reply('⚠️ El video es muy grande. Intenta con uno más corto (máx 8 segundos).');
-      }
-
-      // Crear el sticker según el tipo de media
-      const stickerMetadata = {
-        packname: 'CYALTRONIC',
-        author: m.pushName || 'User',
-        categories: ['🎨']
-      };
-
-      let stickerBuffer: Buffer;
-
-      // Usar la función específica para cada tipo para mejor resultado
-      if (mediaType === 'video') {
-        // Forzar uso de videoToSticker para videos
-        stickerBuffer = await videoToSticker(mediaBuffer, stickerMetadata);
+        input = fetched.buffer;
       } else {
-        // Para imágenes y stickers usar la detección automática
-        stickerBuffer = await createSticker(mediaBuffer, stickerMetadata);
-      }
-
-      // Enviar sticker
-      await conn.sendMessage(m.chat, {
-        sticker: stickerBuffer
-      }, { quoted: m.key.id ? { key: m.key, message: {} } : undefined });
-
-      await m.react('✅');
-
-    } catch (error) {
-      console.error('❌ Error creando sticker:', error);
-      await m.react('❌');
-
-      if (error instanceof Error) {
-        if (error.message.includes('ffmpeg')) {
-          return m.reply('❌ Error de conversión. Asegúrate de que ffmpeg esté instalado.');
+        const media = await getQuotedOrOwnMedia(ctx, ['image', 'video', 'sticker'], { maxBytes: MAX_INPUT_BYTES });
+        if (!media) {
+          await m.reply(HELP);
+          return;
         }
-        return m.reply(`❌ Error: ${error.message.substring(0, 100)}`);
+        await m.react('⏳');
+        input = media.buffer;
+        isSticker = media.kind === 'sticker';
       }
 
-      return m.reply('❌ Error al crear el sticker. Intenta con otra imagen o video.');
-    }
-  }
-};
+      // Un sticker ya está en 512x512 WebP: solo se reescribe el pack/autor.
+      const sticker = isSticker
+        ? await addExif(input, metadata.packname, metadata.author, metadata.categories)
+        : await createSticker(input, metadata, { crop: args.crop });
 
-export default stickerPlugin;
+      await send({ sticker }, { quoted: m.rawMessage });
+      await m.react('✅');
+    } catch (error) {
+      await m.react('❌');
+      await replyMediaError(m, error, '❌ No se pudo crear el sticker. Prueba con otra imagen o un video más corto.');
+    }
+  },
+};

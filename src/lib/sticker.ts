@@ -1,340 +1,200 @@
-/**
- * Librería de Stickers
- * Convierte imágenes/videos a stickers y viceversa
- */
+import { randomBytes } from 'node:crypto';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import { runFfmpeg, withTempFiles } from './ffmpeg.js';
+import { createLogger } from './logger.js';
 
-import { spawn } from 'child_process';
-import { promises as fs } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { randomBytes } from 'crypto';
+const log = createLogger('sticker');
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TMP_DIR = join(__dirname, '../../tmp');
-
-// Asegurar que el directorio tmp existe
-await fs.mkdir(TMP_DIR, { recursive: true }).catch(e => console.error('[Sticker] Error creando directorio tmp:', e.message));
-
-/**
- * Interfaz para metadatos del sticker
- */
 export interface StickerMetadata {
   packname?: string;
   author?: string;
   categories?: string[];
-  isAiSticker?: boolean;
 }
 
-/**
- * Ejecuta ffmpeg con los argumentos especificados
- */
-async function runFfmpeg(
-  inputPath: string,
-  outputPath: string,
-  args: string[]
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const ffmpeg = spawn('ffmpeg', ['-y', '-i', inputPath, ...args, outputPath]);
+export interface StickerOptions {
+  /** Recortar al cuadrado (true) o encajar con fondo transparente (false). */
+  crop?: boolean;
+}
 
-    ffmpeg.on('error', reject);
-    ffmpeg.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited with code ${code}`));
-    });
+export const STICKER_SIZE = 512;
+/** Límites de WhatsApp: los estáticos deben pesar <= 100 KB y los animados <= 500 KB. */
+export const MAX_STATIC_BYTES = 100 * 1024;
+export const MAX_ANIMATED_BYTES = 500 * 1024;
+export const MAX_ANIMATED_SECONDS = 8;
+
+export type MediaKind = 'image' | 'video' | 'unknown';
+
+export interface DetectedMedia {
+  mime: string;
+  ext: string;
+  kind: MediaKind;
+  animated: boolean;
+}
+
+function hasAscii(buffer: Buffer, text: string, offset: number): boolean {
+  return buffer.length >= offset + text.length && buffer.toString('latin1', offset, offset + text.length) === text;
+}
+
+/** true si el buffer es un WebP con animación (flag del chunk VP8X o chunk ANIM presente). */
+export function isAnimatedWebp(buffer: Buffer): boolean {
+  if (!hasAscii(buffer, 'RIFF', 0) || !hasAscii(buffer, 'WEBP', 8)) return false;
+  if (hasAscii(buffer, 'VP8X', 12) && buffer.length > 20 && (buffer[20] & 0x02) !== 0) return true;
+  return buffer.indexOf('ANIM', 12, 'latin1') !== -1;
+}
+
+/** Tipo real del archivo por sus primeros bytes. */
+export function detectMedia(buffer: Buffer): DetectedMedia {
+  if (hasAscii(buffer, 'RIFF', 0) && hasAscii(buffer, 'WEBP', 8)) {
+    return { mime: 'image/webp', ext: 'webp', kind: 'image', animated: isAnimatedWebp(buffer) };
+  }
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return { mime: 'image/jpeg', ext: 'jpg', kind: 'image', animated: false };
+  if (buffer[0] === 0x89 && hasAscii(buffer, 'PNG', 1)) return { mime: 'image/png', ext: 'png', kind: 'image', animated: false };
+  if (hasAscii(buffer, 'GIF8', 0)) return { mime: 'image/gif', ext: 'gif', kind: 'video', animated: true };
+  if (hasAscii(buffer, 'ftyp', 4)) return { mime: 'video/mp4', ext: 'mp4', kind: 'video', animated: true };
+  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) {
+    return { mime: 'video/webm', ext: 'webm', kind: 'video', animated: true };
+  }
+  if (hasAscii(buffer, 'RIFF', 0) && hasAscii(buffer, 'AVI ', 8)) return { mime: 'video/avi', ext: 'avi', kind: 'video', animated: true };
+  return { mime: 'application/octet-stream', ext: 'bin', kind: 'unknown', animated: false };
+}
+
+function createExif(packname: string, author: string, categories: string[]): Buffer {
+  const json = Buffer.from(
+    JSON.stringify({
+      'sticker-pack-id': `CYALTRONIC_${randomBytes(8).toString('hex').toUpperCase()}`,
+      'sticker-pack-name': packname,
+      'sticker-pack-publisher': author,
+      emojis: categories,
+    }),
+    'utf8',
+  );
+  // Cabecera TIFF little-endian con una sola entrada IFD (tag 0x5741, tipo UNDEFINED) que apunta al JSON.
+  const header = Buffer.from([
+    0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x41, 0x57, 0x07, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x16, 0x00, 0x00, 0x00,
+  ]);
+  header.writeUInt32LE(json.length, 14);
+  return Buffer.concat([header, json]);
+}
+
+/** Inserta el EXIF de pack/autor en un WebP. Si node-webpmux falla devuelve el original. */
+export async function addExif(webp: Buffer, packname = 'CYALTRONIC', author = 'Bot', categories: string[] = ['']): Promise<Buffer> {
+  try {
+    const { Image } = await import('node-webpmux');
+    const img = new Image();
+    await img.load(webp);
+    img.exif = createExif(packname, author, categories);
+    return Buffer.from(await img.save(null));
+  } catch (error) {
+    log.warn('no se pudo escribir el EXIF del sticker:', error instanceof Error ? error.message : error);
+    return webp;
+  }
+}
+
+function scaleFilter(crop: boolean): string {
+  return crop
+    ? `scale=${STICKER_SIZE}:${STICKER_SIZE}:force_original_aspect_ratio=increase,crop=${STICKER_SIZE}:${STICKER_SIZE},setsar=1`
+    : `scale=${STICKER_SIZE}:${STICKER_SIZE}:flags=lanczos:force_original_aspect_ratio=decrease,format=rgba,pad=${STICKER_SIZE}:${STICKER_SIZE}:(ow-iw)/2:(oh-ih)/2:color=#00000000,setsar=1`;
+}
+
+const STATIC_QUALITIES = [90, 75, 60, 45, 30];
+const ANIMATED_ATTEMPTS: { fps: number; quality: number }[] = [
+  { fps: 15, quality: 60 },
+  { fps: 12, quality: 45 },
+  { fps: 10, quality: 30 },
+  { fps: 8, quality: 20 },
+];
+
+async function encodeUntilFits(
+  attempts: number,
+  maxBytes: number,
+  encode: (attempt: number, output: string) => Promise<void>,
+  output: string,
+): Promise<Buffer> {
+  let last: Buffer | null = null;
+  for (let i = 0; i < attempts; i++) {
+    await encode(i, output);
+    const size = (await stat(output)).size;
+    if (size <= maxBytes) return readFile(output);
+    log.debug(`sticker de ${size} bytes supera ${maxBytes}, reintentando (${i + 1}/${attempts})`);
+    last = await readFile(output);
+  }
+  return last ?? Buffer.alloc(0);
+}
+
+/** Imagen a WebP estático de 512x512; baja la calidad hasta quedar bajo 100 KB. */
+export async function imageToSticker(buffer: Buffer, metadata: StickerMetadata = {}, options: StickerOptions = {}): Promise<Buffer> {
+  const crop = options.crop ?? true;
+  const input = detectMedia(buffer);
+  const webp = await withTempFiles([input.ext, 'webp'], async ([inPath, outPath]) => {
+    await writeFile(inPath, buffer);
+    return encodeUntilFits(STATIC_QUALITIES.length, MAX_STATIC_BYTES, (i, out) =>
+      runFfmpeg([
+        '-i', inPath, '-frames:v', '1',
+        '-vf', scaleFilter(crop),
+        '-c:v', 'libwebp', '-lossless', '0', '-quality', String(STATIC_QUALITIES[i]), '-compression_level', '6',
+        out,
+      ]), outPath);
+  });
+  return addExif(webp, metadata.packname, metadata.author, metadata.categories);
+}
+
+/** Video o GIF a WebP animado (8 s máx.); baja fps y calidad hasta quedar bajo 500 KB. */
+export async function videoToSticker(buffer: Buffer, metadata: StickerMetadata = {}, options: StickerOptions = {}): Promise<Buffer> {
+  const crop = options.crop ?? true;
+  const input = detectMedia(buffer);
+  const webp = await withTempFiles([input.ext, 'webp'], async ([inPath, outPath]) => {
+    await writeFile(inPath, buffer);
+    return encodeUntilFits(ANIMATED_ATTEMPTS.length, MAX_ANIMATED_BYTES, (i, out) => {
+      const { fps, quality } = ANIMATED_ATTEMPTS[i];
+      return runFfmpeg([
+        '-i', inPath, '-t', String(MAX_ANIMATED_SECONDS), '-an',
+        '-vf', `${scaleFilter(crop)},fps=${fps}`,
+        '-c:v', 'libwebp', '-lossless', '0', '-quality', String(quality), '-compression_level', '6', '-loop', '0', '-fps_mode', 'passthrough',
+        out,
+      ], { timeoutMs: 90_000 });
+    }, outPath);
+  });
+  return addExif(webp, metadata.packname, metadata.author, metadata.categories);
+}
+
+/** Primer fotograma del sticker como PNG. */
+export function stickerToImage(buffer: Buffer): Promise<Buffer> {
+  return withTempFiles(['webp', 'png'], async ([inPath, outPath]) => {
+    await writeFile(inPath, buffer);
+    await runFfmpeg(['-i', inPath, '-frames:v', '1', outPath]);
+    return readFile(outPath);
   });
 }
 
-/**
- * Genera un nombre de archivo temporal único
- */
-function getTempPath(ext: string): string {
-  return join(TMP_DIR, `${Date.now()}_${randomBytes(4).toString('hex')}.${ext}`);
-}
-
-/**
- * Detecta el tipo de archivo basado en el buffer
- */
-function detectFileType(buffer: Buffer): { mime: string; ext: string; isAnimated?: boolean } {
-  // Detectar por magic bytes
-  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) {
-    // RIFF header - puede ser webp
-    if (buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-      // Verificar si es webp animado (buscar ANIM chunk)
-      const isAnimated = buffer.includes(Buffer.from('ANIM')) || buffer.includes(Buffer.from('ANMF'));
-      return { mime: 'image/webp', ext: 'webp', isAnimated };
-    }
-  }
-  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-    return { mime: 'image/jpeg', ext: 'jpg' };
-  }
-  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
-    return { mime: 'image/png', ext: 'png' };
-  }
-  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
-    return { mime: 'image/gif', ext: 'gif' };
-  }
-
-  // MP4/MOV/3GP - buscar ftyp en diferentes posiciones
-  // ftyp puede estar en posición 4 o después de un header
-  const ftypIndex = buffer.indexOf(Buffer.from('ftyp'));
-  if (ftypIndex !== -1 && ftypIndex < 12) {
-    return { mime: 'video/mp4', ext: 'mp4' };
-  }
-
-  // WebM
-  if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) {
-    return { mime: 'video/webm', ext: 'webm' };
-  }
-
-  // AVI
-  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-      buffer[8] === 0x41 && buffer[9] === 0x56 && buffer[10] === 0x49) {
-    return { mime: 'video/avi', ext: 'avi' };
-  }
-
-  // MKV
-  if (buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3) {
-    return { mime: 'video/x-matroska', ext: 'mkv' };
-  }
-
-  // Fallback - intentar detectar si parece video por tamaño y estructura
-  // Los videos suelen tener más de 50KB y estructura específica
-  if (buffer.length > 50000) {
-    // Buscar indicadores comunes de video
-    if (buffer.includes(Buffer.from('moov')) || buffer.includes(Buffer.from('mdat'))) {
-      return { mime: 'video/mp4', ext: 'mp4' };
-    }
-  }
-
-  return { mime: 'application/octet-stream', ext: 'bin' };
-}
-
-/**
- * Crea metadatos EXIF para el sticker
- */
-function createExifMetadata(packname: string, author: string, categories: string[] = ['']): Buffer {
-  const json = {
-    'sticker-pack-id': 'CYALTRONIC_' + randomBytes(8).toString('hex').toUpperCase(),
-    'sticker-pack-name': packname,
-    'sticker-pack-publisher': author,
-    'emojis': categories
-  };
-
-  const jsonBuffer = Buffer.from(JSON.stringify(json), 'utf8');
-  const exifAttr = Buffer.from([
-    0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
-    0x01, 0x00, 0x41, 0x57, 0x07, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x16, 0x00, 0x00, 0x00
-  ]);
-
-  const exif = Buffer.concat([exifAttr, jsonBuffer]);
-  exif.writeUIntLE(jsonBuffer.length, 14, 4);
-
-  return exif;
-}
-
-/**
- * Agrega metadatos EXIF a un sticker webp
- */
-export async function addExif(
-  webpBuffer: Buffer,
-  packname: string = 'CYALTRONIC',
-  author: string = 'Bot',
-  categories: string[] = ['']
-): Promise<Buffer> {
-  try {
-    // Importar dinámicamente node-webpmux
-    const webp = await import('node-webpmux');
-    const img = new webp.Image();
-
-    await img.load(webpBuffer);
-    img.exif = createExifMetadata(packname, author, categories);
-
-    return Buffer.from(await img.save(null));
-  } catch (error) {
-    console.error('❌ Error agregando EXIF:', error);
-    // Si falla, devolver el buffer original
-    return webpBuffer;
-  }
-}
-
-/**
- * Convierte imagen a sticker webp
- */
-export async function imageToSticker(
-  buffer: Buffer,
-  metadata: StickerMetadata = {},
-  crop: boolean = true
-): Promise<Buffer> {
-  const { packname = 'CYALTRONIC', author = 'Bot', categories = [''] } = metadata;
-
-  const fileType = detectFileType(buffer);
-  const inputPath = getTempPath(fileType.ext);
-  const outputPath = getTempPath('webp');
-
-  try {
-    await fs.writeFile(inputPath, buffer);
-
-    // Elegir filtro basado en si queremos recortar o mantener transparencia
-    // Por defecto recortamos para evitar barras
-    const vfFilter = crop
-      ? 'scale=512:512:force_original_aspect_ratio=increase,crop=512:512,setsar=1'
-      : 'scale=512:512:flags=lanczos:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000,setsar=1';
-
-    await runFfmpeg(inputPath, outputPath, [
-      '-vf', vfFilter,
-      '-c:v', 'libwebp',
-      '-lossless', '0',
-      '-quality', '90',
-      '-loop', '0'
+/** Sticker animado a mp4 H.264 (fondo negro donde había transparencia). */
+export function stickerToVideo(buffer: Buffer): Promise<Buffer> {
+  return withTempFiles(['webp', 'mp4'], async ([inPath, outPath]) => {
+    await writeFile(inPath, buffer);
+    await runFfmpeg([
+      '-i', inPath,
+      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-preset', 'fast', '-movflags', '+faststart',
+      outPath,
     ]);
-
-    let stickerBuffer: Buffer = Buffer.from(await fs.readFile(outputPath));
-
-    // Agregar metadatos EXIF
-    stickerBuffer = await addExif(stickerBuffer, packname, author, categories);
-
-    return stickerBuffer;
-  } finally {
-    // Limpiar archivos temporales
-    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-  }
+    return readFile(outPath);
+  });
 }
 
-/**
- * Convierte video/gif a sticker webp animado
- */
-export async function videoToSticker(
-  buffer: Buffer,
-  metadata: StickerMetadata = {}
-): Promise<Buffer> {
-  const { packname = 'CYALTRONIC', author = 'Bot', categories = [''] } = metadata;
-
-  const fileType = detectFileType(buffer);
-  const inputPath = getTempPath(fileType.ext);
-  const outputPath = getTempPath('webp');
-
-  try {
-    await fs.writeFile(inputPath, buffer);
-
-    // Convertir a webp animado (512x512, sin barras)
-    // Escala el video para que el lado más pequeño sea 512 y luego recorta el centro
-    // Esto evita las barras blancas/negras manteniendo todo el espacio ocupado
-    await runFfmpeg(inputPath, outputPath, [
-      '-vf', 'scale=512:512:force_original_aspect_ratio=increase,crop=512:512,fps=15',
-      '-t', '8',
-      '-c:v', 'libwebp',
-      '-lossless', '0',
-      '-quality', '60',
-      '-loop', '0',
-      '-preset', 'default',
-      '-an',
-      '-vsync', '0'
-    ]);
-
-    let stickerBuffer: Buffer = Buffer.from(await fs.readFile(outputPath));
-
-    // Agregar metadatos EXIF
-    stickerBuffer = await addExif(stickerBuffer, packname, author, categories);
-
-    return stickerBuffer;
-  } finally {
-    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-  }
+/** Sticker animado a GIF con paleta propia. */
+export function stickerToGif(buffer: Buffer): Promise<Buffer> {
+  return withTempFiles(['webp', 'gif'], async ([inPath, outPath]) => {
+    await writeFile(inPath, buffer);
+    await runFfmpeg(['-i', inPath, '-vf', 'split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse', '-loop', '0', outPath]);
+    return readFile(outPath);
+  });
 }
 
-/**
- * Convierte sticker webp a imagen PNG
- */
-export async function stickerToImage(buffer: Buffer): Promise<Buffer> {
-  const inputPath = getTempPath('webp');
-  const outputPath = getTempPath('png');
-
-  try {
-    await fs.writeFile(inputPath, buffer);
-
-    await runFfmpeg(inputPath, outputPath, [
-      '-vframes', '1'
-    ]);
-
-    return await fs.readFile(outputPath);
-  } finally {
-    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-  }
+/** Crea el sticker eligiendo estático o animado según el contenido real del buffer. */
+export function createSticker(buffer: Buffer, metadata: StickerMetadata = {}, options: StickerOptions = {}): Promise<Buffer> {
+  const media = detectMedia(buffer);
+  return media.kind === 'video' || media.animated
+    ? videoToSticker(buffer, metadata, options)
+    : imageToSticker(buffer, metadata, options);
 }
-
-/**
- * Convierte sticker webp animado a video MP4
- */
-export async function stickerToVideo(buffer: Buffer): Promise<Buffer> {
-  const inputPath = getTempPath('webp');
-  const outputPath = getTempPath('mp4');
-
-  try {
-    await fs.writeFile(inputPath, buffer);
-
-    await runFfmpeg(inputPath, outputPath, [
-      '-c:v', 'libx264',
-      '-pix_fmt', 'yuv420p',
-      '-crf', '23',
-      '-preset', 'fast',
-      '-movflags', '+faststart'
-    ]);
-
-    return await fs.readFile(outputPath);
-  } finally {
-    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-  }
-}
-
-/**
- * Convierte sticker webp animado a GIF
- */
-export async function stickerToGif(buffer: Buffer): Promise<Buffer> {
-  const inputPath = getTempPath('webp');
-  const outputPath = getTempPath('gif');
-
-  try {
-    await fs.writeFile(inputPath, buffer);
-
-    await runFfmpeg(inputPath, outputPath, [
-      '-vf', 'split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
-      '-loop', '0'
-    ]);
-
-    return await fs.readFile(outputPath);
-  } finally {
-    await fs.unlink(inputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-    await fs.unlink(outputPath).catch(e => console.error('[Sticker] Error limpiando archivo temporal:', e.message));
-  }
-}
-
-/**
- * Función principal para crear sticker (detecta automáticamente el tipo)
- */
-export async function createSticker(
-  buffer: Buffer,
-  metadata: StickerMetadata = {}
-): Promise<Buffer> {
-  const fileType = detectFileType(buffer);
-
-  if (fileType.mime.startsWith('video/') || fileType.mime === 'image/gif') {
-    return videoToSticker(buffer, metadata);
-  }
-
-  return imageToSticker(buffer, metadata);
-}
-
-export default {
-  createSticker,
-  imageToSticker,
-  videoToSticker,
-  stickerToImage,
-  stickerToVideo,
-  stickerToGif,
-  addExif
-};

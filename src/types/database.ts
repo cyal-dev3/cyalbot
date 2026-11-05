@@ -49,6 +49,30 @@ export interface ChatSettings {
   customCtm?: string[];         // Frases personalizadas para .ctm
   // Sistema de Betting/Tipsters
   bettingSystem?: BettingSystem;
+  /** Notas del chat indexadas por clave normalizada (/nota) */
+  notes?: Record<string, ChatNote>;
+  /** Anunciar cumpleaños a las 09:00 en este grupo (/cumpleanios on|off) */
+  birthdayAnnounce?: boolean;
+}
+
+/** Nota guardada en un chat con /nota guardar */
+export interface ChatNote {
+  text: string;
+  author: string;
+  createdAt: number;
+}
+
+/** Recordatorio pendiente creado con /recordar */
+export interface Reminder {
+  id: string;
+  chat: string;
+  user: string;
+  text: string;
+  /** Momento en que debe dispararse */
+  at: number;
+  createdAt: number;
+  /** Momento en que se envió; los enviados se purgan a los 7 días */
+  firedAt?: number;
 }
 
 /**
@@ -161,6 +185,12 @@ export interface DatabaseSchema {
     /** Versión del esquema de datos; Database aplica migraciones únicas al subirla */
     schemaVersion?: number;
   };
+
+  /** Recordatorios (/recordar); los disparados se conservan 7 días */
+  reminders?: Reminder[];
+
+  /** Cumpleaños por JID en formato MM-DD (/cumple) */
+  birthdays?: Record<string, string>;
 }
 
 /** Consumo diario de la integración con Claude */

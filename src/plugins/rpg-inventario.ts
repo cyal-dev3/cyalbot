@@ -1,77 +1,82 @@
-/**
- * Plugin de Inventario - RPG
- * Comandos: inventario, equipar, desequipar, usar
- */
-
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, formatNumber, matchesIgnoreAccents } from '../lib/utils.js';
-import { ITEMS, RARITY_COLORS, CLASSES, type Item, type ItemType } from '../types/rpg.js';
-import { calculateTotalStats, type UserRPG } from '../types/user.js';
+import { EMOJI, formatNumber, msToTime } from '../lib/utils.js';
+import { ITEMS, RARITY_COLORS, FORGE_MATERIALS, type Item, type ItemType } from '../types/rpg.js';
+import type { ActiveBuff, UserRPG } from '../types/user.js';
+import { calculateTotalStats } from '../lib/rpg-utils.js';
+import { ITEM_TYPE_ALIASES, ITEM_TYPE_EMOJI, ITEM_TYPE_NAMES, SLOT_ALIASES, LIMITS } from '../constants/rpg.js';
+import {
+  EQUIPMENT_SLOTS, countItem, findEquippedEntry, formatAmbiguous, inventoryItems, inventorySize, isEquipable,
+  migrateLegacyMaterials, removeItem, resolveItem, listMaterials, type ResolveResult
+} from '../lib/rpg-inventory.js';
+import { activeBuffs } from '../lib/rpg-combat.js';
+import { isSpecialItem, useSpecialItem } from './rpg-items-especiales.js';
 
 /**
- * Obtiene el emoji de tipo de item
+ * Resuelve un item a partir de un texto que puede llevar palabras extra al final
+ * (cantidad, "all", el nuevo nombre...). Prueba el texto completo y va quitando
+ * palabras por el final; devuelve lo que sobró como `rest`.
  */
-function getTypeEmoji(type: ItemType): string {
-  const emojis: Record<ItemType, string> = {
-    weapon: '⚔️',
-    armor: '🛡️',
-    accessory: '💍',
-    consumable: '🧪',
-    material: '📦'
-  };
-  return emojis[type];
+export function resolveItemWithRest(text: string, candidates: readonly Item[]): { result: ResolveResult<Item>; rest: string } {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  for (let end = words.length; end >= 1; end--) {
+    const result = resolveItem(words.slice(0, end).join(' '), candidates);
+    if (result.status !== 'none') return { result, rest: words.slice(end).join(' ') };
+  }
+  return { result: { status: 'none' }, rest: '' };
 }
 
-/**
- * Calcula los stats máximos reales del jugador (incluyendo clase y equipamiento)
- */
-function getRealMaxStats(user: UserRPG): { maxHealth: number; maxMana: number; maxStamina: number } {
-  // Stats base
-  let maxHealth = user.maxHealth;
-  let maxMana = user.maxMana;
-  let maxStamina = user.maxStamina;
-
-  // Bonus de clase
-  if (user.playerClass && CLASSES[user.playerClass]) {
-    const classInfo = CLASSES[user.playerClass];
-    maxHealth += classInfo.baseStats.healthBonus;
-    maxMana += classInfo.baseStats.manaBonus;
-    maxStamina += classInfo.baseStats.staminaBonus;
-  }
-
-  // Bonus de equipamiento
-  const equipmentSlots = [user.equipment.weapon, user.equipment.armor, user.equipment.accessory];
-  for (const itemId of equipmentSlots) {
-    if (itemId && ITEMS[itemId]?.stats) {
-      const stats = ITEMS[itemId].stats;
-      if (stats.health) maxHealth += stats.health;
-      if (stats.mana) maxMana += stats.mana;
-      if (stats.stamina) maxStamina += stats.stamina;
-    }
-  }
-
-  return { maxHealth, maxMana, maxStamina };
+function typeFilter(text: string): ItemType | null {
+  return ITEM_TYPE_ALIASES[text.toLowerCase().trim()] ?? null;
 }
 
-/**
- * Plugin: Inventario - Ver items
- */
+function formatBuffs(buffs: ActiveBuff[], now: number): string {
+  if (buffs.length === 0) return '';
+  const labels: Record<string, string> = { expBoost: '✨ XP', attackBoost: '⚔️ Ataque', defenseBoost: '🛡️ Defensa', forgeBoost: '⚒️ Forja', dropLuck: '🍀 Suerte' };
+  let text = `✨ *Buffs activos:*\n`;
+  for (const buff of buffs) {
+    const label = labels[buff.type] ?? buff.type;
+    const value = buff.type === 'expBoost' ? `x${Number(buff.value.toFixed(2))}` : `+${buff.value}%`;
+    const time = buff.expiresAt === Number.MAX_SAFE_INTEGER ? 'permanente' : msToTime(buff.expiresAt - now);
+    text += `   ${label} ${value} (${time})\n`;
+  }
+  return text + '\n';
+}
+
 const inventarioPlugin: PluginHandler = {
   command: ['inventario', 'inv', 'items', 'mochila', 'bag'],
   tags: ['rpg'],
   help: [
     'inventario - Ver tu inventario completo',
     'inventario armas - Ver solo armas',
-    'inventario consumibles - Ver solo consumibles'
+    'inventario consumibles - Ver solo consumibles',
+    'inventario materiales - Ver tus materiales de forja'
   ],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, text, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
+    if (migrateLegacyMaterials(user)) db.updateUser(m.sender, { inventory: user.inventory, forgeMaterials: user.forgeMaterials });
+
+    const filter = typeFilter(text);
+
+    if (filter === 'material') {
+      const materials = listMaterials(user);
+      if (materials.length === 0) {
+        await m.reply(`${EMOJI.info} No tienes materiales de forja.\n\n💡 Consíguelos con *${usedPrefix}minar*, como drops o en *${usedPrefix}tienda materiales*.`);
+        return;
+      }
+      let response = `📦 *MATERIALES DE FORJA*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      for (const { material, quantity } of materials) {
+        response += `   ${RARITY_COLORS[material.rarity]} ${material.emoji} ${material.name} x${quantity}\n`;
+      }
+      response += `\n💡 *${usedPrefix}forja recetas* para usarlos | *${usedPrefix}forja vender [material] [n]*`;
+      await m.reply(response);
+      return;
+    }
 
     if (user.inventory.length === 0) {
       await m.reply(
@@ -81,219 +86,123 @@ const inventarioPlugin: PluginHandler = {
       return;
     }
 
-    // Filtrar por tipo si se especifica
-    const filter = text.toLowerCase().trim();
-    let filteredItems = user.inventory;
-    let filterName = 'completo';
-
-    if (filter) {
-      const typeMap: Record<string, ItemType> = {
-        'armas': 'weapon',
-        'arma': 'weapon',
-        'weapon': 'weapon',
-        'armadura': 'armor',
-        'armaduras': 'armor',
-        'armor': 'armor',
-        'accesorios': 'accessory',
-        'accesorio': 'accessory',
-        'accessory': 'accessory',
-        'consumibles': 'consumable',
-        'consumible': 'consumable',
-        'pociones': 'consumable',
-        'consumable': 'consumable',
-        'materiales': 'material',
-        'material': 'material'
-      };
-
-      const targetType = typeMap[filter];
-      if (targetType) {
-        filteredItems = user.inventory.filter(inv => {
-          const item = ITEMS[inv.itemId];
-          return item && item.type === targetType;
-        });
-        filterName = filter;
-      }
+    const equippedEntries = new Set(EQUIPMENT_SLOTS.map(slot => findEquippedEntry(user, slot)).filter(Boolean));
+    const grouped: Record<ItemType, string[]> = { weapon: [], armor: [], accessory: [], consumable: [], material: [] };
+    for (const entry of user.inventory) {
+      const item = ITEMS[entry.itemId];
+      if (!item || (filter && item.type !== filter)) continue;
+      const level = entry.enhanceLevel ? ` +${entry.enhanceLevel}` : '';
+      const qty = item.type === 'consumable' || entry.quantity > 1 ? ` x${entry.quantity}` : '';
+      const equipped = equippedEntries.has(entry) ? ' ✓' : '';
+      grouped[item.type].push(`   ${RARITY_COLORS[item.rarity]} ${item.emoji} ${item.name}${level}${qty}${equipped}`);
     }
 
-    // Agrupar por tipo
-    const grouped: Record<ItemType, { item: Item; quantity: number }[]> = {
-      weapon: [],
-      armor: [],
-      accessory: [],
-      consumable: [],
-      material: []
-    };
+    const now = Date.now();
+    let response = `🎒 *INVENTARIO*${filter ? ` (${ITEM_TYPE_NAMES[filter]})` : ''}\n`;
+    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    response += `📦 Ocupado: *${inventorySize(user)}/${LIMITS.MAX_INVENTORY_SIZE}*\n\n`;
 
-    for (const invItem of filteredItems) {
-      const item = ITEMS[invItem.itemId];
-      if (item) {
-        grouped[item.type].push({ item, quantity: invItem.quantity });
-      }
+    if (!filter) {
+      const slotName = (id: string | null, empty: string) => (id ? ITEMS[id]?.name ?? 'Desconocido' : `_${empty}_`);
+      response += `📌 *Equipado:*\n`;
+      response += `   ⚔️ Arma: ${slotName(user.equipment.weapon, 'Ninguna')}\n`;
+      response += `   🛡️ Armadura: ${slotName(user.equipment.armor, 'Ninguna')}\n`;
+      response += `   💍 Accesorio: ${slotName(user.equipment.accessory, 'Ninguno')}\n\n`;
+      response += formatBuffs(activeBuffs(user, now), now);
     }
 
-    let response = `🎒 *INVENTARIO* ${filter ? `(${filterName})` : ''}\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    const order: ItemType[] = ['weapon', 'armor', 'accessory', 'consumable'];
+    let shown = 0;
+    for (const type of order) {
+      if (grouped[type].length === 0) continue;
+      shown += grouped[type].length;
+      response += `${ITEM_TYPE_EMOJI[type]} *${ITEM_TYPE_NAMES[type]}:*\n${grouped[type].join('\n')}\n\n`;
+    }
+    if (shown === 0) {
+      response += `_No tienes items de ese tipo._\n\n`;
+    }
 
-    // Mostrar equipamiento actual
-    response += `📌 *Equipado:*\n`;
-    response += `   ⚔️ Arma: ${user.equipment.weapon ? ITEMS[user.equipment.weapon]?.name || 'Desconocido' : '_Ninguna_'}\n`;
-    response += `   🛡️ Armadura: ${user.equipment.armor ? ITEMS[user.equipment.armor]?.name || 'Desconocido' : '_Ninguna_'}\n`;
-    response += `   💍 Accesorio: ${user.equipment.accessory ? ITEMS[user.equipment.accessory]?.name || 'Desconocido' : '_Ninguno_'}\n\n`;
-
-    // Mostrar items por tipo
-    const typeOrder: ItemType[] = ['weapon', 'armor', 'accessory', 'consumable', 'material'];
-    const typeNames: Record<ItemType, string> = {
-      weapon: 'Armas',
-      armor: 'Armaduras',
-      accessory: 'Accesorios',
-      consumable: 'Consumibles',
-      material: 'Materiales'
-    };
-
-    for (const type of typeOrder) {
-      if (grouped[type].length > 0) {
-        response += `${getTypeEmoji(type)} *${typeNames[type]}:*\n`;
-
-        for (const { item, quantity } of grouped[type]) {
-          const rarity = RARITY_COLORS[item.rarity];
-          const equipped = (type === 'weapon' && user.equipment.weapon === item.id) ||
-                          (type === 'armor' && user.equipment.armor === item.id) ||
-                          (type === 'accessory' && user.equipment.accessory === item.id);
-
-          response += `   ${rarity} ${item.emoji} ${item.name}`;
-          // Siempre mostrar cantidad para consumibles y materiales
-          if (item.type === 'consumable' || item.type === 'material') {
-            response += ` (x${quantity})`;
-          } else if (quantity > 1) {
-            response += ` x${quantity}`;
-          }
-          if (equipped) response += ` ✓`;
-          response += '\n';
-        }
-        response += '\n';
-      }
+    const materialCount = listMaterials(user).reduce((sum, m) => sum + m.quantity, 0);
+    if (!filter && materialCount > 0) {
+      response += `📦 *Materiales:* ${materialCount} (ver con *${usedPrefix}inventario materiales*)\n\n`;
     }
 
     response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `💡 Usa */equipar [item]* para equiparte\n`;
-    response += `💡 Usa */usar [item]* para consumibles`;
+    response += `💡 *${usedPrefix}equipar [item]* | *${usedPrefix}usar [item]* | *${usedPrefix}iteminfo [item]*`;
 
     await m.reply(response);
   }
 };
 
-/**
- * Plugin: Equipar - Equipar un item
- */
 const equiparPlugin: PluginHandler = {
   command: ['equipar', 'equip', 'poner', 'wear'],
   tags: ['rpg'],
   help: [
-    'equipar [nombre del item] - Equipa un item de tu inventario',
+    'equipar [nombre o id del item] - Equipa un item de tu inventario',
     'Solo puedes equipar armas, armaduras y accesorios'
   ],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, text, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
     if (!text.trim()) {
-      await m.reply(
-        `${EMOJI.error} Especifica qué item quieres equipar.\n\n` +
-        `📝 *Uso:* /equipar espada de hierro`
-      );
+      await m.reply(`${EMOJI.error} Especifica qué item quieres equipar.\n\n📝 *Uso:* ${usedPrefix}equipar espada de hierro`);
       return;
     }
 
-    const searchTerm = text.toLowerCase().trim();
-
-    // Buscar item en inventario (sin importar tildes)
-    let foundItem: Item | null = null;
-    let foundInvIndex = -1;
-
-    for (let i = 0; i < user.inventory.length; i++) {
-      const invItem = user.inventory[i];
-      const item = ITEMS[invItem.itemId];
-      if (item && matchesIgnoreAccents(item.name, searchTerm)) {
-        foundItem = item;
-        foundInvIndex = i;
-        break;
-      }
+    const result = resolveItem(text, inventoryItems(user));
+    if (result.status === 'none') {
+      await m.reply(`${EMOJI.error} No tienes ese item en tu inventario.\n\n💡 Usa *${usedPrefix}inventario* para ver tus items.`);
+      return;
     }
+    if (result.status === 'ambiguous') {
+      await m.reply(formatAmbiguous(result.candidates));
+      return;
+    }
+    const item = result.item;
 
-    if (!foundItem || foundInvIndex === -1) {
-      await m.reply(
-        `${EMOJI.error} No tienes ese item en tu inventario.\n\n` +
-        `💡 Usa */inventario* para ver tus items.`
-      );
+    if (!isEquipable(item)) {
+      await m.reply(`${EMOJI.error} *${item.name}* no se puede equipar.\n\n💡 Solo puedes equipar armas, armaduras y accesorios.`);
+      return;
+    }
+    if (item.requiredLevel && user.level < item.requiredLevel) {
+      await m.reply(`${EMOJI.error} Necesitas nivel *${item.requiredLevel}* para equipar esto.\n\n📊 Tu nivel actual: *${user.level}*`);
+      return;
+    }
+    if (item.requiredClass && item.requiredClass.length > 0 && (!user.playerClass || !item.requiredClass.includes(user.playerClass))) {
+      await m.reply(`${EMOJI.error} Este item requiere ser *${item.requiredClass.join(' o ')}*.\n\n🎭 Tu clase: *${user.playerClass || 'Sin clase'}*`);
       return;
     }
 
-    // Verificar que sea equipable
-    if (!['weapon', 'armor', 'accessory'].includes(foundItem.type)) {
-      await m.reply(
-        `${EMOJI.error} *${foundItem.name}* no se puede equipar.\n\n` +
-        `💡 Solo puedes equipar armas, armaduras y accesorios.`
-      );
+    const slot = item.type as 'weapon' | 'armor' | 'accessory';
+    const previous = user.equipment[slot];
+    if (previous === item.id) {
+      await m.reply(`${EMOJI.info} Ya tienes equipado *${item.name}*.`);
       return;
     }
-
-    // Verificar nivel requerido
-    if (foundItem.requiredLevel && user.level < foundItem.requiredLevel) {
-      await m.reply(
-        `${EMOJI.error} Necesitas nivel *${foundItem.requiredLevel}* para equipar esto.\n\n` +
-        `📊 Tu nivel actual: *${user.level}*`
-      );
-      return;
-    }
-
-    // Verificar clase requerida
-    if (foundItem.requiredClass && foundItem.requiredClass.length > 0) {
-      if (!user.playerClass || !foundItem.requiredClass.includes(user.playerClass)) {
-        await m.reply(
-          `${EMOJI.error} Este item requiere ser *${foundItem.requiredClass.join(' o ')}*.\n\n` +
-          `🎭 Tu clase: *${user.playerClass || 'Sin clase'}*`
-        );
-        return;
-      }
-    }
-
-    // Equipar el item
-    const slot = foundItem.type as 'weapon' | 'armor' | 'accessory';
-    const previousItem = user.equipment[slot];
-
-    user.equipment[slot] = foundItem.id;
+    user.equipment[slot] = item.id;
     db.updateUser(m.sender, { equipment: user.equipment });
 
-    // Calcular nuevos stats
-    const newStats = calculateTotalStats(user, ITEMS);
-
-    let response = `${EMOJI.success} ¡Equipaste *${foundItem.name}*!\n\n`;
-
-    if (previousItem) {
-      const prevItemData = ITEMS[previousItem];
-      if (prevItemData) {
-        response += `🔄 Reemplazaste: ${prevItemData.emoji} ${prevItemData.name}\n\n`;
-      }
+    const stats = calculateTotalStats(user);
+    let response = `${EMOJI.success} ¡Equipaste *${item.name}*!\n\n`;
+    if (previous && ITEMS[previous]) {
+      response += `🔄 Reemplazaste: ${ITEMS[previous].emoji} ${ITEMS[previous].name}\n\n`;
     }
-
     response += `📈 *Stats con equipamiento:*\n`;
-    response += `   ⚔️ Ataque: *${newStats.attack}*\n`;
-    response += `   🛡️ Defensa: *${newStats.defense}*\n`;
-    response += `   ❤️ Vida máx: *${newStats.maxHealth}*\n`;
-    response += `   💠 Maná máx: *${newStats.maxMana}*\n`;
-    response += `   🎯 Crítico: *${newStats.critChance}%*`;
+    response += `   ⚔️ Ataque: *${stats.attack}*\n`;
+    response += `   🛡️ Defensa: *${stats.defense}*\n`;
+    response += `   ❤️ Vida máx: *${stats.maxHealth}*\n`;
+    response += `   💠 Maná máx: *${stats.maxMana}*\n`;
+    response += `   🎯 Crítico: *${stats.critChance}%*`;
 
     await m.reply(response);
     await m.react('✅');
   }
 };
 
-/**
- * Plugin: Desequipar - Quitar un item equipado
- */
 const desequiparPlugin: PluginHandler = {
   command: ['desequipar', 'unequip', 'quitar', 'remove'],
   tags: ['rpg'],
@@ -305,192 +214,134 @@ const desequiparPlugin: PluginHandler = {
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, text, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
-    const slot = text.toLowerCase().trim();
-
-    const slotMap: Record<string, 'weapon' | 'armor' | 'accessory'> = {
-      'arma': 'weapon',
-      'weapon': 'weapon',
-      'armadura': 'armor',
-      'armor': 'armor',
-      'accesorio': 'accessory',
-      'accessory': 'accessory'
-    };
-
-    const targetSlot = slotMap[slot];
-
-    if (!targetSlot) {
+    const slot = SLOT_ALIASES[text.toLowerCase().trim()];
+    if (!slot) {
       await m.reply(
         `${EMOJI.error} Especifica qué quieres desequipar.\n\n` +
-        `📝 *Uso:*\n` +
-        `   /desequipar arma\n` +
-        `   /desequipar armadura\n` +
-        `   /desequipar accesorio`
+        `📝 *Uso:*\n   ${usedPrefix}desequipar arma\n   ${usedPrefix}desequipar armadura\n   ${usedPrefix}desequipar accesorio`
       );
       return;
     }
 
-    const currentItem = user.equipment[targetSlot];
-
-    if (!currentItem) {
+    const current = user.equipment[slot];
+    if (!current) {
       await m.reply(`${EMOJI.warning} No tienes nada equipado en ese slot.`);
       return;
     }
 
-    const itemData = ITEMS[currentItem];
-    user.equipment[targetSlot] = null;
-    db.updateUser(m.sender, { equipment: user.equipment });
+    user.equipment[slot] = null;
+    const stats = calculateTotalStats(user);
+    db.updateUser(m.sender, {
+      equipment: user.equipment,
+      health: Math.min(user.health, stats.maxHealth),
+      mana: Math.min(user.mana, stats.maxMana),
+      stamina: Math.min(user.stamina, stats.maxStamina)
+    });
 
-    await m.reply(
-      `${EMOJI.success} Desequipaste *${itemData?.name || 'item desconocido'}*.\n\n` +
-      `💡 El item sigue en tu inventario.`
-    );
+    await m.reply(`${EMOJI.success} Desequipaste *${ITEMS[current]?.name || 'item desconocido'}*.\n\n💡 El item sigue en tu inventario.`);
     await m.react('✅');
   }
 };
 
-/**
- * Plugin: Usar - Consumir un item
- */
+function parseQuantityToken(text: string): { term: string; quantity: number; useAll: boolean } {
+  const parts = text.trim().split(/\s+/);
+  const last = parts[parts.length - 1]?.toLowerCase();
+  if (parts.length > 1) {
+    if (['all', 'todo', 'todas', 'todos'].includes(last)) return { term: parts.slice(0, -1).join(' '), quantity: 1, useAll: true };
+    if (/^\d+$/.test(last) && parseInt(last, 10) > 0) return { term: parts.slice(0, -1).join(' '), quantity: parseInt(last, 10), useAll: false };
+  }
+  return { term: text.trim(), quantity: 1, useAll: false };
+}
+
 const usarPlugin: PluginHandler = {
   command: ['usar', 'use', 'consumir', 'beber', 'drink'],
   tags: ['rpg'],
   help: [
-    'usar [nombre del item] - Usa un item consumible',
+    'usar [item] - Usa un item consumible',
     'usar [item] all - Usa todas las pociones de ese tipo',
     'usar [item] [cantidad] - Usa una cantidad específica',
-    'Restaura salud, maná o energía'
+    'usar ticket muteo @usuario - Items especiales de la tienda de diamantes'
   ],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, text, usedPrefix } = ctx;
     const db = getDatabase();
-    let user = db.getUser(m.sender);
+    const user = db.getUser(m.sender);
 
     if (!text.trim()) {
       await m.reply(
         `${EMOJI.error} Especifica qué item quieres usar.\n\n` +
-        `📝 *Uso:* /usar pocion de salud\n` +
-        `📝 *Uso:* /usar pocion all (usa todas)\n` +
-        `📝 *Uso:* /usar pocion 5 (usa 5)`
+        `📝 *Uso:* ${usedPrefix}usar pocion de salud\n` +
+        `📝 *Uso:* ${usedPrefix}usar pocion all (usa todas)\n` +
+        `📝 *Uso:* ${usedPrefix}usar pocion 5 (usa 5)`
       );
       return;
     }
 
-    // Detectar si quiere usar múltiples (all o número)
-    const parts = text.toLowerCase().trim().split(/\s+/);
-    let quantity = 1;
-    let useAll = false;
-    let searchTerm = text.toLowerCase().trim();
+    const parsed = parseQuantityToken(text);
+    const consumables = inventoryItems(user).filter(i => i.type === 'consumable');
+    // Las menciones llegan como @numero en el texto y no forman parte del nombre
+    const cleanTerm = parsed.term.replace(/@\S+/g, ' ').trim();
+    const { result, rest } = resolveItemWithRest(cleanTerm, consumables);
 
-    // Verificar si el último argumento es "all" o un número
-    const lastPart = parts[parts.length - 1];
-    if (lastPart === 'all' || lastPart === 'todo' || lastPart === 'todas' || lastPart === 'todos') {
-      useAll = true;
-      searchTerm = parts.slice(0, -1).join(' ');
-    } else if (!isNaN(parseInt(lastPart)) && parseInt(lastPart) > 0) {
-      quantity = parseInt(lastPart);
-      searchTerm = parts.slice(0, -1).join(' ');
+    if (result.status === 'none') {
+      await m.reply(`${EMOJI.error} No tienes ese consumible en tu inventario.\n\n💡 Usa *${usedPrefix}inventario consumibles* para ver tus pociones.`);
+      return;
     }
-
-    // Si después de remover el modificador no queda nada, usar el texto original
-    if (!searchTerm.trim()) {
-      searchTerm = text.toLowerCase().trim();
-      useAll = false;
-      quantity = 1;
+    if (result.status === 'ambiguous') {
+      await m.reply(formatAmbiguous(result.candidates));
+      return;
     }
+    const item = result.item;
 
-    // Buscar item en inventario (sin importar tildes)
-    let foundItem: Item | null = null;
-    let foundInvIndex = -1;
-
-    for (let i = 0; i < user.inventory.length; i++) {
-      const invItem = user.inventory[i];
-      const item = ITEMS[invItem.itemId];
-      if (item && matchesIgnoreAccents(item.name, searchTerm)) {
-        foundItem = item;
-        foundInvIndex = i;
-        break;
-      }
-    }
-
-    if (!foundItem || foundInvIndex === -1) {
-      await m.reply(
-        `${EMOJI.error} No tienes ese item en tu inventario.\n\n` +
-        `💡 Usa */inventario consumibles* para ver tus pociones.`
-      );
+    if (isSpecialItem(item.id)) {
+      const outcome = await useSpecialItem(ctx, db, user, item, rest);
+      await m.reply(outcome.message);
+      if (outcome.consumed) await m.react('✨');
       return;
     }
 
-    // Verificar que sea consumible
-    if (foundItem.type !== 'consumable') {
-      await m.reply(
-        `${EMOJI.error} *${foundItem.name}* no se puede consumir.\n\n` +
-        `💡 Solo puedes usar items consumibles como pociones.`
-      );
+    const effect = item.consumeEffect;
+    if (!effect || Object.keys(effect).length === 0) {
+      await m.reply(`${EMOJI.error} *${item.name}* todavía no tiene efecto. No se consumió.`);
       return;
     }
 
-    const effect = foundItem.consumeEffect;
-    if (!effect) {
-      await m.reply(`${EMOJI.error} Este item no tiene efecto.`);
-      return;
-    }
+    const available = countItem(user, item.id);
+    const stats = calculateTotalStats(user);
+    const now = Date.now();
+    const isBuff = Boolean(effect.duration && (effect.expBoost || effect.forgeBoost));
+    let toUse = parsed.useAll ? available : Math.min(parsed.quantity, available);
 
-    // Determinar cuántas pociones usar
-    const availableQuantity = user.inventory[foundInvIndex].quantity;
-    let toUse = useAll ? availableQuantity : Math.min(quantity, availableQuantity);
-
-    // Calcular stats máximos reales (incluyendo clase y equipamiento)
-    const realMax = getRealMaxStats(user);
-
-    // Para items que restauran stats, calcular cuántos necesitamos realmente
-    const hasHealthEffect = effect.health && effect.health > 0;
-    const hasManaEffect = effect.mana && effect.mana > 0;
-    const hasStaminaEffect = effect.stamina && effect.stamina > 0;
-    const hasExpBoost = effect.expBoost && effect.duration;
-
-    // Si solo restaura stats (no buffs), calcular cuántos necesitamos
-    if (!hasExpBoost && (hasHealthEffect || hasManaEffect || hasStaminaEffect)) {
-      // Calcular déficit de cada stat
-      const healthDeficit = hasHealthEffect ? realMax.maxHealth - user.health : 0;
-      const manaDeficit = hasManaEffect ? realMax.maxMana - user.mana : 0;
-      const staminaDeficit = hasStaminaEffect ? realMax.maxStamina - user.stamina : 0;
-
-      // Si todas las stats están llenas, no consumir
-      if (healthDeficit <= 0 && manaDeficit <= 0 && staminaDeficit <= 0) {
+    if (!isBuff) {
+      const deficit = {
+        health: effect.health ? stats.maxHealth - user.health : 0,
+        mana: effect.mana ? stats.maxMana - user.mana : 0,
+        stamina: effect.stamina ? stats.maxStamina - user.stamina : 0
+      };
+      if (deficit.health <= 0 && deficit.mana <= 0 && deficit.stamina <= 0) {
         await m.reply(
           `${EMOJI.error} ¡Tus estadísticas ya están al máximo!\n\n` +
-          `❤️ Salud: *${user.health}/${realMax.maxHealth}*\n` +
-          `💠 Maná: *${user.mana}/${realMax.maxMana}*\n` +
-          `⚡ Energía: *${user.stamina}/${realMax.maxStamina}*\n\n` +
-          `💡 No necesitas usar *${foundItem.name}* ahora.`
+          `❤️ Salud: *${user.health}/${stats.maxHealth}*\n` +
+          `💠 Maná: *${user.mana}/${stats.maxMana}*\n` +
+          `⚡ Energía: *${user.stamina}/${stats.maxStamina}*\n\n` +
+          `💡 No necesitas usar *${item.name}* ahora.`
         );
         return;
       }
-
-      // Si es "all", calcular cuántos realmente necesitamos para llenar
-      if (useAll) {
+      if (parsed.useAll) {
         let needed = 0;
-        if (hasHealthEffect && healthDeficit > 0) {
-          needed = Math.max(needed, Math.ceil(healthDeficit / effect.health!));
-        }
-        if (hasManaEffect && manaDeficit > 0) {
-          needed = Math.max(needed, Math.ceil(manaDeficit / effect.mana!));
-        }
-        if (hasStaminaEffect && staminaDeficit > 0) {
-          needed = Math.max(needed, Math.ceil(staminaDeficit / effect.stamina!));
-        }
-        toUse = Math.min(needed, availableQuantity);
+        if (effect.health && deficit.health > 0) needed = Math.max(needed, Math.ceil(deficit.health / effect.health));
+        if (effect.mana && deficit.mana > 0) needed = Math.max(needed, Math.ceil(deficit.mana / effect.mana));
+        if (effect.stamina && deficit.stamina > 0) needed = Math.max(needed, Math.ceil(deficit.stamina / effect.stamina));
+        toUse = Math.min(needed, available);
       }
-    }
-
-    // Para buffs de exp, solo usar 1
-    if (hasExpBoost) {
+    } else {
       toUse = 1;
     }
 
@@ -499,170 +350,136 @@ const usarPlugin: PluginHandler = {
       return;
     }
 
-    // Aplicar efectos multiplicados por la cantidad
-    const updates: Partial<typeof user> = {};
+    const updates: Partial<UserRPG> = {};
     let effectMsg = '';
-    let totalHealthHealed = 0;
-    let totalManaRestored = 0;
-    let totalStaminaRestored = 0;
 
     if (effect.health) {
-      const totalHeal = effect.health * toUse;
-      const newHealth = Math.min(realMax.maxHealth, user.health + totalHeal);
-      totalHealthHealed = newHealth - user.health;
+      const newHealth = Math.min(stats.maxHealth, user.health + effect.health * toUse);
+      if (newHealth > user.health) effectMsg += `❤️ +${newHealth - user.health} Salud (${newHealth}/${stats.maxHealth})\n`;
       updates.health = newHealth;
-      if (totalHealthHealed > 0) {
-        effectMsg += `❤️ +${totalHealthHealed} Salud (${newHealth}/${realMax.maxHealth})\n`;
-      }
     }
-
     if (effect.mana) {
-      const totalMana = effect.mana * toUse;
-      const newMana = Math.min(realMax.maxMana, user.mana + totalMana);
-      totalManaRestored = newMana - user.mana;
+      const newMana = Math.min(stats.maxMana, user.mana + effect.mana * toUse);
+      if (newMana > user.mana) effectMsg += `💠 +${newMana - user.mana} Maná (${newMana}/${stats.maxMana})\n`;
       updates.mana = newMana;
-      if (totalManaRestored > 0) {
-        effectMsg += `💠 +${totalManaRestored} Maná (${newMana}/${realMax.maxMana})\n`;
-      }
     }
-
     if (effect.stamina) {
-      const totalStamina = effect.stamina * toUse;
-      const newStamina = Math.min(realMax.maxStamina, user.stamina + totalStamina);
-      totalStaminaRestored = newStamina - user.stamina;
+      const newStamina = Math.min(stats.maxStamina, user.stamina + effect.stamina * toUse);
+      if (newStamina > user.stamina) effectMsg += `⚡ +${newStamina - user.stamina} Energía (${newStamina}/${stats.maxStamina})\n`;
       updates.stamina = newStamina;
-      if (totalStaminaRestored > 0) {
-        effectMsg += `⚡ +${totalStaminaRestored} Energía (${newStamina}/${realMax.maxStamina})\n`;
-      }
+    }
+    if (isBuff && effect.duration) {
+      const type: ActiveBuff['type'] = effect.expBoost ? 'expBoost' : 'forgeBoost';
+      const value = effect.expBoost ?? effect.forgeBoost ?? 0;
+      const buffs = activeBuffs(user, now).filter(b => !(b.type === type && b.expiresAt !== Number.MAX_SAFE_INTEGER));
+      buffs.push({ type, value, expiresAt: now + effect.duration });
+      updates.activeBuffs = buffs;
+      effectMsg += type === 'expBoost'
+        ? `✨ XP x${value} durante ${msToTime(effect.duration)}\n`
+        : `⚒️ +${value}% de éxito en la forja durante ${msToTime(effect.duration)}\n`;
     }
 
-    if (effect.expBoost && effect.duration) {
-      // Agregar buff de experiencia
-      const newBuff = {
-        type: 'expBoost' as const,
-        value: effect.expBoost,
-        expiresAt: Date.now() + effect.duration
-      };
-      user.activeBuffs = user.activeBuffs.filter(b => b.type !== 'expBoost');
-      user.activeBuffs.push(newBuff);
-      updates.activeBuffs = user.activeBuffs;
-      effectMsg += `✨ XP x${effect.expBoost} por ${effect.duration / 60000} minutos\n`;
-    }
-
-    // Reducir cantidad del item
-    user.inventory[foundInvIndex].quantity -= toUse;
-    if (user.inventory[foundInvIndex].quantity <= 0) {
-      user.inventory.splice(foundInvIndex, 1);
-    }
+    removeItem(user, item.id, toUse);
     updates.inventory = user.inventory;
-
     db.updateUser(m.sender, updates);
 
-    let response = `${EMOJI.success} Usaste *${foundItem.emoji} ${foundItem.name}*`;
-    if (toUse > 1) {
-      response += ` x${toUse}`;
-    }
-    response += `\n\n`;
-    response += `✨ *Efectos:*\n`;
-    response += effectMsg;
-
-    const remaining = user.inventory[foundInvIndex]?.quantity || 0;
-    if (remaining > 0) {
-      response += `\n📦 Restantes: *${remaining}*`;
-    } else {
-      response += `\n📦 _No te quedan más de este item_`;
-    }
+    let response = `${EMOJI.success} Usaste *${item.emoji} ${item.name}*${toUse > 1 ? ` x${toUse}` : ''}\n\n`;
+    response += `✨ *Efectos:*\n${effectMsg}`;
+    const remaining = countItem(user, item.id);
+    response += remaining > 0 ? `\n📦 Restantes: *${remaining}*` : `\n📦 _No te quedan más de este item_`;
 
     await m.reply(response);
     await m.react('✨');
   }
 };
 
-/**
- * Plugin: Detalles - Ver detalles de un item
- */
 const itemInfoPlugin: PluginHandler = {
   command: ['iteminfo', 'veritem', 'item', 'info'],
   tags: ['rpg'],
-  help: ['iteminfo [nombre] - Ver información detallada de un item'],
+  help: ['iteminfo [nombre o id] - Ver información detallada de un item o material'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, text, usedPrefix } = ctx;
 
     if (!text.trim()) {
-      await m.reply(
-        `${EMOJI.error} Especifica el nombre del item.\n\n` +
-        `📝 *Uso:* /iteminfo espada de hierro`
-      );
+      await m.reply(`${EMOJI.error} Especifica el nombre del item.\n\n📝 *Uso:* ${usedPrefix}iteminfo espada de hierro`);
       return;
     }
 
-    const searchTerm = text.toLowerCase().trim();
-
-    // Buscar item (sin importar tildes)
-    let foundItem: Item | null = null;
-
-    for (const item of Object.values(ITEMS)) {
-      if (matchesIgnoreAccents(item.name, searchTerm)) {
-        foundItem = item;
-        break;
-      }
+    const result = resolveItem(text, Object.values(ITEMS));
+    if (result.status === 'ambiguous') {
+      await m.reply(formatAmbiguous(result.candidates));
+      return;
     }
-
-    if (!foundItem) {
+    if (result.status === 'none') {
+      const material = resolveItem(text, Object.values(FORGE_MATERIALS));
+      if (material.status === 'found') {
+        const mat = material.item;
+        await m.reply(
+          `${mat.emoji} *${mat.name}* (material de forja)\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
+          `📖 ${mat.description}\n\n` +
+          `   ${RARITY_COLORS[mat.rarity]} Rareza: ${mat.rarity}\n` +
+          `   💵 Venta: ${formatNumber(mat.sellPrice)} monedas\n` +
+          (mat.price ? `   💰 Precio en tienda: ${formatNumber(mat.price)} monedas\n` : '') +
+          `\n💡 Se usa en *${usedPrefix}forja* (id: \`${mat.id}\`)`
+        );
+        return;
+      }
+      if (material.status === 'ambiguous') {
+        await m.reply(formatAmbiguous(material.candidates));
+        return;
+      }
       await m.reply(`${EMOJI.error} No encontré ningún item con ese nombre.`);
       return;
     }
 
-    let response = `${foundItem.emoji} *${foundItem.name}*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    response += `📖 ${foundItem.description}\n\n`;
-
+    const item = result.item;
+    let response = `${item.emoji} *${item.name}*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    response += `📖 ${item.description}\n\n`;
     response += `📋 *Información:*\n`;
-    response += `   ${RARITY_COLORS[foundItem.rarity]} Rareza: ${foundItem.rarity.charAt(0).toUpperCase() + foundItem.rarity.slice(1)}\n`;
-    response += `   ${getTypeEmoji(foundItem.type)} Tipo: ${foundItem.type}\n`;
-    response += `   💰 Precio: ${formatNumber(foundItem.price)} monedas\n`;
-    response += `   💵 Venta: ${formatNumber(foundItem.sellPrice)} monedas\n`;
+    response += `   🆔 Id: \`${item.id}\`\n`;
+    response += `   ${RARITY_COLORS[item.rarity]} Rareza: ${item.rarity.charAt(0).toUpperCase() + item.rarity.slice(1)}\n`;
+    response += `   ${ITEM_TYPE_EMOJI[item.type]} Tipo: ${ITEM_TYPE_NAMES[item.type]}\n`;
+    if (item.price > 0) response += `   💰 Precio: ${formatNumber(item.price)} monedas\n`;
+    response += `   💵 Venta: ${formatNumber(item.sellPrice)} monedas\n`;
+    if (item.requiredLevel) response += `   📊 Nivel requerido: ${item.requiredLevel}\n`;
+    if (item.requiredClass?.length) response += `   🎭 Clase: ${item.requiredClass.join(', ')}\n`;
 
-    if (foundItem.requiredLevel) {
-      response += `   📊 Nivel requerido: ${foundItem.requiredLevel}\n`;
-    }
-
-    if (foundItem.requiredClass && foundItem.requiredClass.length > 0) {
-      response += `   🎭 Clase: ${foundItem.requiredClass.join(', ')}\n`;
-    }
-
-    if (foundItem.stats) {
+    if (item.stats) {
       response += `\n⚔️ *Estadísticas:*\n`;
-      if (foundItem.stats.attack) response += `   Ataque: +${foundItem.stats.attack}\n`;
-      if (foundItem.stats.defense) response += `   Defensa: +${foundItem.stats.defense}\n`;
-      if (foundItem.stats.health) response += `   Vida: +${foundItem.stats.health}\n`;
-      if (foundItem.stats.mana) response += `   Maná: +${foundItem.stats.mana}\n`;
-      if (foundItem.stats.stamina) response += `   Energía: +${foundItem.stats.stamina}\n`;
-      if (foundItem.stats.critChance) response += `   Crítico: +${foundItem.stats.critChance}%\n`;
+      if (item.stats.attack) response += `   Ataque: +${item.stats.attack}\n`;
+      if (item.stats.defense) response += `   Defensa: +${item.stats.defense}\n`;
+      if (item.stats.health) response += `   Vida: +${item.stats.health}\n`;
+      if (item.stats.mana) response += `   Maná: +${item.stats.mana}\n`;
+      if (item.stats.stamina) response += `   Energía: +${item.stats.stamina}\n`;
+      if (item.stats.critChance) response += `   Crítico: +${item.stats.critChance}%\n`;
     }
 
-    if (foundItem.consumeEffect) {
+    const e = item.consumeEffect;
+    if (e && Object.keys(e).length > 0) {
       response += `\n✨ *Efecto al usar:*\n`;
-      const e = foundItem.consumeEffect;
       if (e.health) response += `   ❤️ Restaura ${e.health} salud\n`;
       if (e.mana) response += `   💠 Restaura ${e.mana} maná\n`;
       if (e.stamina) response += `   ⚡ Restaura ${e.stamina} energía\n`;
-      if (e.expBoost) response += `   ✨ XP x${e.expBoost} por ${(e.duration || 0) / 60000} min\n`;
+      if (e.expBoost) response += `   ✨ XP x${e.expBoost} durante ${msToTime(e.duration || 0)}\n`;
+      if (e.forgeBoost) response += `   ⚒️ +${e.forgeBoost}% éxito en forja durante ${msToTime(e.duration || 0)}\n`;
+    } else if (isSpecialItem(item.id)) {
+      response += `\n✨ *Item especial:* se activa con *${usedPrefix}usar ${item.name.toLowerCase()}*\n`;
     }
 
     await m.reply(response);
   }
 };
 
-/**
- * Registra los plugins de inventario
- */
+export const inventoryPlugins: [string, PluginHandler][] = [
+  ['rpg-inventario', inventarioPlugin],
+  ['rpg-equipar', equiparPlugin],
+  ['rpg-desequipar', desequiparPlugin],
+  ['rpg-usar', usarPlugin],
+  ['rpg-iteminfo', itemInfoPlugin]
+];
+
 export function registerInventoryPlugins(handler: MessageHandler): void {
-  handler.registerPlugin('inventario', inventarioPlugin);
-  handler.registerPlugin('equipar', equiparPlugin);
-  handler.registerPlugin('desequipar', desequiparPlugin);
-  handler.registerPlugin('usar', usarPlugin);
-  handler.registerPlugin('iteminfo', itemInfoPlugin);
+  for (const [name, plugin] of inventoryPlugins) handler.registerPlugin(name, plugin);
 }

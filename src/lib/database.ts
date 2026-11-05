@@ -3,7 +3,7 @@ import { JSONFile } from 'lowdb/node';
 import { copyFile, readFile, rename, stat } from 'node:fs/promises';
 import type { DatabaseSchema, ChatSettings, UserWarning, BettingSystem, TipsterStats, BettingPick, Guild } from '../types/database.js';
 import { DEFAULT_DATABASE, DEFAULT_CHAT_SETTINGS } from '../types/database.js';
-import { DEFAULT_USER, type UserRPG, type UserBetting } from '../types/user.js';
+import { DEFAULT_USER, DEFAULT_USER_BETTING, type UserRPG, type UserBetting } from '../types/user.js';
 import { CLASSES } from '../types/rpg.js';
 import { BettingStore } from './betting-store.js';
 import { createLogger } from './logger.js';
@@ -13,6 +13,7 @@ const log = createLogger('db');
 const AUTOSAVE_INTERVAL_MS = 30_000;
 const BACKUP_MIN_INTERVAL_MS = 60_000;
 const MAX_WARNINGS_PER_GROUP = 1000;
+const MAX_STOP_SAVE_ATTEMPTS = 3;
 
 /** Versión actual del esquema; subirla implica añadir una migración en runMigrations */
 export const SCHEMA_VERSION = 2;
@@ -23,7 +24,7 @@ export const SCHEMA_VERSION = 2;
  * calculateTotalStats). Debe activarse en el mismo cambio en que rpg-clase.ts
  * deje de sumar/restar baseStats; hasta entonces queda apagada.
  */
-export const CLASS_STATS_MIGRATION_ENABLED = false;
+export const CLASS_STATS_MIGRATION_ENABLED = true;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -56,12 +57,24 @@ const RENAMED_ITEMS: Record<string, string> = {
   elixir_experiencia: 'elixir_exp'
 };
 
-/**
- * Migración tabular de un usuario: cada clave de DEFAULT_USER que falte, o cuyo
- * valor numérico no sea finito, recibe un clon del default. Devuelve si cambió algo.
- */
-export function migrateUser(user: UserRPG): boolean {
-  let changed = applyDefaults(user, DEFAULT_USER);
+/** Stats actuales y el máximo con el que se reponen si llegan corruptos */
+const CURRENT_STAT_MAX = { health: 'maxHealth', mana: 'maxMana', stamina: 'maxStamina' } as const;
+
+function isInventoryEntry(entry: unknown): entry is UserRPG['inventory'][number] {
+  return isPlainObject(entry)
+    && typeof entry.itemId === 'string'
+    && typeof entry.quantity === 'number'
+    && Number.isFinite(entry.quantity);
+}
+
+/** Quita entradas corruptas del inventario y funde los items renombrados; devuelve si cambió algo */
+function sanitizeInventory(user: UserRPG): boolean {
+  let changed = false;
+  const valid = user.inventory.filter(isInventoryEntry);
+  if (valid.length !== user.inventory.length) {
+    user.inventory = valid;
+    changed = true;
+  }
 
   for (const item of user.inventory) {
     const renamed = RENAMED_ITEMS[item.itemId];
@@ -78,6 +91,41 @@ export function migrateUser(user: UserRPG): boolean {
   if (changed && user.inventory.some(i => i.quantity <= 0)) {
     user.inventory = user.inventory.filter(i => i.quantity > 0);
   }
+  return changed;
+}
+
+/**
+ * Repara la estructura de user.betting solo si existe (no está en DEFAULT_USER,
+ * así que la tabla general no lo cubre); nunca lo crea.
+ */
+function migrateBetting(user: UserRPG): boolean {
+  if (user.betting === undefined) return false;
+  if (!isPlainObject(user.betting)) {
+    user.betting = structuredClone(DEFAULT_USER_BETTING);
+    return true;
+  }
+  let changed = applyDefaults(user.betting, DEFAULT_USER_BETTING);
+  if (applyDefaults(user.betting.stats, DEFAULT_USER_BETTING.stats)) changed = true;
+  return changed;
+}
+
+/**
+ * Migración tabular de un usuario: cada clave de DEFAULT_USER que falte, o cuyo
+ * valor numérico no sea finito, recibe un clon del default. Devuelve si cambió algo.
+ */
+export function migrateUser(user: UserRPG): boolean {
+  const record = user as unknown as Record<string, unknown>;
+  // Un stat actual corrupto se repone con el máximo del propio usuario, no con el default absoluto,
+  // para no dejar health > maxHealth
+  const invalidCurrent = (Object.keys(CURRENT_STAT_MAX) as (keyof typeof CURRENT_STAT_MAX)[])
+    .filter(key => needsDefault(record[key], DEFAULT_USER[key]));
+
+  let changed = applyDefaults(user, DEFAULT_USER);
+  for (const key of invalidCurrent) {
+    user[key] = user[CURRENT_STAT_MAX[key]];
+  }
+  if (sanitizeInventory(user)) changed = true;
+  if (migrateBetting(user)) changed = true;
 
   return changed;
 }
@@ -94,16 +142,18 @@ export function migrateChatSettings(chat: ChatSettings): boolean {
 export function removeClassBaseStats(user: UserRPG): boolean {
   if (!user.playerClass || !CLASSES[user.playerClass]) return false;
   const base = CLASSES[user.playerClass].baseStats;
+  // Usuarios de BD antigua pueden llegar sin estos campos; se tratan como el default
+  const finite = (value: number, fallback: number): number => (Number.isFinite(value) ? value : fallback);
 
-  user.maxHealth = Math.max(DEFAULT_USER.maxHealth, user.maxHealth - base.healthBonus);
-  user.maxMana = Math.max(DEFAULT_USER.maxMana, user.maxMana - base.manaBonus);
-  user.maxStamina = Math.max(DEFAULT_USER.maxStamina, user.maxStamina - base.staminaBonus);
-  user.attack = Math.max(DEFAULT_USER.attack, user.attack - base.attackBonus);
-  user.defense = Math.max(DEFAULT_USER.defense, user.defense - base.defenseBonus);
+  user.maxHealth = Math.max(DEFAULT_USER.maxHealth, finite(user.maxHealth, DEFAULT_USER.maxHealth) - base.healthBonus);
+  user.maxMana = Math.max(DEFAULT_USER.maxMana, finite(user.maxMana, DEFAULT_USER.maxMana) - base.manaBonus);
+  user.maxStamina = Math.max(DEFAULT_USER.maxStamina, finite(user.maxStamina, DEFAULT_USER.maxStamina) - base.staminaBonus);
+  user.attack = Math.max(DEFAULT_USER.attack, finite(user.attack, DEFAULT_USER.attack) - base.attackBonus);
+  user.defense = Math.max(DEFAULT_USER.defense, finite(user.defense, DEFAULT_USER.defense) - base.defenseBonus);
 
-  user.health = Math.min(user.health, user.maxHealth);
-  user.mana = Math.min(user.mana, user.maxMana);
-  user.stamina = Math.min(user.stamina, user.maxStamina);
+  user.health = Math.min(finite(user.health, user.maxHealth), user.maxHealth);
+  user.mana = Math.min(finite(user.mana, user.maxMana), user.maxMana);
+  user.stamina = Math.min(finite(user.stamina, user.maxStamina), user.maxStamina);
   return true;
 }
 
@@ -148,12 +198,18 @@ export class Database {
     }
   }
 
+  /**
+   * Lee el archivo. Solo un JSON inválido cuenta como corrupción (y pasa a la
+   * recuperación desde .bak); un error de E/S transitorio se propaga para no
+   * apartar un archivo sano ni arrancar con datos viejos.
+   */
   private async load(): Promise<void> {
     try {
       await this.db.read();
       return;
     } catch (error) {
-      log.error(`no se pudo leer ${this.filepath}:`, error);
+      if (!(error instanceof SyntaxError)) throw error;
+      log.error(`${this.filepath} no contiene JSON válido:`, error);
     }
 
     const backupPath = `${this.filepath}.bak`;
@@ -214,6 +270,9 @@ export class Database {
       }
       let migrated = 0;
       for (const user of Object.values(this.db.data.users)) {
+        if (!isPlainObject(user)) continue;
+        // Primero se sanea el usuario: sobre campos ausentes la resta daría NaN
+        migrateUser(user);
         if (removeClassBaseStats(user)) migrated++;
       }
       log.info(`migración schemaVersion 2: stats de clase corregidos en ${migrated} usuarios`);
@@ -255,10 +314,13 @@ export class Database {
 
   /**
    * Actualiza campos del usuario. Los stats numéricos críticos ignoran
-   * null/undefined/NaN para no pisar valores válidos.
+   * null/undefined/NaN para no pisar valores válidos. Los valores objeto que no
+   * sean ya los del propio usuario se clonan, para que un spread de DEFAULT_USER
+   * (u otro usuario) no deje objetos anidados compartidos.
    */
   updateUser(jid: string, updates: Partial<UserRPG>): void {
     const user = this.getUser(jid);
+    const current = user as unknown as Record<string, unknown>;
 
     const criticalNumericFields = [
       'health', 'maxHealth', 'stamina', 'maxStamina', 'mana', 'maxMana',
@@ -272,6 +334,11 @@ export class Database {
         if (typeof value !== 'number' || !Number.isFinite(value)) {
           delete safeUpdates[field];
         }
+      }
+    }
+    for (const [key, value] of Object.entries(safeUpdates)) {
+      if (typeof value === 'object' && value !== null && value !== current[key]) {
+        safeUpdates[key] = structuredClone(value);
       }
     }
 
@@ -299,9 +366,15 @@ export class Database {
    * Guarda en disco. Devuelve true si se escribió. isDirty se baja antes de
    * escribir y se vuelve a subir si falla, para no perder cambios hechos durante
    * la escritura ni repetir escrituras innecesarias.
+   *
+   * Si ya hay una escritura en curso, su JSON se serializó al empezar: lo que
+   * haya cambiado después no está en ella, así que al terminar se encadena otra
+   * escritura si la BD volvió a quedar sucia.
    */
   async save(): Promise<boolean> {
-    if (this.saving) return this.saving;
+    if (this.saving) {
+      return this.saving.then(() => (this.dirty ? this.save() : true));
+    }
     this.saving = this.doSave().finally(() => {
       this.saving = null;
     });
@@ -338,15 +411,21 @@ export class Database {
     return this.db.data;
   }
 
-  /** Detiene el autoguardado y hace flush final a disco */
+  /**
+   * Detiene el autoguardado y hace flush final a disco. Espera la escritura en
+   * curso y repite mientras queden cambios sin escribir (con tope, por si el
+   * disco falla de forma persistente).
+   */
   async stop(): Promise<void> {
     if (this.saveInterval) {
       clearInterval(this.saveInterval);
       this.saveInterval = null;
     }
-    if (this.dirty) {
-      await this.save();
+    if (this.saving) await this.saving;
+    for (let attempt = 0; attempt < MAX_STOP_SAVE_ATTEMPTS && this.dirty; attempt++) {
+      if (!(await this.save())) break;
     }
+    if (this.dirty) log.error('la base de datos se detiene con cambios sin guardar');
   }
 
   // ==================== CHATS ====================

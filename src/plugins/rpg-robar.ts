@@ -1,32 +1,26 @@
-/**
- * Plugin de Robo - RPG
- * Comando: robar - Intenta robar recursos de otro jugador
- */
-
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
-import { EMOJI, msToTime, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
-import { updateQuestProgress } from './rpg-misiones.js';
-import { getRankBenefits, getRoleByLevel } from '../types/user.js';
-import { globalModes, checkExpiredModes } from './owner-rpg.js';
+import { EMOJI, formatNumber, randomInt, pickRandom, checkCooldown, mentionTag, msToTime } from '../lib/utils.js';
+import { getRankBenefits, getRoleByLevel, type UserRPG } from '../types/user.js';
+import { globalModes, checkExpiredModes } from '../lib/global-modes.js';
 import { ROB, PVP } from '../constants/rpg.js';
+import { grantExp, loseExp } from '../lib/levelling.js';
+import { calculateTotalStats } from '../lib/rpg-utils.js';
+import { clamp, isPassiveActive, replyCooldown, usageError } from '../lib/rpg-actions.js';
+import { updateQuestProgress } from '../lib/quests.js';
 
-/**
- * Tipos de recursos que se pueden robar
- */
-type RobbableResource = 'money' | 'exp' | 'mana';
+export type RobbableResource = 'money' | 'exp' | 'mana';
 
-interface RobResult {
+export interface RobResult {
   success: boolean;
   resource: RobbableResource;
+  /** Cantidad a transferir (éxito) o multa (fallo); 0 si no había nada que robar */
   amount: number;
   message: string;
+  successChance: number;
 }
 
-/**
- * Mensajes de éxito al robar
- */
 const SUCCESS_MESSAGES: Record<RobbableResource, string[]> = {
   money: [
     '💰 Te infiltraste sigilosamente y robaste {amount} monedas de {victim}!',
@@ -51,9 +45,6 @@ const SUCCESS_MESSAGES: Record<RobbableResource, string[]> = {
   ]
 };
 
-/**
- * Mensajes de fallo al robar
- */
 const FAIL_MESSAGES = [
   '🚨 ¡{victim} te atrapó con las manos en la masa! Perdiste {penalty} monedas como multa.',
   '👮 ¡Los guardias te vieron! Pagaste {penalty} monedas de fianza.',
@@ -65,350 +56,250 @@ const FAIL_MESSAGES = [
   '🏃 ¡Huiste pero tropezaste! Se te cayeron {penalty} monedas.'
 ];
 
+const EMPTY_POCKETS = '🫗 ¡La víctima no tiene nada que robar! Sus bolsillos están vacíos.';
+
+export interface RobAttemptOptions {
+  /** Bonus de rango/modos a la probabilidad de éxito (puntos porcentuales) */
+  successBonus?: number;
+  /** Bonus de rango/modos a la cantidad robada (%) */
+  amountBonus?: number;
+  /** Generador aleatorio inyectable para tests */
+  rand?: (min: number, max: number) => number;
+}
+
+/** true si la víctima tiene algo que valga la pena robar según ROB.MIN_VICTIM_RESOURCES */
+export function hasStealableResources(victim: UserRPG): boolean {
+  return victim.money >= ROB.MIN_VICTIM_RESOURCES.MONEY
+    || victim.exp >= ROB.MIN_VICTIM_RESOURCES.EXP
+    || victim.mana >= ROB.MIN_VICTIM_RESOURCES.MANA;
+}
+
 /**
- * Calcula el resultado del intento de robo
+ * Decide el resultado de un robo con las constantes ROB.*. La cantidad nunca
+ * supera el recurso real de la víctima, así el ladrón gana exactamente lo que
+ * la víctima pierde (ver applyRobTransfer).
  */
-function calculateRobAttempt(
-  thiefLevel: number,
-  victimLevel: number,
-  victimMoney: number,
-  victimExp: number,
-  victimMana: number,
-  robSuccessBonus: number = 0,
-  robAmountBonus: number = 0
-): RobResult {
-  // Probabilidad base: 40%
-  // +2% por cada nivel del ladrón
-  // -3% por cada nivel de la víctima
-  // +bonus por rango del ladrón
-  const levelDiff = thiefLevel - victimLevel;
-  const baseChance = 40;
-  const thiefBonus = thiefLevel * 2;
-  const victimDefense = victimLevel * 3;
-  const rankBonus = robSuccessBonus; // Bonus de rango
-  const successChance = Math.min(85, Math.max(15, baseChance + thiefBonus - victimDefense + (levelDiff * 2) + rankBonus));
+export function calculateRobAttempt(thief: UserRPG, victim: UserRPG, opts: RobAttemptOptions = {}): RobResult {
+  const rand = opts.rand ?? randomInt;
+  const successChance = clamp(
+    ROB.BASE_CHANCE
+      + thief.level * ROB.THIEF_BONUS_PER_LEVEL
+      - victim.level * ROB.VICTIM_DEFENSE_PER_LEVEL
+      + (opts.successBonus ?? 0),
+    ROB.MIN_SUCCESS_CHANCE,
+    ROB.MAX_SUCCESS_CHANCE
+  );
 
-  const roll = randomInt(1, 100);
-  const success = roll <= successChance;
-
-  if (!success) {
-    // Falló - calcular penalización (aumentada)
-    const penalty = randomInt(100, 500);
+  if (rand(1, 100) > successChance) {
     return {
       success: false,
       resource: 'money',
-      amount: penalty,
-      message: pickRandom(FAIL_MESSAGES)
+      amount: rand(ROB.FAIL_PENALTY.MIN, ROB.FAIL_PENALTY.MAX),
+      message: pickRandom(FAIL_MESSAGES),
+      successChance
     };
   }
 
-  // Éxito - determinar qué robar
-  // Prioridad: dinero (70%), exp (20%), mana (10%)
-  const resourceRoll = randomInt(1, 100);
+  const amountMultiplier = 1 + (opts.amountBonus ?? 0) / 100;
+  const roll = rand(1, 100);
+  const min = ROB.MIN_VICTIM_RESOURCES;
   let resource: RobbableResource;
-  let maxSteal: number;
-  let minSteal: number;
+  let amount: number;
 
-  // Multiplicador por bonus de rango
-  const amountMultiplier = 1 + (robAmountBonus / 100);
-
-  if (resourceRoll <= 70 && victimMoney > 100) {
+  if (roll <= ROB.RESOURCE_CHANCES.MONEY && victim.money >= min.MONEY) {
     resource = 'money';
-    // Robar entre 15% y 35% del dinero de la víctima (AUMENTADO + bonus rango)
-    minSteal = Math.floor(victimMoney * 0.15 * amountMultiplier);
-    maxSteal = Math.floor(victimMoney * 0.35 * amountMultiplier);
-  } else if (resourceRoll <= 90 && victimExp > 500) {
+    amount = rand(
+      Math.floor(victim.money * ROB.MONEY_STEAL_PERCENT.MIN * amountMultiplier),
+      Math.floor(victim.money * ROB.MONEY_STEAL_PERCENT.MAX * amountMultiplier)
+    );
+    amount = clamp(amount, 1, victim.money);
+  } else if (roll <= ROB.RESOURCE_CHANCES.MONEY + ROB.RESOURCE_CHANCES.EXP && victim.exp >= min.EXP) {
     resource = 'exp';
-    // Robar entre 5% y 15% de la experiencia (AUMENTADO + bonus rango)
-    minSteal = Math.floor(victimExp * 0.05 * amountMultiplier);
-    maxSteal = Math.floor(victimExp * 0.15 * amountMultiplier);
-  } else if (victimMana > 10) {
+    amount = rand(
+      Math.floor(victim.exp * ROB.EXP_STEAL_PERCENT.MIN * amountMultiplier),
+      Math.floor(victim.exp * ROB.EXP_STEAL_PERCENT.MAX * amountMultiplier)
+    );
+    amount = clamp(amount, 1, victim.exp);
+  } else if (victim.mana >= min.MANA) {
     resource = 'mana';
-    // Robar entre 10 y 40 de maná (AUMENTADO + bonus rango)
-    minSteal = Math.floor(10 * amountMultiplier);
-    maxSteal = Math.min(Math.floor(40 * amountMultiplier), victimMana - 5);
-  } else if (victimMoney > 0) {
-    // Fallback a dinero solo si tiene algo
+    amount = rand(Math.floor(ROB.MANA_STEAL.MIN * amountMultiplier), Math.floor(ROB.MANA_STEAL.MAX * amountMultiplier));
+    amount = clamp(amount, 1, victim.mana);
+  } else if (victim.money > 0) {
     resource = 'money';
-    minSteal = Math.floor(victimMoney * 0.10 * amountMultiplier);
-    maxSteal = Math.floor(victimMoney * 0.25 * amountMultiplier);
+    amount = clamp(Math.floor(victim.money * ROB.MONEY_STEAL_PERCENT.MIN * amountMultiplier), 1, victim.money);
   } else {
-    // Víctima no tiene nada que robar - retornar como fallo
-    return {
-      success: false,
-      resource: 'money',
-      amount: 0,
-      message: '🫗 ¡La víctima no tiene nada que robar! Sus bolsillos están vacíos.'
-    };
+    return { success: false, resource: 'money', amount: 0, message: EMPTY_POCKETS, successChance };
   }
 
-  // Asegurar mínimos más altos
-  minSteal = Math.max(minSteal, 50);
-  maxSteal = Math.max(maxSteal, minSteal + 100);
-
-  const amount = randomInt(minSteal, maxSteal);
-
-  return {
-    success: true,
-    resource,
-    amount: Math.max(amount, 50),
-    message: pickRandom(SUCCESS_MESSAGES[resource])
-  };
+  return { success: true, resource, amount, message: pickRandom(SUCCESS_MESSAGES[resource]), successChance };
 }
 
 /**
- * Obtiene el JID del usuario objetivo
+ * Mueve el recurso robado de la víctima al ladrón con contabilidad cerrada:
+ * devuelve lo que realmente cambió de manos (XP limitada por loseExp, maná por
+ * el máximo del ladrón). Muta ambos usuarios; el caller persiste.
  */
-function getTargetUser(ctx: MessageContext): string | null {
-  // Primero menciones
-  if (ctx.m.mentionedJid.length > 0) {
-    return ctx.m.mentionedJid[0];
+export function applyRobTransfer(thief: UserRPG, victim: UserRPG, resource: RobbableResource, amount: number): number {
+  switch (resource) {
+    case 'money': {
+      const taken = clamp(Math.floor(amount), 0, victim.money);
+      victim.money -= taken;
+      thief.money += taken;
+      return taken;
+    }
+    case 'exp': {
+      const lost = loseExp(victim, amount);
+      grantExp(thief, lost);
+      return lost;
+    }
+    case 'mana': {
+      const room = Math.max(0, calculateTotalStats(thief).maxMana - thief.mana);
+      const taken = clamp(Math.floor(amount), 0, Math.min(victim.mana, room));
+      victim.mana -= taken;
+      thief.mana += taken;
+      return taken;
+    }
   }
-
-  // Luego mensaje citado
-  if (ctx.m.quoted?.sender) {
-    return ctx.m.quoted.sender;
-  }
-
-  return null;
 }
 
-/**
- * Plugin: Robar - Intenta robar a otro jugador
- */
+const RESOURCE_LABEL: Record<RobbableResource, string> = { money: 'monedas', exp: 'XP', mana: 'maná' };
+const RESOURCE_EMOJI: Record<RobbableResource, string> = { money: EMOJI.coin, exp: EMOJI.exp, mana: EMOJI.mana };
+
 export const robarPlugin: PluginHandler = {
   command: ['robar', 'rob', 'steal', 'asaltar', 'hurtar'],
   tags: ['rpg'],
   help: [
     'robar @usuario - Intenta robar dinero, XP o maná',
-    'El éxito depende de tu nivel vs el de la víctima',
-    'Si fallas, pagarás una multa',
-    'Cooldown: 1 hora'
+    'El éxito depende de tu nivel, el de la víctima y tu rango',
+    'Si fallas, pagas una multa. Cooldown: 1 hora'
   ],
+  usage: ['robar @usuario'],
   register: true,
   group: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, usedPrefix } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
     const thief = db.getUser(m.sender);
+    const now = Date.now();
 
-    // Verificar nivel mínimo para PvP
     if (thief.level < PVP.MIN_LEVEL_PVP) {
-      await m.reply(
+      return m.reply(
         `${EMOJI.error} ¡Necesitas más experiencia para robar!\n\n` +
-        `📊 Tu nivel: *${thief.level}*\n` +
-        `🎯 Nivel requerido: *${PVP.MIN_LEVEL_PVP}*\n\n` +
+        `📊 Tu nivel: *${thief.level}* · 🎯 Nivel requerido: *${PVP.MIN_LEVEL_PVP}*\n\n` +
         `💡 Sube de nivel atacando monstruos o trabajando.`
       );
-      return;
     }
 
-    // Verificar modos globales activos
-    checkExpiredModes();
-    const isFreeRobMode = globalModes.freeRobMode.active;
-    const isChaosMode = globalModes.chaosMode.active;
+    checkExpiredModes(now);
+    const freeRob = globalModes.freeRobMode.active;
+    const chaos = globalModes.chaosMode.active;
+    const benefits = getRankBenefits(thief.level);
 
-    // Obtener beneficios de rango del ladrón
-    const thiefRankBenefits = getRankBenefits(thief.level);
-    const thiefRank = getRoleByLevel(thief.level);
-
-    // Verificar cooldown (con reducción por rango) - SKIP si modo robo libre activo
-    const now = Date.now();
-    const baseCooldown = CONFIG.cooldowns.rob;
-    const cooldownReduction = thiefRankBenefits.cooldownReduction / 100;
-    const cooldown = Math.floor(baseCooldown * (1 - cooldownReduction));
-    const lastRob = thief.lastRob || 0;
-
-    if (!isFreeRobMode && now - lastRob < cooldown) {
-      const remaining = cooldown - (now - lastRob);
-      let cooldownMsg = `${EMOJI.time} ¡Los guardias te están buscando!\n\n` +
-        `⏳ Espera *${msToTime(remaining)}* antes de volver a robar.`;
-
-      if (thiefRankBenefits.cooldownReduction > 0) {
-        cooldownMsg += `\n\n🎖️ _Tu rango reduce cooldowns -${thiefRankBenefits.cooldownReduction}%_`;
-      }
-
-      await m.reply(cooldownMsg);
-      return;
+    const cd = checkCooldown(thief.lastRob || 0, CONFIG.cooldowns.rob, benefits.cooldownReduction);
+    if (!freeRob && cd.onCooldown) {
+      return replyCooldown(ctx, cd.remaining, [{ cmd: 'work', desc: 'Ganar dinero honradamente' }]);
     }
 
-    // Obtener víctima
-    const victimJid = getTargetUser(ctx);
+    const victimJid = ctx.target({ args });
+    if (!victimJid) return usageError(ctx, robarPlugin, '¿A quién quieres robar? Menciona o responde a tu víctima.');
 
-    if (!victimJid) {
-      await m.reply(
-        `${EMOJI.error} ¿A quién quieres robar?\n\n` +
-        `📝 *Uso:* ${usedPrefix}robar @usuario\n` +
-        `💡 Menciona o responde al mensaje de tu víctima.`
-      );
-      return;
-    }
-
-    // No robarse a sí mismo
-    if (victimJid === m.sender) {
-      await m.reply(`${EMOJI.error} No puedes robarte a ti mismo... ¿o sí? 🤔`);
-      return;
-    }
-
-    // Verificar que la víctima esté registrada
     const victim = db.getUser(victimJid);
     if (!victim.registered) {
-      await m.reply(
-        `${EMOJI.error} Esa persona no está registrada en el juego.\n` +
-        `No hay nada que robarle... aún.`
-      );
-      return;
+      return m.reply(`${EMOJI.error} Esa persona no está registrada en el juego. No hay nada que robarle... aún.`);
     }
 
-    // Verificar que la víctima tenga recursos
-    if (victim.money < 100 && victim.exp < 500 && victim.mana < 10) {
-      await m.reply(
-        `${EMOJI.warning} *${victim.name}* está en la pobreza total.\n` +
-        `No vale la pena el riesgo... busca una víctima más jugosa. 💀`
-      );
-      return;
+    if (victim.level < PVP.MIN_LEVEL_PVP) {
+      return m.reply(`${EMOJI.error} *${victim.name}* es nivel ${victim.level}; solo puedes robar a jugadores de nivel *${PVP.MIN_LEVEL_PVP}* o más.`);
     }
 
-    // Verificar si el ladrón está en modo pasivo
-    if (thief.passiveMode && thief.passiveModeUntil > now) {
-      await m.reply(
+    if (isPassiveActive(thief, now)) {
+      return m.reply(
         `${EMOJI.error} Estás en *modo pasivo*.\n\n` +
-        `🕊️ No puedes robar a nadie mientras estés protegido.\n` +
-        `💡 Usa */pasivo* para desactivarlo (cooldown de 6h).`
+        `🕊️ No puedes robar mientras estés protegido. Usa *${usedPrefix}pasivo* para desactivarlo.`
       );
-      return;
     }
 
-    // Verificar si la víctima está en modo pasivo
-    if (victim.passiveMode && victim.passiveModeUntil > now) {
-      await m.reply(
-        `🕊️ *${victim.name}* está en *modo pasivo*.\n\n` +
-        `No puedes robar a jugadores protegidos.`
-      );
-      return;
+    if (isPassiveActive(victim, now)) {
+      return m.reply(`🕊️ *${victim.name}* está en *modo pasivo*. No puedes robar a jugadores protegidos.`);
     }
 
-    // Verificar que el ladrón tenga dinero para la multa potencial
+    if (victim.shieldRobo > now) {
+      return m.reply(
+        `🛡️ *${victim.name}* tiene un *escudo anti-robo* activo.\n` +
+        `⏳ Expira en: *${msToTime(victim.shieldRobo - now)}*`
+      );
+    }
+
+    if (!hasStealableResources(victim)) {
+      return m.reply(`${EMOJI.warning} *${victim.name}* está en la pobreza total. Busca una víctima más jugosa. 💀`);
+    }
+
     if (thief.money < 50) {
-      await m.reply(
-        `${EMOJI.error} Necesitas al menos *50 monedas* para robar.\n` +
-        `Si fallas, tendrás que pagar una multa.`
-      );
-      return;
+      return m.reply(`${EMOJI.error} Necesitas al menos *50 monedas* para robar: si fallas, pagarás una multa.`);
     }
 
-    // Realizar el intento de robo con bonus de rango
     await m.react('🦹');
 
-    // Aplicar multiplicadores de modo caos si está activo
-    let robSuccessBonus = thiefRankBenefits.robSuccessBonus;
-    let robAmountBonus = thiefRankBenefits.robAmountBonus;
-
-    if (isChaosMode) {
-      robSuccessBonus += 20 * globalModes.chaosMode.multiplier; // Más éxito en caos
-      robAmountBonus += 50 * globalModes.chaosMode.multiplier; // Más cantidad en caos
+    let successBonus = benefits.robSuccessBonus;
+    let amountBonus = benefits.robAmountBonus;
+    if (chaos) {
+      successBonus += 20 * globalModes.chaosMode.multiplier;
+      amountBonus += 50 * globalModes.chaosMode.multiplier;
     }
 
-    const result = calculateRobAttempt(
-      thief.level,
-      victim.level,
-      victim.money,
-      victim.exp,
-      victim.mana,
-      robSuccessBonus,
-      robAmountBonus
-    );
+    const result = calculateRobAttempt(thief, victim, { successBonus, amountBonus });
+    thief.lastRob = now;
 
-    // Aplicar el cooldown
-    db.updateUser(m.sender, { lastRob: now });
-
-    // Calcular tiempo del próximo robo
-    const nextRobMinutes = isFreeRobMode ? 0 : Math.floor(cooldown / 60000);
-
-    // Mensaje de modo especial activo
-    let modeMsg = '';
-    if (isFreeRobMode) {
-      modeMsg = '\n🦹 *MODO ROBO LIBRE ACTIVO* - Sin cooldown!\n';
-    }
-    if (isChaosMode) {
-      modeMsg += `\n🌀 *MODO CAOS x${globalModes.chaosMode.multiplier}* - Bonuses aumentados!\n`;
-    }
+    const modeLines: string[] = [];
+    if (freeRob) modeLines.push('🦹 *MODO ROBO LIBRE* - sin cooldown');
+    if (chaos) modeLines.push(`🌀 *MODO CAOS x${globalModes.chaosMode.multiplier}* - bonus aumentados`);
+    const nextRob = freeRob ? '¡YA!' : msToTime(cd.effectiveCooldown);
+    const victimTag = mentionTag(victimJid);
 
     if (result.success) {
-      // Éxito - transferir recursos
-      const victimName = victim.name;
+      const taken = applyRobTransfer(thief, victim, result.resource, result.amount);
+      db.updateUser(m.sender, thief);
+      db.updateUser(victimJid, victim);
 
-      switch (result.resource) {
-        case 'money':
-          db.updateUser(m.sender, { money: thief.money + result.amount });
-          db.updateUser(victimJid, { money: Math.max(0, victim.money - result.amount) });
-          break;
-        case 'exp':
-          db.updateUser(m.sender, { exp: thief.exp + result.amount });
-          db.updateUser(victimJid, { exp: Math.max(0, victim.exp - result.amount) });
-          break;
-        case 'mana':
-          db.updateUser(m.sender, { mana: Math.min(thief.maxMana, thief.mana + result.amount) });
-          db.updateUser(victimJid, { mana: Math.max(0, victim.mana - result.amount) });
-          break;
+      const questLines = updateQuestProgress(db, m.sender, 'rob', 1, now).lines;
+      if (result.resource === 'money' && taken > 0) {
+        questLines.push(...updateQuestProgress(db, m.sender, 'earn', taken, now).lines);
       }
 
-      const message = result.message
-        .replace('{amount}', formatNumber(result.amount))
-        .replace('{victim}', victimName);
+      const rankLine = benefits.robSuccessBonus > 0 || benefits.robAmountBonus > 0
+        ? `\n🎖️ Rango ${getRoleByLevel(thief.level)}: +${benefits.robSuccessBonus}% éxito, +${benefits.robAmountBonus}% cantidad`
+        : '';
 
-      const resourceEmoji = {
-        money: EMOJI.coin,
-        exp: EMOJI.exp,
-        mana: EMOJI.mana
-      };
-
-      // Mensaje de bonus de rango
-      let rankBonusMsg = '';
-      if (thiefRankBenefits.robSuccessBonus > 0 || thiefRankBenefits.robAmountBonus > 0) {
-        rankBonusMsg = `\n🎖️ *Rango:* ${thiefRank}\n` +
-          `   +${thiefRankBenefits.robSuccessBonus}% éxito | +${thiefRankBenefits.robAmountBonus}% cantidad\n`;
-      }
-
-      await m.reply(
-        `🦹 *¡ROBO EXITOSO!*\n\n` +
-        `${message}\n\n` +
-        `${resourceEmoji[result.resource]} *+${formatNumber(result.amount)}* ${result.resource === 'money' ? 'monedas' : result.resource === 'exp' ? 'XP' : 'maná'}` +
-        `${rankBonusMsg}${modeMsg}\n` +
-        `⏰ Próximo robo: *${isFreeRobMode ? '¡YA!' : nextRobMinutes + ' minutos'}*`
-      );
-
-      await m.react('💰');
-
-    } else {
-      // Falló - aplicar penalización
-      const penalty = Math.min(result.amount, thief.money);
-      db.updateUser(m.sender, { money: Math.max(0, thief.money - penalty) });
-
-      const message = result.message
-        .replace('{penalty}', formatNumber(penalty))
-        .replace('{victim}', victim.name);
-
-      await m.reply(
-        `🚨 *¡ROBO FALLIDO!*\n\n` +
-        `${message}\n\n` +
-        `${EMOJI.coin} *-${formatNumber(penalty)}* monedas\n\n` +
-        `🎖️ Tu rango: ${thiefRank}${modeMsg}\n` +
-        `💡 _Tip: Tu éxito depende de la diferencia de niveles y tu rango._\n` +
-        `⏰ Próximo intento: *${isFreeRobMode ? '¡YA!' : nextRobMinutes + ' minutos'}*`
-      );
-
-      await m.react('💀');
+      await ctx.send({
+        text: `🦹 *¡ROBO EXITOSO!*\n\n` +
+          `${result.message.replace('{amount}', formatNumber(taken)).replace('{victim}', victimTag)}\n\n` +
+          `${RESOURCE_EMOJI[result.resource]} *+${formatNumber(taken)}* ${RESOURCE_LABEL[result.resource]} (probabilidad ${result.successChance}%)` +
+          rankLine +
+          (modeLines.length ? `\n${modeLines.join('\n')}` : '') +
+          `\n⏰ Próximo robo: *${nextRob}*` +
+          (questLines.length ? `\n\n${questLines.join('\n')}` : ''),
+        mentions: [victimJid]
+      });
+      return m.react('💰');
     }
 
-    // Actualizar progreso de misiones de robo
-    updateQuestProgress(db, m.sender, 'rob', 1);
+    const penalty = Math.min(result.amount, thief.money);
+    thief.money -= penalty;
+    db.updateUser(m.sender, thief);
+    const questLines = updateQuestProgress(db, m.sender, 'rob', 1, now).lines;
 
-    // Actualizar misión de ganar monedas si el robo fue exitoso y se robó dinero
-    if (result.success && result.resource === 'money') {
-      updateQuestProgress(db, m.sender, 'earn', result.amount);
-    }
+    await ctx.send({
+      text: `🚨 *¡ROBO FALLIDO!*\n\n` +
+        `${result.message.replace('{penalty}', formatNumber(penalty)).replace('{victim}', victimTag)}\n\n` +
+        (penalty > 0 ? `${EMOJI.coin} *-${formatNumber(penalty)}* monedas (probabilidad ${result.successChance}%)\n` : '') +
+        `🎖️ Tu rango: ${getRoleByLevel(thief.level)}` +
+        (modeLines.length ? `\n${modeLines.join('\n')}` : '') +
+        `\n⏰ Próximo intento: *${nextRob}*` +
+        (questLines.length ? `\n\n${questLines.join('\n')}` : ''),
+      mentions: [victimJid]
+    });
+    await m.react('💀');
   }
 };
 

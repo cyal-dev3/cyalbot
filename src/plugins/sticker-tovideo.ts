@@ -1,183 +1,71 @@
+import type { AnyMessageContent } from 'baileys';
+import type { MessageContext, PluginHandler } from '../types/message.js';
+import { getQuotedOrOwnMedia, replyMediaError } from '../lib/media.js';
+import { isAnimatedWebp, stickerToGif, stickerToVideo } from '../lib/sticker.js';
+
+interface ConvertSpec {
+  commands: string[];
+  description: string;
+  title: string;
+  target: 'video' | 'gif';
+}
+
 /**
- * Plugin Sticker a Video/GIF
- * Convierte stickers animados a video o GIF
- * Comando: .tovideo, .tovid, .togif
+ * /tovideo y /togif comparten todo salvo el formato de salida. Para GIF se
+ * manda un video con gifPlayback (WhatsApp no reproduce GIF reales); con la
+ * palabra "file" se envía el .gif como documento.
  */
+function createStickerConvertPlugin(spec: ConvertSpec): PluginHandler {
+  const main = spec.commands[0];
+  return {
+    command: spec.commands,
+    description: spec.description,
+    category: 'media',
+    usage: spec.target === 'gif' ? [`${main} (respondiendo a un sticker animado)`, `${main} file → como archivo .gif`] : [`${main} (respondiendo a un sticker animado)`],
 
-import { downloadMediaMessage } from 'baileys';
-import type { PluginHandler, MessageContext } from '../types/message.js';
-import { stickerToVideo, stickerToGif } from '../lib/sticker.js';
-
-export const toVideoPlugin: PluginHandler = {
-  command: /^(tovideo|tovid|video)$/i,
-  tags: ['sticker', 'media'],
-  help: [
-    'tovideo - Responde a un sticker animado para convertirlo a video',
-    'tovid - Alias de tovideo'
-  ],
-
-  handler: async (ctx: MessageContext) => {
-    const { conn, m } = ctx;
-
-    // Verificar que se respondió a un mensaje
-    const quotedMsg = m.quoted;
-
-    if (!quotedMsg || !quotedMsg.message) {
-      return m.reply(
-        '🎬 *STICKER A VIDEO*\n\n' +
-        '*Uso:*\n' +
-        'Responde a un sticker animado con .tovideo\n\n' +
-        '*Nota:*\n' +
-        'Solo funciona con stickers animados (GIFs)'
-      );
-    }
-
-    // Verificar que es un sticker
-    const message = quotedMsg.message;
-
-    if (!message.stickerMessage) {
-      return m.reply('❌ Debes responder a un *sticker*, no a otro tipo de mensaje.');
-    }
-
-    // Verificar si es animado
-    const isAnimated = message.stickerMessage.isAnimated;
-
-    if (!isAnimated) {
-      return m.reply('❌ Este sticker no es animado. Usa .toimg para stickers estáticos.');
-    }
-
-    try {
-      await m.react('🔄');
-
-      // Descargar el sticker
-      const downloadMsg = {
-        key: quotedMsg.key,
-        message: quotedMsg.message
-      };
-
-      const stickerBuffer = await downloadMediaMessage(
-        downloadMsg,
-        'buffer',
-        {},
-        {
-          logger: console as any,
-          reuploadRequest: conn.updateMediaMessage
+    async handler(ctx: MessageContext) {
+      const { m, text, send } = ctx;
+      try {
+        const media = await getQuotedOrOwnMedia(ctx, ['sticker']);
+        if (!media) {
+          await m.reply(`${spec.title}\n\nResponde a un sticker animado con /${main}.`);
+          return;
         }
-      ) as Buffer;
-
-      // Convertir a video
-      const videoBuffer = await stickerToVideo(stickerBuffer);
-
-      // Enviar video
-      await conn.sendMessage(m.chat, {
-        video: videoBuffer,
-        caption: '🎬 Sticker convertido a video',
-        mimetype: 'video/mp4',
-        gifPlayback: true // Reproducir como GIF
-      }, { quoted: m.key.id ? { key: m.key, message: {} } : undefined });
-
-      await m.react('✅');
-
-    } catch (error) {
-      console.error('❌ Error convirtiendo sticker a video:', error);
-      await m.react('❌');
-
-      if (error instanceof Error) {
-        if (error.message.includes('ffmpeg')) {
-          return m.reply('❌ Error de conversión. Asegúrate de que ffmpeg esté instalado.');
+        // Lo que declara WhatsApp no siempre es fiable; el WebP dice la verdad.
+        if (!isAnimatedWebp(media.buffer)) {
+          await m.reply('❌ Ese sticker no es animado. Usa /toimg para convertirlo en imagen.');
+          return;
         }
-        return m.reply(`❌ Error: ${error.message.substring(0, 100)}`);
+        await m.react('⏳');
+
+        let content: AnyMessageContent;
+        if (spec.target === 'video') {
+          content = { video: await stickerToVideo(media.buffer), mimetype: 'video/mp4' };
+        } else if (/\bfile\b|\barchivo\b/i.test(text)) {
+          content = { document: await stickerToGif(media.buffer), mimetype: 'image/gif', fileName: 'sticker.gif' };
+        } else {
+          content = { video: await stickerToVideo(media.buffer), mimetype: 'video/mp4', gifPlayback: true };
+        }
+        await send(content, { quoted: m.rawMessage });
+        await m.react('✅');
+      } catch (error) {
+        await m.react('❌');
+        await replyMediaError(m, error, '❌ No se pudo convertir el sticker.');
       }
+    },
+  };
+}
 
-      return m.reply('❌ Error al convertir el sticker. Intenta con otro.');
-    }
-  }
-};
+export const toVideoPlugin = createStickerConvertPlugin({
+  commands: ['tovideo', 'tovid', 'video'],
+  description: 'Convertir un sticker animado en video',
+  title: '🎬 *STICKER A VIDEO*',
+  target: 'video',
+});
 
-export const toGifPlugin: PluginHandler = {
-  command: /^(togif|gif)$/i,
-  tags: ['sticker', 'media'],
-  help: [
-    'togif - Responde a un sticker animado para convertirlo a GIF',
-    'gif - Alias de togif'
-  ],
-
-  handler: async (ctx: MessageContext) => {
-    const { conn, m } = ctx;
-
-    // Verificar que se respondió a un mensaje
-    const quotedMsg = m.quoted;
-
-    if (!quotedMsg || !quotedMsg.message) {
-      return m.reply(
-        '🎞️ *STICKER A GIF*\n\n' +
-        '*Uso:*\n' +
-        'Responde a un sticker animado con .togif\n\n' +
-        '*Nota:*\n' +
-        'Solo funciona con stickers animados'
-      );
-    }
-
-    // Verificar que es un sticker
-    const message = quotedMsg.message;
-
-    if (!message.stickerMessage) {
-      return m.reply('❌ Debes responder a un *sticker*, no a otro tipo de mensaje.');
-    }
-
-    // Verificar si es animado
-    const isAnimated = message.stickerMessage.isAnimated;
-
-    if (!isAnimated) {
-      return m.reply('❌ Este sticker no es animado. Usa .toimg para stickers estáticos.');
-    }
-
-    try {
-      await m.react('🔄');
-
-      // Descargar el sticker
-      const downloadMsg = {
-        key: quotedMsg.key,
-        message: quotedMsg.message
-      };
-
-      const stickerBuffer = await downloadMediaMessage(
-        downloadMsg,
-        'buffer',
-        {},
-        {
-          logger: console as any,
-          reuploadRequest: conn.updateMediaMessage
-        }
-      ) as Buffer;
-
-      // Convertir a GIF
-      const gifBuffer = await stickerToGif(stickerBuffer);
-
-      // Enviar como documento GIF
-      await conn.sendMessage(m.chat, {
-        document: gifBuffer,
-        fileName: 'sticker.gif',
-        mimetype: 'image/gif',
-        caption: '🎞️ Sticker convertido a GIF'
-      }, { quoted: m.key.id ? { key: m.key, message: {} } : undefined });
-
-      await m.react('✅');
-
-    } catch (error) {
-      console.error('❌ Error convirtiendo sticker a GIF:', error);
-      await m.react('❌');
-
-      if (error instanceof Error) {
-        if (error.message.includes('ffmpeg')) {
-          return m.reply('❌ Error de conversión. Asegúrate de que ffmpeg esté instalado.');
-        }
-        return m.reply(`❌ Error: ${error.message.substring(0, 100)}`);
-      }
-
-      return m.reply('❌ Error al convertir el sticker. Intenta con otro.');
-    }
-  }
-};
-
-export default { toVideoPlugin, toGifPlugin };
+export const toGifPlugin = createStickerConvertPlugin({
+  commands: ['togif', 'gif'],
+  description: 'Convertir un sticker animado en GIF',
+  title: '🎞️ *STICKER A GIF*',
+  target: 'gif',
+});

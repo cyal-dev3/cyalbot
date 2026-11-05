@@ -1,275 +1,280 @@
-/**
- * Manejador de Mensajes
- * Procesa mensajes entrantes y ejecuta comandos
- */
-
-import { downloadMediaMessage, type WASocket, type proto, type GroupMetadata } from 'baileys';
-import type { MessageContext, SerializedMessage, PluginHandler, PluginRegistry, MuteRegistry, CommandContext } from './types/message.js';
+import { randomBytes } from 'node:crypto';
+import type { WASocket, proto, GroupMetadata, AnyMessageContent, MiscMessageGenerationOptions } from 'baileys';
+import type {
+  MessageContext, SerializedMessage, PluginHandler, PluginRegistry, MuteRegistry, CommandContext, AliasCollision, TargetOptions,
+} from './types/message.js';
+import { DEFAULT_CHAT_SETTINGS, type ChatSettings } from './types/database.js';
+import type { UserRPG } from './types/user.js';
 import type { Database } from './lib/database.js';
-import { CONFIG, isOwnerId } from './config.js';
+import { CONFIG, isOwnerId, sameUser } from './config.js';
 import { createSticker } from './lib/sticker.js';
-import { downloadAuto, detectPlatform, type Platform } from './lib/downloaders.js';
+import { handleAutoDownload } from './lib/autodownload.js';
 import { findBadWord } from './lib/moderation.js';
 import { createLogger } from './lib/logger.js';
-import { rememberChatLine, isDirectedToBot, respondWithAI, isAIEnabled } from './lib/ai.js';
+import { LRUCache } from './lib/lru-cache.js';
+import { unwrapMessage, getText, getMentions, getQuoted, downloadMedia } from './lib/wa-message.js';
+import { commandAliases, suggestCommand } from './lib/command-suggest.js';
+import { resolveGroupRoles, getGroupMetadataCached, invalidateGroupMetadata, botIdentities, type GroupRoles } from './lib/group-events.js';
+import { getTargetUser } from './lib/utils.js';
+import * as scheduler from './lib/scheduler.js';
 
 const log = createLogger('handler');
 
-// Comandos de duelo que funcionan sin prefijo
-const DUEL_COMMANDS_NO_PREFIX = ['g', 'golpe', 'golpear', 'hit', 'rendirse', 'surrender', 'abandonar', 'huir'];
+// La IA arrastra el SDK de Anthropic y el catálogo de plugins; solo se carga si está configurada.
+type AIModule = typeof import('./lib/ai.js');
+let aiModule: Promise<AIModule> | null = null;
+function loadAI(): Promise<AIModule> {
+  return (aiModule ??= import('./lib/ai.js'));
+}
 
-// Patrones de habilidades de clase que funcionan sin prefijo en duelos
-const SKILL_PATTERNS_NO_PREFIX = /^(golpe.?brutal|escudo.?defensor|grito.?guerra|bola.?fuego|rayo.?arcano|escudo.?magico|ataque.?furtivo|evadir|robo.?vital|disparo.?preciso|lluvia.?flechas|trampa.?cazador|fuego|rayo|brutal|furtivo|flechas|trampa)$/i;
-
-// Estructura para rastrear mensajes para el comando .clear
 interface TrackedMessage {
   key: proto.IMessageKey;
   timestamp: number;
-  isCommand?: boolean; // Si es un mensaje de comando (del usuario)
+  /** true si es el mensaje de comando del usuario (no del bot). */
+  isCommand?: boolean;
 }
 
-// Carácter invisible para "limpiar" mensajes
-const INVISIBLE_CHAR = '\u200B'; // Zero-width space
+interface RegisteredPlugin {
+  name: string;
+  plugin: PluginHandler;
+}
 
-/**
- * Clase principal para manejar mensajes
- */
+interface Dispatch extends RegisteredPlugin {
+  /** Nombre del contexto que capturó el comando, si lo hubo. */
+  context?: string;
+}
+
+interface Incoming {
+  m: SerializedMessage;
+  usedPrefix: string;
+  command: string;
+  args: string[];
+  isOwner: boolean;
+  chatSettings: ChatSettings;
+  roles: () => Promise<GroupRoles>;
+}
+
+const MAX_TRACKED_MESSAGES = 150;
+/** WhatsApp solo permite borrar mensajes de la última hora. */
+const MESSAGE_EXPIRY_MS = 60 * 60 * 1000;
+const AUTOCLEAR_DELAY_MS = 2 * 60 * 1000;
+const SUGGEST_COOLDOWN_MS = 10_000;
+/** Comandos de limpieza cuyo mensaje no debe rastrearse (hasta que group-delete marque `untracked`). */
+const UNTRACKED_COMMANDS = new Set(['clear', 'limpiar', 'clean', 'autoclear', 'autolimpiar', 'autoclean']);
+
 export class MessageHandler {
   private plugins: PluginRegistry = new Map();
+  private aliasIndex = new Map<string, RegisteredPlugin>();
+  /** Plugins con RegExp que no es una alternancia simple; se prueban en orden. */
+  private patternPlugins: RegisteredPlugin[] = [];
+  private aliasCollisions: AliasCollision[] = [];
   private contexts: CommandContext[] = [];
   private muteRegistry: MuteRegistry = new Map();
-  private spamTracker: Map<string, number[]> = new Map(); // Rastreo de spam por usuario
-  // Rastreo de mensajes del bot y comandos para .clear (por grupo)
-  private messageTracker: Map<string, TrackedMessage[]> = new Map();
-  private readonly MAX_TRACKED_MESSAGES = 150; // Máximo de mensajes a rastrear por grupo
-  private readonly MESSAGE_EXPIRY = 60 * 60 * 1000; // 1 hora de expiración (límite de WhatsApp)
-  private readonly AUTOCLEAR_DELAY = 2 * 60 * 1000; // 2 minutos para autoclear
-  private readonly SPAM_TRACKER_EXPIRY: number;
-  private cleanupInterval: NodeJS.Timeout | null = null;
-  private autoclearInterval: NodeJS.Timeout | null = null;
+  private spamTracker = new Map<string, number[]>();
+  private messageTracker = new Map<string, TrackedMessage[]>();
+  private suggestionCooldown = new LRUCache<string, number>(500);
+  private readonly spamTrackerExpiry: number;
+  private readonly timerPrefix: string;
 
   constructor(
     private conn: WASocket,
-    private db: Database
+    private db: Database,
   ) {
-    this.SPAM_TRACKER_EXPIRY = CONFIG.protection.intervalMs * 10;
-
-    // Cargar datos de mute desde la base de datos al iniciar
+    this.spamTrackerExpiry = CONFIG.protection.intervalMs * 10;
+    this.timerPrefix = `handler:${randomBytes(2).toString('hex')}`;
     this.loadMuteDataFromDB();
-
-    // Limpiar mensajes viejos cada 5 minutos
-    this.cleanupInterval = setInterval(() => this.cleanupOldMessages(), 5 * 60 * 1000);
-
-    // Ejecutar autoclear cada 30 segundos
-    this.autoclearInterval = setInterval(() => this.processAutoClear(), 30 * 1000);
+    scheduler.every(`${this.timerPrefix}:cleanup`, 5 * 60 * 1000, () => this.cleanupOldMessages());
+    scheduler.every(`${this.timerPrefix}:autoclear`, 30 * 1000, () => this.processAutoClear());
   }
 
-  /**
-   * Detiene los intervalos internos. Debe llamarse antes de reemplazar el handler
-   * (reconexión) o durante apagado graceful para evitar fugas de memoria.
-   */
+  /** Detiene los timers internos. Llamar antes de reemplazar el handler (reconexión) o al apagar. */
   stop(): void {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      this.cleanupInterval = null;
-    }
-    if (this.autoclearInterval) {
-      clearInterval(this.autoclearInterval);
-      this.autoclearInterval = null;
-    }
+    scheduler.stop(`${this.timerPrefix}:cleanup`);
+    scheduler.stop(`${this.timerPrefix}:autoclear`);
     this.spamTracker.clear();
     this.messageTracker.clear();
   }
 
-  /**
-   * Rastrea un mensaje para poder eliminarlo después con .clear
-   */
-  trackMessage(chatId: string, key: proto.IMessageKey, isCommand: boolean = false): void {
-    if (!this.messageTracker.has(chatId)) {
-      this.messageTracker.set(chatId, []);
-    }
+  // ---------------------------------------------------------------------------
+  // Rastreo de mensajes para /clear y autoclear (solo grupos)
+  // ---------------------------------------------------------------------------
 
-    const messages = this.messageTracker.get(chatId)!;
+  trackMessage(chatId: string, key: proto.IMessageKey, isCommand = false): void {
+    if (!chatId.endsWith('@g.us')) return;
+    let messages = this.messageTracker.get(chatId);
+    if (!messages) {
+      messages = [];
+      this.messageTracker.set(chatId, messages);
+    }
     messages.push({ key, timestamp: Date.now(), isCommand });
-
-    // Limitar cantidad de mensajes rastreados
-    if (messages.length > this.MAX_TRACKED_MESSAGES) {
-      messages.shift();
-    }
+    if (messages.length > MAX_TRACKED_MESSAGES) messages.shift();
   }
 
-  /**
-   * Obtiene los mensajes rastreados de un grupo
-   */
   getTrackedMessages(chatId: string): TrackedMessage[] {
     return this.messageTracker.get(chatId) || [];
   }
 
-  /**
-   * Limpia los mensajes rastreados de un grupo
-   */
   clearTrackedMessages(chatId: string): void {
-    this.messageTracker.set(chatId, []);
+    this.messageTracker.delete(chatId);
   }
 
-  /**
-   * Limpia mensajes viejos de todos los grupos y entradas inactivas del spam tracker
-   */
   private cleanupOldMessages(): void {
     const now = Date.now();
     for (const [chatId, messages] of this.messageTracker.entries()) {
-      const filtered = messages.filter(m => now - m.timestamp < this.MESSAGE_EXPIRY);
-      if (filtered.length === 0) {
-        this.messageTracker.delete(chatId);
-      } else {
-        this.messageTracker.set(chatId, filtered);
-      }
+      const filtered = messages.filter((m) => now - m.timestamp < MESSAGE_EXPIRY_MS);
+      if (filtered.length === 0) this.messageTracker.delete(chatId);
+      else this.messageTracker.set(chatId, filtered);
     }
-    // Podar spamTracker: eliminar entradas cuya marca más reciente está caduca
     for (const [key, timestamps] of this.spamTracker.entries()) {
       const latest = timestamps.length ? timestamps[timestamps.length - 1] : 0;
-      if (now - latest > this.SPAM_TRACKER_EXPIRY) {
-        this.spamTracker.delete(key);
-      }
+      if (now - latest > this.spamTrackerExpiry) this.spamTracker.delete(key);
     }
   }
 
-  /**
-   * Verifica si autoclear está habilitado en un grupo
-   */
-  isAutoClearEnabled(chatId: string): boolean {
-    const settings = this.db.getChatSettings(chatId);
-    return settings.autoClearEnabled || false;
+  private async processAutoClear(): Promise<void> {
+    for (const [chatId, messages] of this.messageTracker.entries()) {
+      if (!this.isAutoClearEnabled(chatId)) continue;
+      const now = Date.now();
+      const toClear = messages.filter((m) => now - m.timestamp >= AUTOCLEAR_DELAY_MS);
+      if (toClear.length === 0) continue;
+
+      const processed = new Set<string>();
+      for (const tracked of toClear) {
+        try {
+          await this.conn.sendMessage(chatId, { delete: tracked.key });
+          // Pausa para no disparar el rate limit de WhatsApp.
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        } catch {
+          // Si falla, igual se descarta para no reintentar indefinidamente.
+        }
+        if (tracked.key.id) processed.add(tracked.key.id);
+      }
+      this.messageTracker.set(chatId, messages.filter((m) => !m.key.id || !processed.has(m.key.id)));
+    }
   }
 
-  /**
-   * Activa/desactiva autoclear en un grupo
-   */
+  // ---------------------------------------------------------------------------
+  // Ajustes por chat (sin crear entradas en la BD al consultar)
+  // ---------------------------------------------------------------------------
+
+  /** Ajustes del chat si existen en la BD; si no, los defaults sin persistir nada. */
+  private readChatSettings(chatId: string): ChatSettings {
+    return this.db.data.chats[chatId] ? this.db.getChatSettings(chatId) : structuredClone(DEFAULT_CHAT_SETTINGS);
+  }
+
+  isAutoClearEnabled(chatId: string): boolean {
+    return this.db.data.chats[chatId]?.autoClearEnabled === true;
+  }
+
   setAutoClear(chatId: string, enabled: boolean): void {
     this.db.updateChatSettings(chatId, { autoClearEnabled: enabled });
   }
 
-  /**
-   * Verifica si el modo compacto está habilitado en un grupo
-   */
   isCompactMode(chatId: string): boolean {
-    const settings = this.db.getChatSettings(chatId);
-    return settings.compactMode || false;
+    return this.db.data.chats[chatId]?.compactMode === true;
   }
 
-  /**
-   * Activa/desactiva modo compacto en un grupo
-   */
   setCompactMode(chatId: string, enabled: boolean): void {
     this.db.updateChatSettings(chatId, { compactMode: enabled });
   }
 
-  /**
-   * Elimina un mensaje del bot (intenta eliminar directamente, es más confiable)
-   */
-  async makeMessageInvisible(chatId: string, key: proto.IMessageKey): Promise<boolean> {
-    try {
-      // Intentar eliminar directamente (funciona con cualquier tipo de mensaje)
-      await this.conn.sendMessage(chatId, { delete: key });
-      return true;
-    } catch (error) {
-      // Si falla eliminar, intentar editar a invisible (solo funciona con texto)
-      try {
-        await this.conn.sendMessage(chatId, {
-          text: INVISIBLE_CHAR,
-          edit: key
-        });
-        return true;
-      } catch {
-        return false;
-      }
-    }
+  isAutoMuteEnabled(groupId: string): boolean {
+    return this.db.data.chats[groupId]?.autoMuteEnabled === true;
   }
 
-  /**
-   * Procesa autoclear para todos los grupos que lo tienen habilitado
-   */
-  private async processAutoClear(): Promise<void> {
-    for (const [chatId, messages] of this.messageTracker.entries()) {
-      // Solo procesar si autoclear está habilitado
-      if (!this.isAutoClearEnabled(chatId)) continue;
-
-      const now = Date.now();
-
-      // Filtrar mensajes que tienen más del tiempo configurado
-      const messagesToClear = messages.filter(m => now - m.timestamp >= this.AUTOCLEAR_DELAY);
-
-      if (messagesToClear.length === 0) continue;
-
-      // IDs de mensajes procesados exitosamente
-      const processedIds = new Set<string>();
-
-      // Procesar cada mensaje
-      for (const tracked of messagesToClear) {
-        try {
-          // Eliminar cualquier tipo de mensaje
-          await this.conn.sendMessage(chatId, { delete: tracked.key });
-
-          // Marcar como procesado
-          if (tracked.key.id) {
-            processedIds.add(tracked.key.id);
-          }
-
-          // Pausa más larga para evitar rate limiting (300ms)
-          await new Promise(resolve => setTimeout(resolve, 300));
-        } catch {
-          // Si falla, igual marcarlo para no reintentar infinitamente
-          if (tracked.key.id) {
-            processedIds.add(tracked.key.id);
-          }
-        }
-      }
-
-      // Remover mensajes procesados del tracker
-      const remaining = messages.filter(m => !m.key.id || !processedIds.has(m.key.id));
-      this.messageTracker.set(chatId, remaining);
-    }
+  setAutoMute(groupId: string, enabled: boolean): void {
+    this.db.updateChatSettings(groupId, { autoMuteEnabled: enabled });
   }
 
-  /**
-   * Carga los datos de mute desde la base de datos
-   */
+  // ---------------------------------------------------------------------------
+  // Mute
+  // ---------------------------------------------------------------------------
+
   private loadMuteDataFromDB(): void {
-    const chats = this.db.data.chats;
-    for (const [chatId, settings] of Object.entries(chats)) {
+    for (const [chatId, settings] of Object.entries(this.db.data.chats)) {
       if (settings.mutedUsers && settings.mutedUsers.length > 0) {
-        this.muteRegistry.set(chatId, {
-          enabled: true,
-          mutedUsers: new Set(settings.mutedUsers)
-        });
+        this.muteRegistry.set(chatId, { enabled: true, mutedUsers: new Set(settings.mutedUsers) });
       }
     }
-    log.debug('Datos de mute cargados desde la base de datos');
   }
 
-  /**
-   * Guarda los datos de mute en la base de datos
-   */
   private saveMuteToDB(groupId: string): void {
     const config = this.muteRegistry.get(groupId);
-    const chatSettings = this.db.getChatSettings(groupId);
-
-    chatSettings.mutedUsers = config ? Array.from(config.mutedUsers) : [];
-    this.db.updateChatSettings(groupId, { mutedUsers: chatSettings.mutedUsers });
+    this.db.updateChatSettings(groupId, { mutedUsers: config ? Array.from(config.mutedUsers) : [] });
   }
 
-  /**
-   * Registra un plugin/comando
-   */
+  getMuteRegistry(): MuteRegistry {
+    return this.muteRegistry;
+  }
+
+  muteUser(groupId: string, userId: string): void {
+    let config = this.muteRegistry.get(groupId);
+    if (!config) {
+      config = { enabled: true, mutedUsers: new Set() };
+      this.muteRegistry.set(groupId, config);
+    }
+    config.mutedUsers.add(userId);
+    this.saveMuteToDB(groupId);
+  }
+
+  unmuteUser(groupId: string, userId: string): boolean {
+    const config = this.muteRegistry.get(groupId);
+    if (!config) return false;
+    const result = config.mutedUsers.delete(userId);
+    this.saveMuteToDB(groupId);
+    return result;
+  }
+
+  isUserMuted(groupId: string, userId: string): boolean {
+    return this.muteRegistry.get(groupId)?.mutedUsers.has(userId) || false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Registro de plugins y contextos
+  // ---------------------------------------------------------------------------
+
   registerPlugin(name: string, plugin: PluginHandler): void {
+    if (this.plugins.has(name)) {
+      log.warn(`el nombre de plugin ${name} ya estaba registrado; se sobrescribe`);
+    }
     this.plugins.set(name, plugin);
+
+    const aliases = commandAliases(plugin);
+    if (aliases.length === 0) {
+      this.patternPlugins.push({ name, plugin });
+      return;
+    }
+    for (const alias of aliases) {
+      const taken = this.aliasIndex.get(alias);
+      if (taken) {
+        if (taken.name !== name) {
+          log.warn(`alias "${alias}" de ${name} ya lo usa ${taken.name}; gana ${taken.name}`);
+          this.aliasCollisions.push({ alias, winner: taken.name, loser: name });
+        }
+        continue;
+      }
+      this.aliasIndex.set(alias, { name, plugin });
+    }
   }
 
-  /**
-   * Obtiene todos los plugins registrados
-   */
   getPlugins(): PluginRegistry {
     return this.plugins;
+  }
+
+  getAliasCollisions(): readonly AliasCollision[] {
+    return this.aliasCollisions;
+  }
+
+  findPlugin(alias: string): RegisteredPlugin | null {
+    return this.aliasIndex.get(alias.toLowerCase()) ?? null;
+  }
+
+  /** Plugin con RegExp compleja que acepte el comando o el texto completo. */
+  private findPatternPlugin(command: string, body: string): RegisteredPlugin | null {
+    for (const entry of this.patternPlugins) {
+      if (MessageHandler.pluginMatches(entry.plugin, command, body)) return entry;
+    }
+    return null;
   }
 
   /** Registra un contexto de juego con prioridad sobre el registro global. */
@@ -281,707 +286,406 @@ export class MessageHandler {
     return this.contexts;
   }
 
-  /** Contextos activos para este mensaje (juego en curso del remitente o del chat). */
-  private activeContexts(m: SerializedMessage): CommandContext[] {
-    const active: CommandContext[] = [];
+  private static pluginMatches(plugin: PluginHandler, command: string, body: string): boolean {
+    if (plugin.command instanceof RegExp) {
+      // Las habilidades de clase son varias palabras: se prueba también el texto completo.
+      return plugin.command.test(command) || plugin.command.test(body.toLowerCase());
+    }
+    return plugin.command.some((cmd) => cmd.toLowerCase() === command);
+  }
+
+  /** Busca el comando en los contextos activos para este mensaje. */
+  private matchContext(m: SerializedMessage, command: string, body: string, hasPrefix: boolean): Dispatch | null {
     for (const context of this.contexts) {
+      let active = false;
       try {
-        if (context.isActive(m)) active.push(context);
+        active = context.isActive(m);
       } catch (error) {
-        log.error(`contexto ${context.name}:`, error);
+        log.error(`contexto ${context.name}.isActive:`, error);
+      }
+      if (!active) continue;
+      if (!hasPrefix && !context.noPrefix) continue;
+      for (const plugin of context.plugins) {
+        if (!hasPrefix && plugin.noPrefix === false) continue;
+        if (MessageHandler.pluginMatches(plugin, command, body)) {
+          return { name: `${context.name}:${commandAliases(plugin)[0] ?? command}`, plugin, context: context.name };
+        }
       }
     }
-    return active;
+    return null;
   }
 
-  private static pluginMatches(plugin: PluginHandler, command: string, fullCommand: string): boolean {
-    if (plugin.command instanceof RegExp) {
-      return plugin.command.test(command.toLowerCase()) || plugin.command.test(fullCommand.toLowerCase());
-    }
-    return plugin.command.some((cmd) => cmd.toLowerCase() === command.toLowerCase());
-  }
+  // ---------------------------------------------------------------------------
+  // Utilidades de envío
+  // ---------------------------------------------------------------------------
 
-  /**
-   * Obtiene el registro de mutes
-   */
-  getMuteRegistry(): MuteRegistry {
-    return this.muteRegistry;
-  }
-
-  /**
-   * Verifica si automute está activado en un grupo (persistido en DB)
-   */
-  isAutoMuteEnabled(groupId: string): boolean {
-    const chatSettings = this.db.getChatSettings(groupId);
-    return chatSettings.autoMuteEnabled || false;
-  }
-
-  /**
-   * Activa/desactiva automute en un grupo (persistido en DB)
-   */
-  setAutoMute(groupId: string, enabled: boolean): void {
-    this.db.updateChatSettings(groupId, { autoMuteEnabled: enabled });
-  }
-
-  /**
-   * Agrega un usuario a la lista de mute (persistido en DB)
-   */
-  muteUser(groupId: string, userId: string): void {
-    if (!this.muteRegistry.has(groupId)) {
-      this.muteRegistry.set(groupId, {
-        enabled: true,
-        mutedUsers: new Set()
-      });
-    }
-    this.muteRegistry.get(groupId)!.mutedUsers.add(userId);
-    this.saveMuteToDB(groupId);
-  }
-
-  /**
-   * Quita un usuario de la lista de mute (persistido en DB)
-   */
-  unmuteUser(groupId: string, userId: string): boolean {
-    const config = this.muteRegistry.get(groupId);
-    if (config) {
-      const result = config.mutedUsers.delete(userId);
-      this.saveMuteToDB(groupId);
-      return result;
-    }
-    return false;
-  }
-
-  /**
-   * Verifica si un usuario está muteado
-   */
-  isUserMuted(groupId: string, userId: string): boolean {
-    const config = this.muteRegistry.get(groupId);
-    return config?.mutedUsers.has(userId) || false;
-  }
-
-  /**
-   * Obtiene metadatos del grupo
-   */
   async getGroupMetadata(groupId: string): Promise<GroupMetadata | null> {
-    try {
-      return await this.conn.groupMetadata(groupId);
-    } catch (error) {
-      log.error('Error obteniendo metadata del grupo:', error);
-      return null;
-    }
+    return getGroupMetadataCached(this.conn, groupId);
   }
 
-  /**
-   * Verifica si un usuario es admin del grupo
-   */
-  isAdmin(participants: GroupMetadata['participants'], jid: string): boolean {
-    const participant = participants.find(p => p.id === jid);
-    return participant?.admin === 'admin' || participant?.admin === 'superadmin';
-  }
-
-  /**
-   * Elimina un mensaje
-   */
   async deleteMessage(chatId: string, messageKey: proto.IMessageKey): Promise<boolean> {
     try {
       await this.conn.sendMessage(chatId, { delete: messageKey });
       return true;
     } catch (error) {
-      log.error('Error eliminando mensaje:', error);
+      log.error('error eliminando mensaje:', error);
       return false;
     }
   }
 
   /** Identificadores del bot (número y LID) para detectar menciones. */
   botIds(): string[] {
-    const ids: string[] = [];
-    const user = this.conn.user as { id?: string; lid?: string } | undefined;
-    if (user?.id) ids.push(user.id);
-    if (user?.lid) ids.push(user.lid);
-    return ids;
+    return botIdentities(this.conn);
   }
 
-  /**
-   * Serializa un mensaje de Baileys a formato simplificado
-   */
-  private serializeMessage(m: proto.IWebMessageInfo): SerializedMessage | null {
-    const key = m.key;
-    if (!key || !key.remoteJid) return null;
+  /** Envía y rastrea (solo grupos) para /clear. */
+  async send(chatId: string, content: AnyMessageContent, options?: MiscMessageGenerationOptions): Promise<proto.WebMessageInfo | undefined> {
+    const result = await this.conn.sendMessage(chatId, content, options);
+    if (result?.key) this.trackMessage(chatId, result.key);
+    return result;
+  }
 
-    const content = m.message;
+  // ---------------------------------------------------------------------------
+  // Serialización
+  // ---------------------------------------------------------------------------
+
+  private serializeMessage(raw: proto.IWebMessageInfo): SerializedMessage | null {
+    const key = raw.key;
+    if (!key || !key.remoteJid) return null;
+    const content = unwrapMessage(raw);
     if (!content) return null;
 
-    // Extraer texto del mensaje según el tipo
-    const text =
-      content.conversation ||
-      content.extendedTextMessage?.text ||
-      content.imageMessage?.caption ||
-      content.videoMessage?.caption ||
-      content.buttonsResponseMessage?.selectedDisplayText ||
-      content.listResponseMessage?.title ||
-      content.templateButtonReplyMessage?.selectedDisplayText ||
-      '';
+    const chat = key.remoteJid;
+    const sender = key.participant || chat;
+    const isGroup = chat.endsWith('@g.us');
+    const botIds = this.botIds();
 
-    // Determinar el remitente
-    const sender = key.participant || key.remoteJid;
-    const isGroup = key.remoteJid.endsWith('@g.us');
-
-    // Extraer menciones
-    const mentionedJid = content.extendedTextMessage?.contextInfo?.mentionedJid || [];
-
-    // Extraer mensaje citado
-    let quoted: SerializedMessage['quoted'] = undefined;
-    const quotedMsg = content.extendedTextMessage?.contextInfo?.quotedMessage;
-    if (quotedMsg) {
-      const quotedParticipant = content.extendedTextMessage?.contextInfo?.participant;
-      const quotedStanzaId = content.extendedTextMessage?.contextInfo?.stanzaId;
-
+    let quoted: SerializedMessage['quoted'];
+    const quotedContent = getQuoted(content);
+    if (quotedContent) {
+      const participant = quotedContent.participant;
       quoted = {
         key: {
-          remoteJid: key.remoteJid,
-          fromMe: false,
-          id: quotedStanzaId,
-          participant: quotedParticipant
+          remoteJid: chat,
+          fromMe: participant ? botIds.some((id) => sameUser(id, participant)) : false,
+          id: quotedContent.stanzaId,
+          participant,
         },
-        sender: quotedParticipant || key.remoteJid,
-        text:
-          quotedMsg.conversation ||
-          quotedMsg.extendedTextMessage?.text ||
-          quotedMsg.imageMessage?.caption ||
-          '',
-        message: quotedMsg
+        sender: participant || chat,
+        text: quotedContent.text,
+        message: quotedContent.message,
       };
     }
 
     return {
       key,
       sender,
-      chat: key.remoteJid,
-      text,
+      chat,
+      text: getText(content),
       fromMe: key.fromMe || false,
       isGroup,
-      pushName: m.pushName || '',
-      mentionedJid,
+      pushName: raw.pushName || '',
+      mentionedJid: getMentions(content),
       quoted,
-      rawMessage: m,
-
-      // Método para responder (con tracking para .clear)
-      reply: async (replyText: string) => {
-        const result = await this.conn.sendMessage(key.remoteJid!, { text: replyText }, { quoted: m });
-        // Rastrear mensaje para poder eliminarlo con .clear
-        if (result?.key) {
-          this.trackMessage(key.remoteJid!, result.key);
-        }
-        return result;
-      },
-
-      // Método para reaccionar
+      rawMessage: raw,
+      message: content,
+      reply: (text: string) => this.send(chat, { text }, { quoted: raw }),
       react: async (emoji: string) => {
-        await this.conn.sendMessage(key.remoteJid!, {
-          react: { text: emoji, key: m.key }
-        });
-      }
+        await this.conn.sendMessage(chat, { react: { text: emoji, key } });
+      },
     };
   }
 
-  // Regex para detectar URLs en mensajes
-  private static readonly URL_REGEX = /https?:\/\/[^\s]+/i;
+  // ---------------------------------------------------------------------------
+  // Automatismos de grupo
+  // ---------------------------------------------------------------------------
 
-  // Nombres de plataformas para logging
-  private static readonly PLATFORM_NAMES: Record<Platform, string> = {
-    tiktok: 'TikTok',
-    instagram: 'Instagram',
-    facebook: 'Facebook',
-    twitter: 'Twitter/X',
-    pinterest: 'Pinterest',
-    threads: 'Threads',
-    youtube: 'YouTube',
-    unknown: 'Desconocido'
-  };
-
-  /**
-   * Maneja auto-descarga de URLs detectadas usando la librería universal
-   */
-  private async handleAutoDownload(m: SerializedMessage, rawMessage: proto.IWebMessageInfo): Promise<void> {
+  private async handleAutoSticker(m: SerializedMessage, rawMessage: proto.IWebMessageInfo): Promise<void> {
     try {
-      const urlMatch = m.text.match(MessageHandler.URL_REGEX);
-      if (!urlMatch) return;
-
-      const url = urlMatch[0];
-      const platform = detectPlatform(url);
-
-      // Solo procesar plataformas conocidas
-      if (platform === 'unknown') return;
-
-      const platformName = MessageHandler.PLATFORM_NAMES[platform];
-      log.debug(`AutoDownload: ${platformName} detectado de ${m.sender}`);
-
-      // Usar la librería universal de descargadores
-      const result = await downloadAuto(url);
-
-      if (!result.success || !result.medias || result.medias.length === 0) {
-        log.debug(`AutoDownload: No se pudo descargar de ${platformName}`);
-        return;
-      }
-
-      // Construir caption
-      let caption = `📥 *${platformName}*`;
-      if (result.author) caption += ` | ${result.author}`;
-      if (result.title) caption += `\n${result.title.substring(0, 100)}`;
-
-      // Enviar cada media (máximo 5 para autodownload)
-      for (let i = 0; i < result.medias.length && i < 5; i++) {
-        const media = result.medias[i];
-
-        try {
-          const response = await fetch(media.url);
-          const buffer = Buffer.from(await response.arrayBuffer());
-
-          if (media.type === 'video') {
-            await this.conn.sendMessage(m.chat, {
-              video: buffer,
-              caption: i === 0 ? caption : undefined,
-              mimetype: 'video/mp4'
-            }, { quoted: rawMessage });
-          } else if (media.type === 'audio') {
-            await this.conn.sendMessage(m.chat, {
-              audio: buffer,
-              mimetype: 'audio/mpeg'
-            }, { quoted: rawMessage });
-          } else {
-            await this.conn.sendMessage(m.chat, {
-              image: buffer,
-              caption: i === 0 ? caption : undefined
-            }, { quoted: rawMessage });
-          }
-        } catch (mediaError) {
-          log.error(`AutoDownload: Error enviando media ${i + 1}:`, mediaError);
-        }
-      }
-
-      log.debug(`AutoDownload: ${platformName} completado (${result.medias.length} archivos)`);
+      const mediaBuffer = await downloadMedia(this.conn, rawMessage);
+      const stickerBuffer = await createSticker(mediaBuffer, {
+        packname: CONFIG.botName,
+        author: m.pushName || 'User',
+        categories: ['🎨'],
+      });
+      await this.conn.sendMessage(m.chat, { sticker: stickerBuffer });
+      log.debug(`autosticker: imagen convertida de ${m.sender}`);
     } catch (error) {
-      log.error('Error en auto-download:', error);
+      log.error('error en autosticker:', error);
     }
   }
 
-  /**
-   * Procesa un lote de mensajes entrantes
-   */
+  /** Antilink, antispam y antibad. Devuelve true si el mensaje fue eliminado. */
+  private async applyProtections(m: SerializedMessage, settings: ChatSettings): Promise<boolean> {
+    const mention = { mentions: [m.sender] };
+    const tag = `@${m.sender.split('@')[0]}`;
+
+    // search() ignora el flag g y lastIndex, a diferencia de test().
+    if (settings.antiLink && m.text.search(CONFIG.protection.linkRegex) !== -1) {
+      await this.deleteMessage(m.chat, m.key);
+      await this.conn.sendMessage(m.chat, { text: `⚠️ ${tag} los enlaces de grupos no están permitidos aquí.`, ...mention });
+      log.debug(`antilink: enlace eliminado de ${m.sender}`);
+      const warnings = this.db.addWarning(m.chat, { odBy: 'SISTEMA', odTo: m.sender, reason: 'Enviar enlace de grupo', timestamp: Date.now() });
+      if (warnings >= CONFIG.protection.maxWarnings) {
+        try {
+          await this.conn.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
+          await this.conn.sendMessage(m.chat, { text: `🚫 ${tag} fue expulsado por acumular ${CONFIG.protection.maxWarnings} advertencias.`, ...mention });
+          this.db.clearWarnings(m.chat, m.sender);
+        } catch (error) {
+          log.error('error expulsando usuario:', error);
+        }
+      }
+      return true;
+    }
+
+    if (settings.antiSpam) {
+      const now = Date.now();
+      const userKey = `${m.chat}:${m.sender}`;
+      const recent = (this.spamTracker.get(userKey) ?? []).filter((t) => now - t < CONFIG.protection.intervalMs);
+      recent.push(now);
+      this.spamTracker.set(userKey, recent);
+      if (recent.length > CONFIG.protection.maxMessagesPerInterval) {
+        await this.deleteMessage(m.chat, m.key);
+        await this.conn.sendMessage(m.chat, { text: `⚠️ ${tag} deja de hacer spam o serás advertido.`, ...mention });
+        log.debug(`antispam: spam detectado de ${m.sender}`);
+        this.spamTracker.set(userKey, [now]);
+        return true;
+      }
+    }
+
+    if (settings.antiBad && settings.badWords?.length) {
+      const found = findBadWord(m.text, settings.badWords);
+      if (found) {
+        await this.deleteMessage(m.chat, m.key);
+        await this.conn.sendMessage(m.chat, { text: `⚠️ ${tag} las groserías no están permitidas aquí.`, ...mention });
+        log.debug(`antibad: grosería de ${m.sender}: ${found}`);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Procesamiento
+  // ---------------------------------------------------------------------------
+
   async handle(messages: proto.IWebMessageInfo[]): Promise<void> {
     for (const rawMessage of messages) {
       try {
         await this.processMessage(rawMessage);
       } catch (error) {
-        log.error('Error procesando mensaje:', error);
+        log.error('error procesando mensaje:', error);
       }
     }
   }
 
-  /**
-   * Procesa un mensaje individual
-   */
   private async processMessage(rawMessage: proto.IWebMessageInfo): Promise<void> {
-    // Serializar mensaje
     const m = this.serializeMessage(rawMessage);
-    if (!m) return;
+    if (!m || m.fromMe) return;
 
-    // Ignorar mensajes propios
-    if (m.fromMe) return;
-
-    // 🔒 MODE CHECK: Verificar modo del bot
-    const botSettings = this.db.getSettings();
-    const botMode = botSettings.botMode || 'public';
     const isOwner = isOwnerId(m.sender);
-    if (botMode !== 'public') {
-      if (botMode === 'private' && !isOwner) return;
-      if (botMode === 'group' && !m.isGroup) return;
-      if (botMode === 'inbox' && m.isGroup) return;
-    }
+    const botMode = this.db.getSettings().botMode || 'public';
+    if (botMode === 'private' && !isOwner) return;
+    if (botMode === 'group' && !m.isGroup) return;
+    if (botMode === 'inbox' && m.isGroup) return;
 
-    // Variables de grupo
-    let groupMetadata: GroupMetadata | undefined;
-    let participants: string[] = [];
-    let groupAdmins: string[] = [];
-    let isAdmin = false;
-    let isBotAdmin = false;
-    const botJid = this.conn.user?.id;
+    const chatSettings = this.readChatSettings(m.chat);
+    let cachedRoles: GroupRoles | null = null;
+    const roles = async (): Promise<GroupRoles> => (cachedRoles ??= await resolveGroupRoles(this.conn, m.chat, m.sender));
 
-    // Si es grupo, obtener metadata y verificar mute
     if (m.isGroup) {
-      groupMetadata = (await this.getGroupMetadata(m.chat)) || undefined;
-
-      if (groupMetadata) {
-        participants = groupMetadata.participants.map(p => p.id);
-        groupAdmins = groupMetadata.participants
-          .filter(p => p.admin === 'admin' || p.admin === 'superadmin')
-          .map(p => p.id);
-
-        isAdmin = this.isAdmin(groupMetadata.participants, m.sender);
-
-        // Verificar si el bot es admin
-        // El bot tiene JID con número (5213314313423@s.whatsapp.net)
-        // Pero los participantes del grupo usan LIDs (103518073536639@lid)
-        // Necesitamos buscar al bot en los participantes y verificar si es admin
-        if (botJid) {
-          const botNumber = botJid.split(':')[0].split('@')[0];
-
-          // Buscar al bot en los participantes del grupo
-          // Primero intentar por JID directo, luego por LID que contenga info del bot
-          const botParticipant = groupMetadata.participants.find(p => {
-            // Comparar directamente
-            if (p.id === botJid) return true;
-            if (p.id.includes(botNumber)) return true;
-
-            // Si el participante tiene un número de teléfono asociado
-            const pNumber = p.id.split('@')[0];
-            if (pNumber === botNumber) return true;
-
-            return false;
-          });
-
-          // Si encontramos al bot, verificar si es admin
-          if (botParticipant) {
-            isBotAdmin = botParticipant.admin === 'admin' || botParticipant.admin === 'superadmin';
-          } else {
-            // Buscar por el LID del bot
-            // Bot LID viene como "103518073536639:3@lid" pero en grupo es "103518073536639@lid"
-            const botLid = (this.conn.user as { lid?: string })?.lid;
-            if (botLid) {
-              // Extraer solo el número del LID (sin :X y sin @lid)
-              const botLidNumber = botLid.split(':')[0].split('@')[0];
-
-              // Buscar en participantes por el número del LID
-              const botLidParticipant = groupMetadata.participants.find(p => {
-                const pLidNumber = p.id.split(':')[0].split('@')[0];
-                return pLidNumber === botLidNumber;
-              });
-
-              if (botLidParticipant) {
-                isBotAdmin = botLidParticipant.admin === 'admin' || botLidParticipant.admin === 'superadmin';
-              }
-            }
-          }
-        }
-
-        // 🔇 Verificar si el usuario está muteado y automute está activo
-        if (this.isAutoMuteEnabled(m.chat) && this.isUserMuted(m.chat, m.sender)) {
-          if (isBotAdmin) {
-            // Eliminar mensaje del usuario muteado
+      const needsProtection = chatSettings.autoMuteEnabled || chatSettings.antiLink || chatSettings.antiSpam || chatSettings.antiBad;
+      if (needsProtection) {
+        const r = await roles();
+        if (chatSettings.autoMuteEnabled && this.isUserMuted(m.chat, m.sender)) {
+          if (r.isBotAdmin) {
             await this.deleteMessage(m.chat, m.key);
-            log.debug(`Mensaje eliminado de usuario muteado: ${m.sender}`);
+            log.debug(`mensaje eliminado de usuario muteado: ${m.sender}`);
           }
-          return; // No procesar comandos de usuarios muteados
+          return;
         }
-
-        // 🛡️ PROTECCIÓN: Antilink y Antispam
-        if (isBotAdmin && !isAdmin && m.text) {
-          const chatSettings = this.db.getChatSettings(m.chat);
-
-          // 🔗 ANTILINK: Detectar enlaces de WhatsApp
-          if (chatSettings.antiLink) {
-            const linkMatch = m.text.match(CONFIG.protection.linkRegex);
-            if (linkMatch) {
-              await this.deleteMessage(m.chat, m.key);
-              await this.conn.sendMessage(m.chat, {
-                text: `⚠️ @${m.sender.split('@')[0]} los enlaces de grupos no están permitidos aquí.`,
-                mentions: [m.sender]
-              });
-              log.debug(`Antilink: Enlace eliminado de ${m.sender}`);
-
-              // Agregar advertencia automática
-              const warningCount = this.db.addWarning(m.chat, {
-                odBy: 'SISTEMA',
-                odTo: m.sender,
-                reason: 'Enviar enlace de grupo',
-                timestamp: Date.now()
-              });
-
-              if (warningCount >= CONFIG.protection.maxWarnings) {
-                try {
-                  await this.conn.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
-                  await this.conn.sendMessage(m.chat, {
-                    text: `🚫 @${m.sender.split('@')[0]} fue expulsado por acumular ${CONFIG.protection.maxWarnings} advertencias.`,
-                    mentions: [m.sender]
-                  });
-                  this.db.clearWarnings(m.chat, m.sender);
-                } catch (e) {
-                  log.error('Error expulsando usuario:', e);
-                }
-              }
-              return;
-            }
-          }
-
-          // 🚫 ANTISPAM: Detectar spam de mensajes
-          if (chatSettings.antiSpam) {
-            const now = Date.now();
-            const userKey = `${m.chat}:${m.sender}`;
-
-            if (!this.spamTracker.has(userKey)) {
-              this.spamTracker.set(userKey, []);
-            }
-
-            const timestamps = this.spamTracker.get(userKey)!;
-            // Filtrar timestamps dentro del intervalo
-            const recentTimestamps = timestamps.filter(
-              t => now - t < CONFIG.protection.intervalMs
-            );
-            recentTimestamps.push(now);
-            this.spamTracker.set(userKey, recentTimestamps);
-
-            if (recentTimestamps.length > CONFIG.protection.maxMessagesPerInterval) {
-              await this.deleteMessage(m.chat, m.key);
-              await this.conn.sendMessage(m.chat, {
-                text: `⚠️ @${m.sender.split('@')[0]} deja de hacer spam o serás advertido.`,
-                mentions: [m.sender]
-              });
-              log.debug(`Antispam: Spam detectado de ${m.sender}`);
-
-              // Resetear contador para no advertir en cada mensaje
-              this.spamTracker.set(userKey, [now]);
-              return;
-            }
-          }
-
-          // 🚫 ANTI-BAD WORDS: Detectar groserías
-          if (chatSettings.antiBad && m.text) {
-            const badWords = chatSettings.badWords || [];
-            if (badWords.length > 0) {
-              const foundWord = findBadWord(m.text, badWords);
-
-              if (foundWord) {
-                await this.deleteMessage(m.chat, m.key);
-                await this.conn.sendMessage(m.chat, {
-                  text: `⚠️ @${m.sender.split('@')[0]} las groserías no están permitidas aquí.`,
-                  mentions: [m.sender]
-                });
-                log.debug(`AntiBad: Grosería detectada de ${m.sender}: ${foundWord}`);
-                return;
-              }
-            }
-          }
-        }
+        if (r.isBotAdmin && !r.isAdmin && m.text && (await this.applyProtections(m, chatSettings))) return;
       }
-    }
 
-    // 🎨 AUTO-STICKER: Convertir imágenes automáticamente a stickers
-    if (m.isGroup && rawMessage.message?.imageMessage) {
-      const autoStickerSettings = this.db.getChatSettings(m.chat);
-      if (autoStickerSettings.autoSticker) {
-        // Solo si no es un comando (no empieza con prefijo)
-        const hasPrefix = m.text && CONFIG.prefix.test(m.text);
-        if (!hasPrefix) {
-          try {
-            const mediaBuffer = await downloadMediaMessage(
-              rawMessage,
-              'buffer',
-              {},
-              {
-                logger: console as any,
-                reuploadRequest: this.conn.updateMediaMessage
-              }
-            ) as Buffer;
-
-            const stickerBuffer = await createSticker(mediaBuffer, {
-              packname: 'CYALTRONIC',
-              author: m.pushName || 'User',
-              categories: ['🎨']
-            });
-
-            await this.conn.sendMessage(m.chat, { sticker: stickerBuffer });
-            log.debug(`AutoSticker: Imagen convertida de ${m.sender}`);
-          } catch (error) {
-            log.error('Error en auto-sticker:', error);
-          }
-        }
-      }
-    }
-
-    // 📥 AUTO-DOWNLOADER: Detectar URLs y descargar automáticamente
-    if (m.isGroup && m.text) {
-      const autoDownloadSettings = this.db.getChatSettings(m.chat);
-      if (autoDownloadSettings.autoDownload) {
-        const hasPrefix = CONFIG.prefix.test(m.text);
-        if (!hasPrefix) {
-          await this.handleAutoDownload(m, rawMessage);
-        }
+      const hasPrefix = Boolean(m.text) && CONFIG.prefix.test(m.text);
+      if (!hasPrefix) {
+        if (chatSettings.autoSticker && m.message?.imageMessage) await this.handleAutoSticker(m, rawMessage);
+        if (chatSettings.autoDownload && m.text) await handleAutoDownload(this.conn, m, m.text);
       }
     }
 
     if (!m.text) return;
 
-    // Historial corto por chat para /resumen y contexto de la IA
-    if (m.isGroup) rememberChatLine(m.chat, m.pushName || m.sender.split('@')[0], m.text);
+    const ai = CONFIG.ai.enabled ? await loadAI() : null;
+    if (ai && m.isGroup) ai.rememberChatLine(m.chat, m.pushName || m.sender.split('@')[0], m.text);
 
-    // Verificar si es un comando con prefijo
     const prefixMatch = m.text.match(CONFIG.prefix);
+    const usedPrefix = prefixMatch ? prefixMatch[0] : '';
+    const body = m.text.slice(usedPrefix.length).trim();
+    const [rawCommand = '', ...args] = body.split(/\s+/);
+    const command = rawCommand.toLowerCase();
+    const incoming: Incoming = { m, usedPrefix, command, args, isOwner, chatSettings, roles };
 
-    let usedPrefix = '';
-    let fullCommand = '';
-    let command = '';
-    let args: string[] = [];
-    let text = '';
-    let isNoPrefixDuelCommand = false;
-
-    // Contextos de juego activos: sus plugins ganan a cualquier otro alias,
-    // y pueden aceptar el texto sin prefijo.
-    const contexts = this.activeContexts(m);
-    if (contexts.length > 0) {
-      const raw = prefixMatch ? m.text.slice(prefixMatch[0].length).trim() : m.text.trim();
-      const [rawCommand, ...rawArgs] = raw.split(/\s+/);
-      if (rawCommand) {
-        for (const context of contexts) {
-          if (!prefixMatch && !context.noPrefix) continue;
-          const plugin = context.plugins.find((p) =>
-            MessageHandler.pluginMatches(p, rawCommand, raw) && (prefixMatch || p.noPrefix !== false));
-          if (!plugin) continue;
-          const ctx: MessageContext = {
-            conn: this.conn,
-            m,
-            text: rawArgs.join(' '),
-            args: rawArgs,
-            command: rawCommand.toLowerCase(),
-            usedPrefix: prefixMatch ? prefixMatch[0] : '',
-            isOwner,
-            isAdmin,
-            isBotAdmin,
-            isGroup: m.isGroup,
-            groupMetadata,
-            participants,
-            groupAdmins,
-            handler: this,
-          };
-          try {
-            log.info(`[${context.name}] ${rawCommand} de ${m.pushName || m.sender.split('@')[0]}`);
-            await plugin.handler(ctx);
-          } catch (error) {
-            log.error(`error en contexto ${context.name} (${rawCommand}):`, error);
-            await m.reply(CONFIG.messages.error);
-          }
-          return;
-        }
+    // Los contextos activos (duelo, dungeon, mesa de blackjack...) van antes
+    // que el registro global y son los únicos que aceptan texto sin prefijo.
+    if (command) {
+      const dispatch = this.matchContext(m, command, body, Boolean(prefixMatch));
+      if (dispatch) {
+        await this.execute(dispatch, incoming);
+        return;
       }
     }
 
-    if (prefixMatch) {
-      // Comando con prefijo normal
-      usedPrefix = prefixMatch[0];
-      fullCommand = m.text.slice(usedPrefix.length).trim();
-      [command, ...args] = fullCommand.split(/\s+/);
-      text = args.join(' ');
-    } else if (m.isGroup) {
-      // Verificar si es un comando de duelo sin prefijo
-      const textLower = m.text.toLowerCase().trim();
-      const firstWord = textLower.split(/\s+/)[0];
-
-      if (DUEL_COMMANDS_NO_PREFIX.includes(firstWord) || SKILL_PATTERNS_NO_PREFIX.test(textLower)) {
-        isNoPrefixDuelCommand = true;
-        usedPrefix = '';
-        fullCommand = m.text.trim();
-        [command, ...args] = fullCommand.split(/\s+/);
-        text = args.join(' ');
-      } else {
-        // Texto normal en grupo: solo interesa si va dirigido al bot
-        if (isAIEnabled() && CONFIG.ai.replyToMentions && this.db.getChatSettings(m.chat).aiChat !== false
-          && isDirectedToBot(m, this.botIds())) {
-          await respondWithAI({ conn: this.conn, m, rawMessage, text: m.text, isOwner });
+    if (!prefixMatch) {
+      if (!ai) return;
+      if (m.isGroup) {
+        if (CONFIG.ai.replyToMentions && chatSettings.aiChat !== false && ai.isDirectedToBot(m, this.botIds())) {
+          await ai.respondWithAI({ conn: this.conn, m, rawMessage, text: m.text, isOwner });
         }
-        return;
-      }
-    } else {
-      // Privado sin prefijo: conversación directa con la IA
-      if (isAIEnabled() && CONFIG.ai.privateChat) {
-        await respondWithAI({ conn: this.conn, m, rawMessage, text: m.text, isOwner });
+      } else if (CONFIG.ai.privateChat) {
+        await ai.respondWithAI({ conn: this.conn, m, rawMessage, text: m.text, isOwner });
       }
       return;
     }
 
     if (!command) return;
+    const found = this.findPlugin(command) ?? this.findPatternPlugin(command, body);
+    if (!found) {
+      await this.replyUnknownCommand(incoming);
+      return;
+    }
+    await this.execute(found, incoming);
+  }
 
-    const senderNumber = m.sender.split('@')[0];
-
-    // Buscar plugin que maneje el comando
-    for (const [name, plugin] of this.plugins) {
-      let matches = false;
-
-      if (plugin.command instanceof RegExp) {
-        // Para comandos de duelo sin prefijo, probar contra el texto completo (para habilidades multi-palabra)
-        const testString = isNoPrefixDuelCommand ? fullCommand.toLowerCase() : command.toLowerCase();
-        matches = plugin.command.test(testString);
-      } else if (Array.isArray(plugin.command)) {
-        matches = plugin.command.some(cmd =>
-          cmd.toLowerCase() === command.toLowerCase()
-        );
+  /** Alias visibles para quien pregunta, según sus permisos. */
+  visibleAliases(who: { isOwner: boolean; isAdmin: boolean; isGroup: boolean }): { aliases: string[]; primary: Set<string> } {
+    const aliases: string[] = [];
+    const primary = new Set<string>();
+    const seenPlugins = new Set<PluginHandler>();
+    for (const [alias, { plugin }] of this.aliasIndex) {
+      if (plugin.owner && !who.isOwner) continue;
+      if (plugin.admin && !who.isAdmin && !who.isOwner) continue;
+      if (plugin.group && !who.isGroup) continue;
+      aliases.push(alias);
+      if (!seenPlugins.has(plugin)) {
+        seenPlugins.add(plugin);
+        primary.add(alias);
       }
+    }
+    return { aliases, primary };
+  }
 
-      if (matches) {
-        // Verificar permisos
-        if (plugin.owner && !isOwner) {
-          await m.reply(CONFIG.messages.ownerOnly);
-          return;
-        }
+  private async replyUnknownCommand({ m, command, usedPrefix, isOwner, chatSettings, roles }: Incoming): Promise<void> {
+    // "..." o "/" solos no son intentos de comando.
+    if (!/[a-z0-9]/i.test(command)) return;
+    const now = Date.now();
+    const last = this.suggestionCooldown.get(m.chat);
+    if (last !== undefined && now - last < SUGGEST_COOLDOWN_MS) return;
+    this.suggestionCooldown.set(m.chat, now);
 
-        if (plugin.group && !m.isGroup) {
-          await m.reply(CONFIG.messages.groupOnly);
-          return;
-        }
+    if (chatSettings.compactMode) {
+      await m.react('❓');
+      return;
+    }
+    const isAdmin = m.isGroup ? (await roles()).isAdmin : false;
+    const { aliases, primary } = this.visibleAliases({ isOwner, isAdmin, isGroup: m.isGroup });
+    const suggestion = suggestCommand(command, aliases, { primary });
+    const hint = suggestion ? ` ¿Quisiste decir *${usedPrefix}${suggestion}*?` : '';
+    await m.reply(`No existe ${usedPrefix}${command}.${hint} Escribe ${usedPrefix}menu para ver todo.`);
+  }
 
-        if (plugin.admin && !isAdmin && !isOwner) {
-          await m.reply('❌ Este comando es solo para administradores del grupo.');
-          return;
-        }
+  private recordStat(name: string, ok: boolean): void {
+    const stats = this.db.data.stats;
+    const entry = (stats[name] ??= { total: 0, success: 0, failed: 0, lastUsed: 0 });
+    entry.total++;
+    if (ok) entry.success++;
+    else entry.failed++;
+    entry.lastUsed = Date.now();
+    this.db.markDirty();
+  }
 
-        if (plugin.botAdmin && !isBotAdmin) {
-          await m.reply('❌ Necesito ser administrador del grupo para ejecutar este comando.');
-          return;
-        }
+  private async execute(dispatch: Dispatch, incoming: Incoming): Promise<void> {
+    const { name, plugin } = dispatch;
+    const { m, usedPrefix, command, args, isOwner, chatSettings } = incoming;
 
-        if (plugin.register) {
-          const user = this.db.getUser(m.sender);
-          if (!user.registered) {
-            await m.reply(CONFIG.messages.notRegistered);
-            return;
-          }
-        }
+    if (plugin.owner && !isOwner) {
+      await m.reply(CONFIG.messages.ownerOnly);
+      return;
+    }
+    if (plugin.group && !m.isGroup) {
+      await m.reply(CONFIG.messages.groupOnly);
+      return;
+    }
 
-        // Construir contexto
-        const ctx: MessageContext = {
-          conn: this.conn,
-          m,
-          text,
-          args,
-          command: command.toLowerCase(),
-          usedPrefix,
-          isOwner,
-          isAdmin,
-          isBotAdmin,
-          isGroup: m.isGroup,
-          groupMetadata,
-          participants,
-          groupAdmins,
-          handler: this
-        };
+    let roles: GroupRoles | null = null;
+    if (m.isGroup && (plugin.admin || plugin.botAdmin || plugin.group)) {
+      roles = await incoming.roles();
+      if (!roles.metadata && (plugin.admin || plugin.botAdmin)) {
+        await m.reply('⚠️ No pude leer los datos del grupo, inténtalo en unos segundos.');
+        return;
+      }
+    }
+    if (plugin.admin && !isOwner && !roles?.isAdmin) {
+      // Si acaban de ascenderlo, la metadata cacheada está vieja: se descarta para el próximo intento.
+      if (m.isGroup) invalidateGroupMetadata(m.chat);
+      await m.reply('❌ Este comando es solo para administradores del grupo.');
+      return;
+    }
+    if (plugin.botAdmin && !roles?.isBotAdmin) {
+      if (m.isGroup) invalidateGroupMetadata(m.chat);
+      await m.reply(
+        '❌ Necesito ser administrador del grupo para ejecutar este comando.\n\n' +
+        'Un admin puede dármelo en: Info del grupo > Participantes > (bot) > Hacer admin del grupo.',
+      );
+      return;
+    }
+    if (plugin.register && !this.db.getUser(m.sender).registered) {
+      await m.reply(CONFIG.messages.notRegistered);
+      return;
+    }
 
-        // Rastrear el mensaje del comando para .clear (excepto el propio .clear y .autoclear)
-        const cmdLower = command.toLowerCase();
-        if (cmdLower !== 'clear' && cmdLower !== 'limpiar' && cmdLower !== 'clean' && cmdLower !== 'autoclear') {
-          this.trackMessage(m.chat, m.key, true); // true = es comando de usuario
-        }
+    const db = this.db;
+    let user: UserRPG | undefined;
+    const ctx: MessageContext = {
+      conn: this.conn,
+      m,
+      text: args.join(' '),
+      args,
+      command,
+      usedPrefix,
+      isOwner,
+      isAdmin: roles?.isAdmin ?? false,
+      isBotAdmin: roles?.isBotAdmin ?? false,
+      isGroup: m.isGroup,
+      groupMetadata: roles?.metadata ?? undefined,
+      participants: roles?.participants,
+      groupAdmins: roles?.admins,
+      handler: this,
+      chatSettings,
+      get user(): UserRPG {
+        return (user ??= db.getUser(m.sender));
+      },
+      send: (content, options) => this.send(m.chat, content, options),
+      target: (options?: TargetOptions) => getTargetUser(m, { args, ...options }),
+    };
 
-        // Ejecutar plugin
-        try {
-          log.info(`${isNoPrefixDuelCommand ? 'duelo' : 'comando'} ${usedPrefix}${command} de ${m.pushName || senderNumber}`);
-          await plugin.handler(ctx);
-        } catch (error) {
-          log.error(`Error en plugin ${name}:`, error);
-          if (error instanceof Error) {
-            await m.reply(`❌ Error: ${error.message}`);
-          } else {
-            await m.reply(CONFIG.messages.error);
-          }
-        }
+    if (!plugin.untracked && !UNTRACKED_COMMANDS.has(command)) {
+      this.trackMessage(m.chat, m.key, true);
+    }
 
-        break; // Solo ejecutar un plugin por mensaje
+    const who = m.pushName || m.sender.split('@')[0];
+    log.info(`${dispatch.context ? `[${dispatch.context}] ` : ''}${usedPrefix}${command} de ${who}`);
+    try {
+      await plugin.handler(ctx);
+      this.recordStat(name, true);
+    } catch (error) {
+      this.recordStat(name, false);
+      const ref = randomBytes(3).toString('hex');
+      log.error(`plugin ${name} [${ref}]:`, error);
+      try {
+        await m.reply(`${CONFIG.messages.error} (ref ${ref})`);
+      } catch (replyError) {
+        log.error(`no se pudo avisar del error ${ref}:`, replyError);
       }
     }
   }

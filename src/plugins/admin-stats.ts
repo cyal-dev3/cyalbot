@@ -1,23 +1,10 @@
-/**
- * Plugin admin-stats
- * Dashboard owner-only con métricas del bot para monitoreo en VPS.
- */
-
 import { statSync } from 'node:fs';
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { formatNumber } from '../lib/utils.js';
+import { CONFIG } from '../config.js';
+import { formatNumber, msToTime, mentionTag } from '../lib/utils.js';
 import { getDatabase } from '../lib/database.js';
-import { getReconnectStats } from '../index.js';
+import { runtimeStats } from '../lib/runtime-stats.js';
 import { getCleanupStats } from '../lib/cleanup-scheduler.js';
-
-function formatUptime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const min = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return `${d}d ${h}h ${min}m ${sec}s`;
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -27,17 +14,16 @@ function formatBytes(bytes: number): string {
 }
 
 export const adminStatsPlugin: PluginHandler = {
-  command: /^(stats|adminstats|botstats)$/i,
+  command: ['botstats', 'adminstats'],
   tags: ['admin'],
-  help: ['stats — Dashboard del bot (solo owner)'],
+  help: ['botstats - Estado del proceso, base de datos y rankings (owner)'],
   owner: true,
+
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
     const db = getDatabase();
 
-    const users = Object.entries(db.data.users).filter(([_, u]) => u.registered);
-    const totalUsers = users.length;
-
+    const users = db.getRegisteredUsers();
     const topRich = [...users]
       .sort(([, a], [, b]) => (b.money + b.bank) - (a.money + a.bank))
       .slice(0, 10);
@@ -46,38 +32,42 @@ export const adminStatsPlugin: PluginHandler = {
       .slice(0, 5);
 
     let dbSize = 0;
-    try { dbSize = statSync('database.json').size; } catch { /* ignore */ }
+    try {
+      dbSize = statSync(CONFIG.databasePath).size;
+    } catch {
+      // Sin archivo todavía (primera ejecución): se muestra 0.
+    }
 
     const mem = process.memoryUsage();
-    const reconnect = getReconnectStats();
     const cleanup = getCleanupStats();
 
     const richBody = topRich
-      .map(([jid, u], i) => `${i + 1}. @${jid.split('@')[0]} — ${formatNumber(u.money + u.bank)} 💰`)
-      .join('\n');
-    const dungBody = topDungeon
-      .map(([jid, u], i) => `${i + 1}. @${jid.split('@')[0]} — ${u.combatStats?.dungeonsCompleted ?? 0} dungeons`)
+      .map(([jid, u], i) => `${i + 1}. ${mentionTag(jid)} — ${formatNumber(u.money + u.bank)} 💰`)
       .join('\n') || '  (sin datos)';
-
+    const dungBody = topDungeon
+      .map(([jid, u], i) => `${i + 1}. ${mentionTag(jid)} — ${u.combatStats?.dungeonsCompleted ?? 0} dungeons`)
+      .join('\n') || '  (sin datos)';
     const mentions = [...topRich, ...topDungeon].map(([jid]) => jid);
 
-    const lastCleanup = cleanup.lastRunAt
-      ? new Date(cleanup.lastRunAt).toLocaleString('es-MX')
-      : 'nunca';
+    const lastCleanup = cleanup.lastRunAt ? new Date(cleanup.lastRunAt).toLocaleString('es-MX') : 'nunca';
+    const lastError = runtimeStats.lastErrorAt
+      ? `${runtimeStats.lastError} (hace ${msToTime(Date.now() - runtimeStats.lastErrorAt)})`
+      : 'ninguno';
 
     const body =
-      `📊 *CYALTRONIC — Dashboard*\n` +
+      `📊 *${CONFIG.botName} — Dashboard*\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👥 Usuarios registrados: *${formatNumber(totalUsers)}*\n` +
-      `💾 database.json: *${formatBytes(dbSize)}*\n` +
+      `👥 Usuarios registrados: *${formatNumber(users.length)}*\n` +
+      `💾 ${CONFIG.databasePath}: *${formatBytes(dbSize)}*\n` +
       `🧠 RSS: *${formatBytes(mem.rss)}* · Heap: *${formatBytes(mem.heapUsed)}* / ${formatBytes(mem.heapTotal)}\n` +
-      `⏱️ Uptime: *${formatUptime(process.uptime() * 1000)}*\n` +
-      `🔄 Reconexiones: *${reconnect.count}* (intentos: ${reconnect.attempts})\n` +
+      `⏱️ Uptime: *${msToTime(process.uptime() * 1000)}*\n` +
+      `🔄 Reconexiones: *${runtimeStats.reconnects}* (intentos: ${runtimeStats.reconnectAttempts})\n` +
+      `🛑 Errores: *${runtimeStats.errors}* · Último: ${lastError}\n` +
       `🧹 Último cleanup: ${lastCleanup}\n` +
       `🧹 Liberado total: ${formatBytes(cleanup.totalBytesFreed)} · ${cleanup.totalFilesDeleted} archivos\n\n` +
-      `💰 *Top 10 Ricos:*\n${richBody || '  (sin datos)'}\n\n` +
+      `💰 *Top 10 Ricos:*\n${richBody}\n\n` +
       `🏰 *Top 5 Dungeons:*\n${dungBody}`;
 
     await ctx.conn.sendMessage(m.chat, { text: body, mentions });
-  }
+  },
 };

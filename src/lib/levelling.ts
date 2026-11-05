@@ -1,5 +1,5 @@
 import { CONFIG } from '../config.js';
-import type { UserRPG } from '../types/user.js';
+import { DEFAULT_USER, type UserRPG } from '../types/user.js';
 import { calculateTotalStats } from './rpg-utils.js';
 
 /**
@@ -84,15 +84,24 @@ export interface GrantExpResult {
 /**
  * Aplica los bonus de CONFIG.rpg.levelUpBonus por `levels` niveles (negativo retira).
  * Los stats actuales se recortan al máximo real (clase + equipo), como hacía /nivel.
+ * Al bajar, los máximos no caen por debajo de DEFAULT_USER (usuarios subidos con
+ * el setnivel antiguo nunca recibieron el bonus) y el dinero no se toca: el oro
+ * ya gastado no se puede confiscar de forma coherente.
  */
 function applyLevelBonus(user: UserRPG, levels: number): void {
   if (levels === 0) return;
   const bonus = CONFIG.rpg.levelUpBonus;
 
-  user.maxHealth = Math.max(1, user.maxHealth + levels * bonus.healthPerLevel);
-  user.maxStamina = Math.max(1, user.maxStamina + levels * bonus.staminaPerLevel);
-  user.maxMana = Math.max(0, user.maxMana + levels * bonus.manaPerLevel);
-  user.money = Math.max(0, user.money + levels * bonus.moneyPerLevel);
+  if (levels > 0) {
+    user.maxHealth += levels * bonus.healthPerLevel;
+    user.maxStamina += levels * bonus.staminaPerLevel;
+    user.maxMana += levels * bonus.manaPerLevel;
+    user.money += levels * bonus.moneyPerLevel;
+  } else {
+    user.maxHealth = Math.max(DEFAULT_USER.maxHealth, user.maxHealth + levels * bonus.healthPerLevel);
+    user.maxStamina = Math.max(DEFAULT_USER.maxStamina, user.maxStamina + levels * bonus.staminaPerLevel);
+    user.maxMana = Math.max(DEFAULT_USER.maxMana, user.maxMana + levels * bonus.manaPerLevel);
+  }
 
   const real = calculateTotalStats(user);
   if (levels > 0) {

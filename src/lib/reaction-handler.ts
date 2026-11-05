@@ -1,12 +1,21 @@
+/**
+ * Resolución de picks de apuestas por reacción: ✅/🟢 gana, ❌/🔴 pierde.
+ */
+
 import type { WASocket } from 'baileys';
 import type { Database } from './database.js';
+import { createLogger } from './logger.js';
+import { isOwnerId, sameUser } from '../config.js';
+import { getGroupMetadataCached, isGroupAdmin } from './group-events.js';
 
-// Strip emoji variation selectors so ✅ and ✅︎ both match
+const log = createLogger('betting');
+
+/** Quita los selectores de variante para que ✅ y ✅︎ cuenten igual. */
 function normalizeEmoji(e: string | null | undefined): string {
-  return (e || '').replace(/\uFE0F|\uFE0E/g, '').trim();
+  return (e || '').replace(/️|︎/g, '').trim();
 }
 
-const WIN  = new Set(['✅', '🟢'].map(normalizeEmoji));
+const WIN = new Set(['✅', '🟢'].map(normalizeEmoji));
 const LOSS = new Set(['❌', '🔴'].map(normalizeEmoji));
 
 export function registerReactionHandler(conn: WASocket, db: Database): void {
@@ -14,39 +23,33 @@ export function registerReactionHandler(conn: WASocket, db: Database): void {
     for (const r of reactions) {
       try {
         const emoji = normalizeEmoji(r.reaction?.text);
-        const isWin  = WIN.has(emoji);
-        const isLoss = LOSS.has(emoji);
-        if (!isWin && !isLoss) continue;
+        const isWin = WIN.has(emoji);
+        if (!isWin && !LOSS.has(emoji)) continue;
 
-        // r.key = key of the message being reacted to
+        // r.key es el mensaje reaccionado; r.reaction.key identifica a quien reaccionó.
         const chatId = r.key?.remoteJid;
-        if (!chatId?.endsWith('@g.us')) continue;
-
         const messageId = r.key?.id;
-        if (!messageId) continue;
+        if (!chatId?.endsWith('@g.us') || !messageId) continue;
 
-        const pick = db.getPickByMessageId(chatId, messageId);
+        const pick = db.betting.getPickByMessageId(chatId, messageId);
         if (!pick || pick.status !== 'pending') continue;
 
-        // r.reaction.key = key of the reaction itself (sender info is here)
-        const reactorJid = r.reaction?.key?.participant
-          || r.reaction?.key?.remoteJid
-          || '';
+        const reactorJid = r.reaction?.key?.participant || r.reaction?.key?.remoteJid || '';
         if (!reactorJid) continue;
 
-        // Allow: pick creator, any admin (TELEGRAM_BRIDGE acts as wildcard)
-        const canResolve = pick.createdBy === 'TELEGRAM_BRIDGE'
-          || pick.createdBy === reactorJid;
+        // Los picks del puente de Telegram no tienen dueño: solo un admin del grupo o un owner los cierra.
+        let canResolve = sameUser(pick.createdBy, reactorJid) || isOwnerId(reactorJid);
+        if (!canResolve && pick.createdBy === 'TELEGRAM_BRIDGE') {
+          canResolve = isGroupAdmin(await getGroupMetadataCached(conn, chatId), reactorJid);
+        }
         if (!canResolve) continue;
 
-        const won = isWin;
-        db.resolvePick(chatId, pick.id, won, reactorJid);
-
+        db.betting.resolvePick(chatId, pick.id, isWin, reactorJid);
         await conn.sendMessage(chatId, {
-          text: `${won ? '✅' : '❌'} Pick ${pick.id.slice(-8)} de ${pick.tipsterOriginal} resuelto.`
+          text: `${isWin ? '✅' : '❌'} Pick ${pick.id.slice(-8)} de ${pick.tipsterOriginal} resuelto.`,
         });
-      } catch (err) {
-        console.error('Error en reaction-handler:', err);
+      } catch (error) {
+        log.error('error resolviendo pick por reacción:', error);
       }
     }
   });

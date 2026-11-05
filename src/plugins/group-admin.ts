@@ -1,206 +1,122 @@
-/**
- * Plugin de Administración de Grupo
- * Comandos: promote, demote, kick
- */
-
 import type { MessageHandler } from '../handler.js';
-import type { PluginHandler } from '../types/message.js';
+import type { PluginHandler, MessageContext } from '../types/message.js';
+import { createLogger } from '../lib/logger.js';
+import { mentionTag } from '../lib/utils.js';
+import { resolveTargets, assertCanModerate, type ModerationAction } from '../lib/participants.js';
 
-/**
- * Obtiene el JID del usuario objetivo (mencionado o citado)
- */
-function getTargetUser(ctx: { m: { mentionedJid: string[]; quoted?: { sender: string } }; args: string[] }): string | null {
-  // Primero verificar menciones
-  if (ctx.m.mentionedJid.length > 0) {
-    return ctx.m.mentionedJid[0];
-  }
+const log = createLogger('grupos');
 
-  // Luego verificar mensaje citado
-  if (ctx.m.quoted?.sender) {
-    return ctx.m.quoted.sender;
-  }
+type GroupAction = Extract<ModerationAction, 'kick' | 'promote' | 'demote'>;
 
-  // Finalmente verificar si pasaron un número
-  if (ctx.args[0]) {
-    const number = ctx.args[0].replace(/[^0-9]/g, '');
-    if (number.length >= 10) {
-      return `${number}@s.whatsapp.net`;
-    }
-  }
-
-  return null;
+interface ActionTexts {
+  verb: string;
+  wa: 'remove' | 'promote' | 'demote';
+  emoji: string;
+  done: string;
+  usage: string;
 }
 
+const ACTIONS: Record<GroupAction, ActionTexts> = {
+  kick: { verb: 'expulsar', wa: 'remove', emoji: '🚪', done: 'expulsado(s)', usage: 'kick @usuario [@otro...]' },
+  promote: { verb: 'hacer admin', wa: 'promote', emoji: '👑', done: 'ahora admin', usage: 'promote @usuario [@otro...]' },
+  demote: { verb: 'quitar admin', wa: 'demote', emoji: '📉', done: 'ya no admin', usage: 'demote @usuario [@otro...]' },
+};
+
 /**
- * Plugin: Promote - Hacer admin a un usuario
+ * Aplica kick/promote/demote a todas las menciones en una sola llamada y
+ * responde con un único resumen. Para promote/demote el aviso en el grupo lo
+ * da group-events.ts, así que solo se reacciona.
  */
-const promotePlugin: PluginHandler = {
+async function moderate(ctx: MessageContext, action: GroupAction): Promise<void> {
+  const { m, conn, usedPrefix } = ctx;
+  const texts = ACTIONS[action];
+  const targets = resolveTargets(ctx, { allowNumber: true, allowSelf: true });
+
+  if (targets.length === 0) {
+    await m.reply(`❌ Menciona o responde al mensaje de alguien para ${texts.verb}.\n\n📝 Ejemplo: ${usedPrefix}${texts.usage}`);
+    return;
+  }
+
+  const rejected: { jid: string; reason: string }[] = [];
+  const allowed: string[] = [];
+  for (const jid of targets) {
+    const reason = assertCanModerate(ctx, jid, action);
+    if (reason) rejected.push({ jid, reason });
+    else allowed.push(jid);
+  }
+
+  const failed: string[] = [];
+  const done: string[] = [];
+  if (allowed.length > 0) {
+    try {
+      const results = await conn.groupParticipantsUpdate(m.chat, allowed, texts.wa);
+      for (const jid of allowed) {
+        const result = results.find((r) => r.jid && r.jid.split('@')[0] === jid.split('@')[0]);
+        if (!result || result.status === '200') done.push(jid);
+        else failed.push(jid);
+      }
+    } catch (error) {
+      log.error(`${action} en ${m.chat}:`, error instanceof Error ? error.message : error);
+      failed.push(...allowed);
+    }
+  }
+
+  const compact = ctx.handler.isCompactMode(m.chat);
+  const onlySuccess = rejected.length === 0 && failed.length === 0;
+  if (done.length > 0) await m.react(texts.emoji);
+  else await m.react('❌');
+
+  // Promote/demote: el grupo ya ve el aviso de group-events; solo se habla si algo falló.
+  if (onlySuccess && (compact || action !== 'kick')) return;
+
+  const lines: string[] = [];
+  if (done.length > 0 && action === 'kick') lines.push(`${texts.emoji} ${done.map(mentionTag).join(', ')} ${texts.done}.`);
+  for (const { jid, reason } of rejected) lines.push(`⚠️ ${mentionTag(jid)}: ${reason}`);
+  if (failed.length > 0) {
+    lines.push(`❌ No pude ${texts.verb} a ${failed.map(mentionTag).join(', ')}. ¿Tengo permisos y sigue en el grupo?`);
+  }
+
+  await conn.sendMessage(m.chat, {
+    text: lines.join('\n'),
+    mentions: [...done, ...rejected.map((r) => r.jid), ...failed],
+  }, { quoted: m.rawMessage }).then((sent) => {
+    if (sent?.key) ctx.handler.trackMessage(m.chat, sent.key);
+  });
+}
+
+export const promotePlugin: PluginHandler = {
   command: ['promote', 'admin', 'haceradmin'],
   tags: ['grupo', 'admin'],
-  help: ['promote @usuario - Hace admin a un usuario'],
+  help: ['promote @usuario [@otro...] - Hace admin a los mencionados'],
   group: true,
   admin: true,
   botAdmin: true,
-
-  handler: async (ctx) => {
-    const targetUser = getTargetUser(ctx);
-
-    if (!targetUser) {
-      await ctx.m.reply('❌ Menciona o responde al mensaje de alguien para hacerlo admin.\n\n📝 Ejemplo: /promote @usuario');
-      return;
-    }
-
-    // Verificar que no sea el mismo
-    if (targetUser === ctx.m.sender) {
-      await ctx.m.reply('❌ No puedes hacerte admin a ti mismo.');
-      return;
-    }
-
-    // Verificar que esté en el grupo
-    if (!ctx.participants?.includes(targetUser)) {
-      await ctx.m.reply('❌ Ese usuario no está en el grupo.');
-      return;
-    }
-
-    // Verificar que no sea ya admin
-    if (ctx.groupAdmins?.includes(targetUser)) {
-      await ctx.m.reply('⚠️ Ese usuario ya es administrador.');
-      return;
-    }
-
-    try {
-      await ctx.conn.groupParticipantsUpdate(ctx.m.chat, [targetUser], 'promote');
-
-      // Modo compacto: solo reacción
-      if (ctx.handler.isCompactMode(ctx.m.chat)) {
-        await ctx.m.react('👑');
-      } else {
-        const userName = targetUser.split('@')[0];
-        await ctx.m.reply(`✅ @${userName} ahora es administrador del grupo! 👑`);
-      }
-    } catch (error) {
-      console.error('Error en promote:', error);
-      await ctx.m.react('❌');
-      if (!ctx.handler.isCompactMode(ctx.m.chat)) {
-        await ctx.m.reply('❌ No pude hacer admin a ese usuario. Verifica que tengo permisos.');
-      }
-    }
-  }
+  handler: (ctx) => moderate(ctx, 'promote'),
 };
 
-/**
- * Plugin: Demote - Quitar admin a un usuario
- */
-const demotePlugin: PluginHandler = {
+export const demotePlugin: PluginHandler = {
   command: ['demote', 'quitaradmin', 'removeadmin'],
   tags: ['grupo', 'admin'],
-  help: ['demote @usuario - Quita admin a un usuario'],
+  help: ['demote @usuario [@otro...] - Quita admin a los mencionados'],
   group: true,
   admin: true,
   botAdmin: true,
-
-  handler: async (ctx) => {
-    const targetUser = getTargetUser(ctx);
-
-    if (!targetUser) {
-      await ctx.m.reply('❌ Menciona o responde al mensaje de alguien para quitarle admin.\n\n📝 Ejemplo: /demote @usuario');
-      return;
-    }
-
-    // Verificar que esté en el grupo
-    if (!ctx.participants?.includes(targetUser)) {
-      await ctx.m.reply('❌ Ese usuario no está en el grupo.');
-      return;
-    }
-
-    // Verificar que sea admin
-    if (!ctx.groupAdmins?.includes(targetUser)) {
-      await ctx.m.reply('⚠️ Ese usuario no es administrador.');
-      return;
-    }
-
-    try {
-      await ctx.conn.groupParticipantsUpdate(ctx.m.chat, [targetUser], 'demote');
-
-      // Modo compacto: solo reacción
-      if (ctx.handler.isCompactMode(ctx.m.chat)) {
-        await ctx.m.react('📉');
-      } else {
-        const userName = targetUser.split('@')[0];
-        await ctx.m.reply(`✅ @${userName} ya no es administrador. 📉`);
-      }
-    } catch (error) {
-      console.error('Error en demote:', error);
-      await ctx.m.react('❌');
-      if (!ctx.handler.isCompactMode(ctx.m.chat)) {
-        await ctx.m.reply('❌ No pude quitar admin a ese usuario. Verifica que tengo permisos.');
-      }
-    }
-  }
+  handler: (ctx) => moderate(ctx, 'demote'),
 };
 
-/**
- * Plugin: Kick - Expulsar a un usuario del grupo
- */
-const kickPlugin: PluginHandler = {
-  command: ['kick', 'expulsar', 'ban', 'remove'],
+export const kickPlugin: PluginHandler = {
+  command: ['kick', 'expulsar', 'ban'],
   tags: ['grupo', 'admin'],
-  help: ['kick @usuario - Expulsa a un usuario del grupo'],
+  help: ['kick @usuario [@otro...] - Expulsa a los mencionados'],
   group: true,
   admin: true,
   botAdmin: true,
-
-  handler: async (ctx) => {
-    const targetUser = getTargetUser(ctx);
-
-    if (!targetUser) {
-      await ctx.m.reply('❌ Menciona o responde al mensaje de alguien para expulsarlo.\n\n📝 Ejemplo: /kick @usuario');
-      return;
-    }
-
-    // Verificar que no sea el mismo
-    if (targetUser === ctx.m.sender) {
-      await ctx.m.reply('❌ No puedes expulsarte a ti mismo. Usa /leave si quieres salir.');
-      return;
-    }
-
-    // Verificar que esté en el grupo
-    if (!ctx.participants?.includes(targetUser)) {
-      await ctx.m.reply('❌ Ese usuario no está en el grupo.');
-      return;
-    }
-
-    // No permitir expulsar admins (a menos que sea owner)
-    if (ctx.groupAdmins?.includes(targetUser) && !ctx.isOwner) {
-      await ctx.m.reply('❌ No puedes expulsar a un administrador.');
-      return;
-    }
-
-    try {
-      await ctx.conn.groupParticipantsUpdate(ctx.m.chat, [targetUser], 'remove');
-
-      // Modo compacto: solo reacción
-      if (ctx.handler.isCompactMode(ctx.m.chat)) {
-        await ctx.m.react('🚪');
-      } else {
-        const userName = targetUser.split('@')[0];
-        await ctx.m.reply(`✅ @${userName} ha sido expulsado del grupo. 🚪`);
-      }
-    } catch (error) {
-      console.error('Error en kick:', error);
-      await ctx.m.react('❌');
-      if (!ctx.handler.isCompactMode(ctx.m.chat)) {
-        await ctx.m.reply('❌ No pude expulsar a ese usuario. Verifica que tengo permisos.');
-      }
-    }
-  }
+  handler: (ctx) => moderate(ctx, 'kick'),
 };
 
-/**
- * Registra los plugins de administración
- */
+/** @deprecated plugins/index.ts debe registrar promotePlugin, demotePlugin y kickPlugin desde ENTRIES.grupos. */
 export function registerGroupAdminPlugins(handler: MessageHandler): void {
-  handler.registerPlugin('promote', promotePlugin);
-  handler.registerPlugin('demote', demotePlugin);
-  handler.registerPlugin('kick', kickPlugin);
+  handler.registerPlugin('group-promote', promotePlugin);
+  handler.registerPlugin('group-demote', demotePlugin);
+  handler.registerPlugin('group-kick', kickPlugin);
 }

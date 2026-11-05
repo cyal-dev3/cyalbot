@@ -29,7 +29,8 @@ const log = createLogger('whatsapp');
 // Baileys es muy ruidoso; sus logs se silencian y se usan los nuestros.
 const baileysLogger = pino({ level: 'silent' });
 
-export const msgRetryCounterCache = new NodeCache({ stdTTL: 300, useClones: false, maxKeys: 5000 });
+// Contador de reintentos de descifrado que Baileys comparte entre reconexiones.
+const msgRetryCounterCache = new NodeCache({ stdTTL: 300, useClones: false, maxKeys: 5000 });
 
 let pairingTimeout: NodeJS.Timeout | null = null;
 let rl: readline.Interface | null = null;

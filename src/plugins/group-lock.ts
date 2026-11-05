@@ -1,15 +1,11 @@
-/**
- * Plugin de Cerrar/Abrir Grupo
- * Comandos: close, open, cerrar, abrir
- */
-
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler } from '../types/message.js';
+import { createLogger } from '../lib/logger.js';
+import { invalidateGroupMetadata } from '../lib/group-events.js';
 
-/**
- * Plugin: Close - Cerrar el grupo (solo admins pueden enviar mensajes)
- */
-const closePlugin: PluginHandler = {
+const log = createLogger('grupos');
+
+export const closePlugin: PluginHandler = {
   command: ['close', 'cerrar', 'cerrargrupo'],
   tags: ['grupo', 'admin'],
   help: ['close - Cierra el grupo (solo admins pueden escribir)'],
@@ -20,18 +16,16 @@ const closePlugin: PluginHandler = {
   handler: async (ctx) => {
     try {
       await ctx.conn.groupSettingUpdate(ctx.m.chat, 'announcement');
+      invalidateGroupMetadata(ctx.m.chat);
       await ctx.m.reply('🔒 *Grupo cerrado*\n\nSolo los administradores pueden enviar mensajes.');
     } catch (error) {
-      console.error('Error al cerrar grupo:', error);
-      await ctx.m.reply('❌ No pude cerrar el grupo. Verifica que tengo permisos de administrador.');
+      log.warn(`close en ${ctx.m.chat}:`, error instanceof Error ? error.message : error);
+      await ctx.m.reply('❌ No pude cerrar el grupo. Verifica que sigo siendo administrador.');
     }
-  }
+  },
 };
 
-/**
- * Plugin: Open - Abrir el grupo (todos pueden enviar mensajes)
- */
-const openPlugin: PluginHandler = {
+export const openPlugin: PluginHandler = {
   command: ['open', 'abrir', 'abrirgrupo'],
   tags: ['grupo', 'admin'],
   help: ['open - Abre el grupo (todos pueden escribir)'],
@@ -42,17 +36,16 @@ const openPlugin: PluginHandler = {
   handler: async (ctx) => {
     try {
       await ctx.conn.groupSettingUpdate(ctx.m.chat, 'not_announcement');
+      invalidateGroupMetadata(ctx.m.chat);
       await ctx.m.reply('🔓 *Grupo abierto*\n\nTodos los participantes pueden enviar mensajes.');
     } catch (error) {
-      console.error('Error al abrir grupo:', error);
-      await ctx.m.reply('❌ No pude abrir el grupo. Verifica que tengo permisos de administrador.');
+      log.warn(`open en ${ctx.m.chat}:`, error instanceof Error ? error.message : error);
+      await ctx.m.reply('❌ No pude abrir el grupo. Verifica que sigo siendo administrador.');
     }
-  }
+  },
 };
 
-/**
- * Registra los plugins de cerrar/abrir grupo
- */
+/** @deprecated plugins/index.ts debe registrar closePlugin y openPlugin desde ENTRIES.grupos. */
 export function registerGroupLockPlugins(handler: MessageHandler): void {
   handler.registerPlugin('group-close', closePlugin);
   handler.registerPlugin('group-open', openPlugin);

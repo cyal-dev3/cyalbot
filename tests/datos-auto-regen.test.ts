@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { regenUser, msUntilNextPoint, regenConfig } from '../src/lib/auto-regen.js';
+import { regenUser, msUntilNextPoint, regenConfig, applyRegenToAllUsers } from '../src/lib/auto-regen.js';
+import { initDatabase } from '../src/lib/database.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DEFAULT_USER } from '../src/types/user.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -29,7 +33,8 @@ test('regenUser regenera puntos completos y conserva el resto del tiempo', () =>
   assert.equal(result.updates.lastHealthRegen, user.lastHealthRegen + result.healthRegen * pointMs);
   assert.equal(result.staminaRegen, 0);
   assert.equal(result.updates.stamina, undefined);
-  assert.equal(result.updates.lastStaminaRegen, undefined);
+  // Al máximo no regenera, pero el timestamp avanza los intervalos completos (3 h exactas)
+  assert.equal(result.updates.lastStaminaRegen, now);
 });
 
 test('regenUser no supera el máximo real ni regenera antes de un punto completo', () => {
@@ -53,4 +58,41 @@ test('msUntilNextPoint usa el resto del intervalo por punto', () => {
   assert.equal(msUntilNextPoint(now - pointMs * 3 - 1000, regenConfig.healthPerHour, now), pointMs - 1000);
   assert.equal(msUntilNextPoint(0, regenConfig.healthPerHour, now), pointMs);
   assert.equal(msUntilNextPoint(now, 0, now), 0);
+});
+
+test('regenUser avanza el timestamp con el stat al máximo para no acumular regeneración', () => {
+  const user = structuredClone(DEFAULT_USER);
+  const now = 1_700_000_000_000;
+  user.lastHealthRegen = now - 10 * HOUR;
+  user.lastStaminaRegen = now - 1000;
+
+  const full = regenUser(user, now);
+  assert.equal(full.healthRegen, 0);
+  assert.equal(full.updates.health, undefined);
+  assert.equal(full.updates.lastHealthRegen, now - 10 * HOUR + 10 * regenConfig.healthPerHour * pointMs);
+  // Antes de completar un intervalo no hay nada que cambiar (no marca dirty cada minuto)
+  assert.equal(Object.hasOwn(full.updates, 'lastStaminaRegen'), false);
+
+  user.lastHealthRegen = full.updates.lastHealthRegen as number;
+  user.health = 1;
+  const hurt = regenUser(user, now + 1000);
+  assert.equal(hurt.healthRegen, 0);
+});
+
+test('el barrido inicializa los timestamps de los usuarios al máximo', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cyalbot-regen-'));
+  const db = await initDatabase(join(dir, 'database.json'));
+  try {
+    const jid = 'full@s.whatsapp.net';
+    db.updateUser(jid, { registered: true, lastHealthRegen: 0, lastStaminaRegen: 0 });
+    // Un usuario corrupto en la lista no debe impedir que se procese al resto
+    db.data.users['roto@s.whatsapp.net'] = { registered: true } as never;
+    const before = Date.now();
+    applyRegenToAllUsers();
+    assert.ok(db.getUser(jid).lastHealthRegen >= before);
+    assert.ok(db.getUser(jid).lastStaminaRegen >= before);
+  } finally {
+    await db.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

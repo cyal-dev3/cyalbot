@@ -1,30 +1,26 @@
-/**
- * Plugin de Economía Avanzada - RPG
- * Comandos: banco, transferir, esclavizar, pasivo
- * Sistema de economía extendido con protección, esclavitud y modo pasivo
- */
-
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { getDatabase } from '../lib/database.js';
-import { EMOJI, formatNumber, randomInt, pickRandom } from '../lib/utils.js';
+import { getDatabase, type Database } from '../lib/database.js';
+import { EMOJI, formatNumber, randomInt, pickRandom, parseAmount, msToTime, mentionTag } from '../lib/utils.js';
 import type { UserRPG } from '../types/user.js';
+import { COOLDOWNS } from '../constants/rpg.js';
+import { isPassiveActive, isEnslaved, SLAVERY_CUT, usageError } from '../lib/rpg-actions.js';
+import { updateQuestProgress } from '../lib/quests.js';
 
-// Constantes de economía
-const BANK_DURATION = 24 * 60 * 60 * 1000; // 24 horas
-const BANK_MAX_AMOUNT = 100000; // Máximo a depositar
-const TRANSFER_MIN_COMMISSION = 1; // 1% mínimo
-const TRANSFER_MAX_COMMISSION = 15; // 15% máximo
-const PASSIVE_MODE_COOLDOWN = 6 * 60 * 60 * 1000; // 6 horas para cambiar modo
-const SLAVERY_DURATION = 4 * 60 * 60 * 1000; // 4 horas de esclavitud
-const SLAVERY_COST = 10000; // Costo para esclavizar
-const SLAVERY_CUT = 50; // 50% del trabajo del esclavo va al dueño
-const DEBT_INTEREST_RATE = 0.05; // 5% de interés diario
-const DEBT_INTEREST_INTERVAL = 24 * 60 * 60 * 1000; // Cada 24 horas
-const DEBT_SEIZURE_THRESHOLD = 20000; // Si la deuda supera esto, se confiscan items
+export { isPassiveActive, SLAVERY_CUT };
 
-/**
- * Mensajes de transferencia
- */
+/** Tiempo que el dinero del banco queda protegido tras cada depósito */
+export const BANK_DURATION = 24 * 60 * 60 * 1000;
+/** Tope de saldo en el banco: no se puede depositar por encima */
+export const BANK_MAX_AMOUNT = 100000;
+export const TRANSFER_MIN_COMMISSION = 1;
+export const TRANSFER_MAX_COMMISSION = 15;
+export const SLAVERY_DURATION = 4 * 60 * 60 * 1000;
+export const SLAVERY_COST = 10000;
+export const MAX_SLAVES = 3;
+export const DEBT_INTEREST_RATE = 0.05;
+export const DEBT_INTEREST_INTERVAL = 24 * 60 * 60 * 1000;
+export const DEBT_SEIZURE_THRESHOLD = 20000;
+
 const TRANSFER_MESSAGES = [
   '💸 *{sender}* le transfirió *${amount}* cyalopesos a *{receiver}*!',
   '💰 *{sender}* envió *${amount}* cyalopesos a *{receiver}*!',
@@ -32,9 +28,6 @@ const TRANSFER_MESSAGES = [
   '💵 *{receiver}* recibió *${amount}* cyalopesos de *{sender}*!'
 ];
 
-/**
- * Mensajes de esclavitud
- */
 const SLAVERY_MESSAGES = [
   '⛓️ *{victim}* ahora es esclavo de *{master}* por 4 horas!',
   '🔗 *{master}* ha esclavizado a *{victim}*! Sus ganancias ahora son compartidas.',
@@ -43,253 +36,228 @@ const SLAVERY_MESSAGES = [
 ];
 
 /**
- * Obtiene el JID del usuario objetivo
+ * Deja coherentes los timestamps de la deuda: si hay deuda y faltan, se fijan a
+ * `now`; si ya no hay deuda, se limpian para que una deuda futura no arrastre
+ * intereses de la anterior. Muta `user`; devuelve true si cambió algo.
  */
-function getTargetUser(ctx: MessageContext): string | null {
-  if (ctx.m.mentionedJid.length > 0) {
-    return ctx.m.mentionedJid[0];
+export function ensureDebtTimestamps(user: UserRPG, now: number = Date.now()): boolean {
+  if (user.debt > 0) {
+    let changed = false;
+    if (!user.debtCreatedAt) {
+      user.debtCreatedAt = now;
+      changed = true;
+    }
+    if (!user.debtInterestApplied) {
+      user.debtInterestApplied = user.debtCreatedAt;
+      changed = true;
+    }
+    return changed;
   }
-  if (ctx.m.quoted?.sender) {
-    return ctx.m.quoted.sender;
+  if (user.debtCreatedAt || user.debtInterestApplied) {
+    user.debtCreatedAt = 0;
+    user.debtInterestApplied = 0;
+    return true;
   }
-  return null;
+  return false;
 }
 
-/**
- * Aplica intereses a la deuda si corresponde
- */
-export function applyDebtInterest(db: ReturnType<typeof getDatabase>, userJid: string, user: UserRPG): {
+export interface DebtInterestResult {
   interestApplied: boolean;
   interestAmount: number;
   newDebt: number;
   itemsSeized: string[];
-} {
-  const now = Date.now();
-  const result = {
-    interestApplied: false,
-    interestAmount: 0,
-    newDebt: user.debt,
-    itemsSeized: [] as string[]
-  };
-
-  // No hay deuda
-  if (user.debt <= 0) return result;
-
-  // Verificar si debemos aplicar intereses
-  const lastInterest = user.debtInterestApplied || user.debtCreatedAt || now;
-  const timeSinceInterest = now - lastInterest;
-
-  if (timeSinceInterest >= DEBT_INTEREST_INTERVAL) {
-    // Calcular cuántos períodos de interés han pasado
-    const periods = Math.floor(timeSinceInterest / DEBT_INTEREST_INTERVAL);
-    const interestAmount = Math.floor(user.debt * DEBT_INTEREST_RATE * periods);
-    const newDebt = user.debt + interestAmount;
-
-    result.interestApplied = true;
-    result.interestAmount = interestAmount;
-    result.newDebt = newDebt;
-
-    // Confiscar items si la deuda es muy alta
-    if (newDebt >= DEBT_SEIZURE_THRESHOLD && user.inventory.length > 0) {
-      // Confiscar un item aleatorio
-      const randomIndex = randomInt(0, user.inventory.length - 1);
-      const seizedItem = user.inventory[randomIndex];
-      result.itemsSeized.push(seizedItem.itemId);
-
-      // Remover item del inventario
-      const newInventory = [...user.inventory];
-      newInventory.splice(randomIndex, 1);
-
-      db.updateUser(userJid, {
-        debt: newDebt,
-        debtInterestApplied: now,
-        inventory: newInventory
-      });
-    } else {
-      db.updateUser(userJid, {
-        debt: newDebt,
-        debtInterestApplied: now
-      });
-    }
-  }
-
-  return result;
 }
 
 /**
- * Plugin: Banco - Deposita dinero protegido por 24h
+ * Aplica el interés diario acumulado desde la última aplicación. El timestamp
+ * avanza solo los periodos cobrados, así no se pierde la fracción de día.
  */
+export function applyDebtInterest(db: Database, jid: string, user: UserRPG, now: number = Date.now()): DebtInterestResult {
+  const result: DebtInterestResult = { interestApplied: false, interestAmount: 0, newDebt: user.debt, itemsSeized: [] };
+
+  if (ensureDebtTimestamps(user, now)) {
+    db.updateUser(jid, { debtCreatedAt: user.debtCreatedAt, debtInterestApplied: user.debtInterestApplied });
+  }
+  if (user.debt <= 0) return result;
+
+  const periods = Math.floor((now - user.debtInterestApplied) / DEBT_INTEREST_INTERVAL);
+  if (periods <= 0) return result;
+
+  // Interés simple por periodo sobre la deuda al inicio del tramo
+  const interestAmount = Math.floor(user.debt * DEBT_INTEREST_RATE * periods);
+  const newDebt = user.debt + interestAmount;
+  const updates: Partial<UserRPG> = {
+    debt: newDebt,
+    debtInterestApplied: user.debtInterestApplied + periods * DEBT_INTEREST_INTERVAL
+  };
+
+  if (newDebt >= DEBT_SEIZURE_THRESHOLD && user.inventory.length > 0) {
+    const index = randomInt(0, user.inventory.length - 1);
+    result.itemsSeized.push(user.inventory[index].itemId);
+    updates.inventory = user.inventory.filter((_, i) => i !== index);
+  }
+
+  db.updateUser(jid, updates);
+  result.interestApplied = true;
+  result.interestAmount = interestAmount;
+  result.newDebt = newDebt;
+  return result;
+}
+
+/** Esclavos vigentes que siguen reconociendo a `jid` como amo */
+export function getActiveSlaves(db: Database, jid: string, now: number = Date.now()): string[] {
+  const user = db.getUser(jid);
+  return user.slaves.filter(slaveJid => {
+    const slave = db.getUser(slaveJid);
+    return slave.slaveMaster === jid && slave.slaveUntil > now;
+  });
+}
+
+export type AmountResolution = { amount: number } | { error: string };
+
+/** Cantidad a depositar respetando efectivo y el tope del banco */
+export function resolveDepositAmount(user: UserRPG, raw: string | undefined): AmountResolution {
+  const room = Math.max(0, BANK_MAX_AMOUNT - user.bank);
+  const amount = parseAmount(raw, Math.min(user.money, room));
+  if (amount === null || amount <= 0) return { error: 'Cantidad inválida.' };
+  if (amount > user.money) return { error: `No tienes suficiente efectivo (tienes $${formatNumber(user.money)}).` };
+  if (room <= 0) return { error: `Tu banco ya está al tope de $${formatNumber(BANK_MAX_AMOUNT)}.` };
+  if (amount > room) return { error: `Solo caben $${formatNumber(room)} más (tope $${formatNumber(BANK_MAX_AMOUNT)}).` };
+  return { amount };
+}
+
+/** Cantidad a retirar; sin argumento retira todo */
+export function resolveWithdrawAmount(user: UserRPG, raw: string | undefined): AmountResolution {
+  if (user.bank <= 0) return { error: 'No tienes dinero en el banco.' };
+  const amount = raw ? parseAmount(raw, user.bank) : user.bank;
+  if (amount === null || amount <= 0) return { error: 'Cantidad inválida.' };
+  if (amount > user.bank) return { error: `Solo tienes $${formatNumber(user.bank)} en el banco.` };
+  return { amount };
+}
+
+export function resolveTransferAmount(sender: UserRPG, raw: string | undefined): AmountResolution {
+  const amount = parseAmount(raw, sender.money);
+  if (amount === null || amount <= 0) return { error: 'Cantidad inválida.' };
+  if (amount > sender.money) return { error: `No tienes suficiente efectivo (tienes $${formatNumber(sender.money)}; el banco no se transfiere).` };
+  return { amount };
+}
+
+/** Comisión esperada de una transferencia (media del rango aleatorio), en % */
+export const TRANSFER_EXPECTED_COMMISSION = Math.round((TRANSFER_MIN_COMMISSION + TRANSFER_MAX_COMMISSION) / 2);
+
+async function notifyDebtInterest(ctx: MessageContext, result: DebtInterestResult): Promise<void> {
+  if (!result.interestApplied) return;
+  await ctx.m.reply(
+    `⚠️ *AVISO DEL IMSS*\n\n` +
+    `Se han aplicado intereses a tu deuda:\n` +
+    `📈 Interés: +$${formatNumber(result.interestAmount)}\n` +
+    `📋 Deuda total: $${formatNumber(result.newDebt)}` +
+    (result.itemsSeized.length > 0 ? `\n\n🚨 *CONFISCACIÓN:* El IMSS confiscó: ${result.itemsSeized.join(', ')}` : '')
+  );
+}
+
 export const bancoPlugin: PluginHandler = {
   command: ['banco', 'bank', 'depositar'],
   tags: ['rpg'],
   help: [
-    'banco <cantidad> - Deposita dinero en el banco',
-    'banco retirar - Retira todo tu dinero del banco',
-    'banco ver - Ve tu saldo bancario',
-    'El dinero en el banco está protegido de robos por 24h',
-    'Máximo a depositar: $100,000'
+    'banco - Ver tu saldo bancario',
+    'banco depositar <cantidad> - Depositar (también: banco 5000)',
+    'banco retirar [cantidad] - Retirar (sin cantidad retira todo)',
+    `El dinero del banco está protegido de robos ${BANK_DURATION / 3600000}h tras cada depósito`,
+    `Tope del banco: $${formatNumber(BANK_MAX_AMOUNT)}. Cantidades: 5000, 1k, 50%, todo, mitad`
   ],
+  usage: ['banco', 'banco depositar <cantidad>', 'banco retirar [cantidad]'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, command, usedPrefix } = ctx;
     const db = getDatabase();
-    const user = db.getUser(m.sender);
     const now = Date.now();
 
-    // Verificar y aplicar intereses a la deuda
-    const debtResult = applyDebtInterest(db, m.sender, user);
-    if (debtResult.interestApplied) {
-      await m.reply(
-        `⚠️ *AVISO DEL IMSS*\n\n` +
-        `Se han aplicado intereses a tu deuda:\n` +
-        `📈 Interés: +$${formatNumber(debtResult.interestAmount)}\n` +
-        `📋 Deuda total: $${formatNumber(debtResult.newDebt)}\n` +
-        (debtResult.itemsSeized.length > 0
-          ? `\n🚨 *CONFISCACIÓN:* El IMSS confiscó: ${debtResult.itemsSeized.join(', ')}`
-          : '')
-      );
+    await notifyDebtInterest(ctx, applyDebtInterest(db, m.sender, db.getUser(m.sender), now));
+    const user = db.getUser(m.sender);
+
+    // "/depositar 5000" y "/banco 5000" son atajos de "banco depositar 5000"
+    let action = (args[0] ?? '').toLowerCase();
+    let rawAmount = args[1];
+    if (command.toLowerCase() === 'depositar' && action !== 'retirar' && action !== 'ver') {
+      rawAmount = args[0];
+      action = 'depositar';
+    } else if (action && parseAmount(action, user.money) !== null) {
+      rawAmount = action;
+      action = 'depositar';
     }
 
-    // Refrescar usuario después de aplicar intereses
-    const freshUser = db.getUser(m.sender);
-
-    const action = args[0]?.toLowerCase();
-
-    // Ver saldo bancario
     if (!action || action === 'ver' || action === 'saldo') {
-      const bankExpired = freshUser.bankDepositTime > 0 && now > freshUser.bankDepositTime + BANK_DURATION;
-      const timeLeft = freshUser.bankDepositTime > 0
-        ? Math.max(0, (freshUser.bankDepositTime + BANK_DURATION) - now)
-        : 0;
-      const hoursLeft = Math.ceil(timeLeft / (60 * 60 * 1000));
+      const protectedUntil = user.bankDepositTime + BANK_DURATION;
+      let text = `🏦 *BANCO CYALTRONIC*\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `👤 Titular: *${user.name}*\n` +
+        `💰 Efectivo: *$${formatNumber(user.money)}*\n` +
+        `🏦 En banco: *$${formatNumber(user.bank)}* / $${formatNumber(BANK_MAX_AMOUNT)}\n\n`;
 
-      let response = `🏦 *BANCO CYALTRONIC*\n`;
-      response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-      response += `👤 Titular: *${freshUser.name}*\n`;
-      response += `💰 Efectivo: *$${formatNumber(freshUser.money)}*\n`;
-      response += `🏦 En banco: *$${formatNumber(freshUser.bank)}*\n\n`;
-
-      if (freshUser.bank > 0) {
-        if (bankExpired) {
-          response += `⚠️ *Protección expirada*\n`;
-          response += `_Tu dinero ya puede ser robado_\n`;
-          response += `💡 Retíralo o deposita de nuevo`;
-        } else {
-          response += `🛡️ *Protección activa*\n`;
-          response += `⏳ Tiempo restante: *${hoursLeft}h*\n`;
-          response += `_Tu dinero está seguro_`;
-        }
+      if (user.bank > 0) {
+        text += now < protectedUntil
+          ? `🛡️ *Protección activa* · ⏳ ${msToTime(protectedUntil - now)}\n_Tu dinero está seguro_`
+          : `⚠️ *Protección expirada*\n_Vuelve a depositar para renovarla_`;
       } else {
-        response += `💡 Usa */banco <cantidad>* para depositar`;
+        text += `💡 Usa *${usedPrefix}banco depositar <cantidad>* para proteger tu dinero`;
       }
-
-      await m.reply(response);
-      return;
+      return m.reply(text);
     }
 
-    // Retirar dinero
-    if (action === 'retirar' || action === 'withdraw' || action === 'sacar') {
-      if (freshUser.bank <= 0) {
-        await m.reply(`${EMOJI.error} No tienes dinero en el banco para retirar.`);
-        return;
-      }
+    if (['retirar', 'sacar', 'withdraw'].includes(action)) {
+      const resolved = resolveWithdrawAmount(user, rawAmount);
+      if ('error' in resolved) return usageError(ctx, bancoPlugin, resolved.error);
 
-      const amountToWithdraw = freshUser.bank;
       db.updateUser(m.sender, {
-        money: freshUser.money + amountToWithdraw,
-        bank: 0,
-        bankDepositTime: 0
+        money: user.money + resolved.amount,
+        bank: user.bank - resolved.amount,
+        bankDepositTime: user.bank - resolved.amount > 0 ? user.bankDepositTime : 0
       });
 
       await m.reply(
         `🏦 *RETIRO EXITOSO*\n\n` +
-        `💵 Retiraste: *$${formatNumber(amountToWithdraw)}*\n` +
-        `💰 Nuevo saldo en efectivo: *$${formatNumber(freshUser.money + amountToWithdraw)}*\n\n` +
-        `⚠️ _Tu dinero ya no está protegido de robos_`
+        `💵 Retiraste: *$${formatNumber(resolved.amount)}*\n` +
+        `💰 Efectivo: *$${formatNumber(user.money + resolved.amount)}*\n` +
+        `🏦 Queda en banco: *$${formatNumber(user.bank - resolved.amount)}*\n\n` +
+        `⚠️ _El efectivo no está protegido de robos_`
       );
-      await m.react('💵');
-      return;
+      return m.react('💵');
     }
 
-    // Depositar dinero
-    const amount = parseInt(args[0]);
+    if (['depositar', 'deposit'].includes(action)) {
+      const resolved = resolveDepositAmount(user, rawAmount);
+      if ('error' in resolved) return usageError(ctx, bancoPlugin, resolved.error);
 
-    if (isNaN(amount) || amount <= 0) {
+      db.updateUser(m.sender, {
+        money: user.money - resolved.amount,
+        bank: user.bank + resolved.amount,
+        bankDepositTime: now
+      });
+
       await m.reply(
-        `${EMOJI.error} Cantidad inválida.\n\n` +
-        `📝 *Uso:*\n` +
-        `• /banco <cantidad> - Depositar\n` +
-        `• /banco retirar - Retirar todo\n` +
-        `• /banco ver - Ver saldo`
+        `🏦 *DEPÓSITO EXITOSO*\n\n` +
+        `💵 Depositaste: *$${formatNumber(resolved.amount)}*\n` +
+        `🏦 Saldo en banco: *$${formatNumber(user.bank + resolved.amount)}* / $${formatNumber(BANK_MAX_AMOUNT)}\n` +
+        `💰 Efectivo restante: *$${formatNumber(user.money - resolved.amount)}*\n\n` +
+        `🛡️ *Protegido de robos por ${BANK_DURATION / 3600000}h*`
       );
-      return;
+      return m.react('🏦');
     }
 
-    if (amount > freshUser.money) {
-      await m.reply(
-        `${EMOJI.error} No tienes suficiente dinero.\n\n` +
-        `💰 Tu dinero: *$${formatNumber(freshUser.money)}*\n` +
-        `💵 Intentas depositar: *$${formatNumber(amount)}*`
-      );
-      return;
-    }
-
-    const newBankTotal = freshUser.bank + amount;
-
-    // Calcular comisión si excede el límite
-    const COMMISSION_RATE = 0.10; // 10% de comisión
-    let commission = 0;
-    let amountAfterCommission = amount;
-
-    if (newBankTotal > BANK_MAX_AMOUNT) {
-      // Calcular cuánto excede el límite
-      const excessAmount = newBankTotal - BANK_MAX_AMOUNT;
-      commission = Math.floor(excessAmount * COMMISSION_RATE);
-      amountAfterCommission = amount - commission;
-    }
-
-    const finalBankTotal = freshUser.bank + amountAfterCommission;
-
-    db.updateUser(m.sender, {
-      money: freshUser.money - amount,
-      bank: finalBankTotal,
-      bankDepositTime: now
-    });
-
-    let response = `🏦 *DEPÓSITO EXITOSO*\n\n` +
-      `💵 Depositaste: *$${formatNumber(amount)}*\n`;
-
-    if (commission > 0) {
-      response += `📉 Comisión (${COMMISSION_RATE * 100}% sobre exceso de ${formatNumber(BANK_MAX_AMOUNT)}): *-$${formatNumber(commission)}*\n` +
-        `✅ Depositado efectivo: *$${formatNumber(amountAfterCommission)}*\n`;
-    }
-
-    response += `🏦 Saldo en banco: *$${formatNumber(finalBankTotal)}*\n` +
-      `💰 Efectivo restante: *$${formatNumber(freshUser.money - amount)}*\n\n` +
-      `🛡️ *Tu dinero está protegido por 24h*\n` +
-      `_Nadie puede robarte lo del banco_`;
-
-    if (commission > 0) {
-      response += `\n\n⚠️ _Los depósitos superiores a $${formatNumber(BANK_MAX_AMOUNT)} tienen comisión._`;
-    }
-
-    await m.reply(response);
-    await m.react('🏦');
+    return usageError(ctx, bancoPlugin);
   }
 };
 
-/**
- * Plugin: Transferir - Transfiere dinero a otro usuario
- */
 export const transferirPlugin: PluginHandler = {
   command: ['transferir', 'transfer', 'enviar', 'pay'],
   tags: ['rpg'],
   help: [
-    'transferir @usuario <cantidad> - Transfiere cyalopesos',
-    'Comisión aleatoria del 1-15%',
-    'No puedes transferir dinero del banco'
+    'transferir @usuario <cantidad> - Transfiere cyalopesos (1k, 50%, todo...)',
+    `Comisión aleatoria del ${TRANSFER_MIN_COMMISSION}% al ${TRANSFER_MAX_COMMISSION}% (≈${TRANSFER_EXPECTED_COMMISSION}%)`,
+    'Solo se transfiere efectivo, no el dinero del banco'
   ],
+  usage: ['transferir @usuario <cantidad>'],
   register: true,
   group: true,
 
@@ -298,242 +266,144 @@ export const transferirPlugin: PluginHandler = {
     const db = getDatabase();
     const sender = db.getUser(m.sender);
 
-    // Obtener destinatario
-    const targetJid = getTargetUser(ctx);
-
-    if (!targetJid) {
-      await m.reply(
-        `${EMOJI.error} ¿A quién quieres transferir?\n\n` +
-        `📝 *Uso:* /transferir @usuario <cantidad>`
-      );
-      return;
-    }
-
-    if (targetJid === m.sender) {
-      await m.reply(`${EMOJI.error} No puedes transferirte dinero a ti mismo.`);
-      return;
-    }
+    const targetJid = ctx.target();
+    if (!targetJid) return usageError(ctx, transferirPlugin, '¿A quién quieres transferir? Menciona o responde a alguien.');
 
     const receiver = db.getUser(targetJid);
+    if (!receiver.registered) return m.reply(`${EMOJI.error} Ese usuario no está registrado.`);
 
-    if (!receiver.registered) {
-      await m.reply(`${EMOJI.error} Ese usuario no está registrado.`);
-      return;
+    const rawAmount = args.find(arg => !arg.startsWith('@'));
+    const resolved = resolveTransferAmount(sender, rawAmount);
+    if ('error' in resolved) {
+      return usageError(ctx, transferirPlugin, `${resolved.error} Comisión esperada: ≈${TRANSFER_EXPECTED_COMMISSION}%.`);
     }
 
-    // Obtener cantidad (puede ser el segundo argumento si el primero es la mención)
-    const amountStr = args.find(arg => !arg.startsWith('@') && !isNaN(parseInt(arg)));
-    const amount = parseInt(amountStr || '0');
-
-    if (isNaN(amount) || amount <= 0) {
-      await m.reply(
-        `${EMOJI.error} Cantidad inválida.\n\n` +
-        `📝 *Uso:* /transferir @usuario <cantidad>\n` +
-        `💡 Ejemplo: /transferir @amigo 1000`
-      );
-      return;
-    }
-
-    if (amount > sender.money) {
-      await m.reply(
-        `${EMOJI.error} No tienes suficiente dinero en efectivo.\n\n` +
-        `💰 Tu efectivo: *$${formatNumber(sender.money)}*\n` +
-        `💵 Intentas enviar: *$${formatNumber(amount)}*\n\n` +
-        `⚠️ _El dinero del banco no se puede transferir_`
-      );
-      return;
-    }
-
-    // Calcular comisión aleatoria
     const commissionRate = randomInt(TRANSFER_MIN_COMMISSION, TRANSFER_MAX_COMMISSION);
-    const commission = Math.floor(amount * commissionRate / 100);
-    const finalAmount = amount - commission;
+    const commission = Math.floor(resolved.amount * commissionRate / 100);
+    const finalAmount = resolved.amount - commission;
 
-    // Realizar transferencia
-    db.updateUser(m.sender, {
-      money: sender.money - amount
-    });
-
-    db.updateUser(targetJid, {
-      money: receiver.money + finalAmount
-    });
+    db.updateUser(m.sender, { money: sender.money - resolved.amount });
+    db.updateUser(targetJid, { money: receiver.money + finalAmount });
+    const questLines = updateQuestProgress(db, m.sender, 'transfer', resolved.amount).lines;
 
     const message = pickRandom(TRANSFER_MESSAGES)
       .replace(/{sender}/g, sender.name)
-      .replace(/{receiver}/g, receiver.name)
+      .replace(/{receiver}/g, mentionTag(targetJid))
       .replace(/{amount}/g, formatNumber(finalAmount));
 
-    let response = message + '\n\n';
-    response += `📊 *DETALLE DE TRANSFERENCIA*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `💵 Monto enviado: *$${formatNumber(amount)}*\n`;
-    response += `📉 Comisión (${commissionRate}%): *-$${formatNumber(commission)}*\n`;
-    response += `✅ Monto recibido: *$${formatNumber(finalAmount)}*\n\n`;
-    response += `💰 Tu nuevo saldo: *$${formatNumber(sender.money - amount)}*`;
-
-    await m.reply(response);
+    await ctx.send({
+      text: `${message}\n\n` +
+        `📊 *DETALLE DE TRANSFERENCIA*\n━━━━━━━━━━━━━━━━━━━━━\n` +
+        `💵 Monto enviado: *$${formatNumber(resolved.amount)}*\n` +
+        `📉 Comisión (${commissionRate}%): *-$${formatNumber(commission)}*\n` +
+        `✅ Monto recibido: *$${formatNumber(finalAmount)}*\n\n` +
+        `💰 Tu nuevo saldo: *$${formatNumber(sender.money - resolved.amount)}*` +
+        (questLines.length ? `\n\n${questLines.join('\n')}` : ''),
+      mentions: [targetJid]
+    });
     await m.react('💸');
   }
 };
 
-/**
- * Plugin: Esclavizar - Esclaviza a otro jugador
- */
 export const esclavizarPlugin: PluginHandler = {
   command: ['esclavizar', 'enslave', 'slave'],
   tags: ['rpg'],
   help: [
-    'esclavizar @usuario - Esclaviza a otro jugador por 4 horas',
-    'Costo: $10,000',
-    'Recibirás el 50% de lo que gane tu esclavo',
-    'El objetivo no puede estar en modo pasivo'
+    `esclavizar @usuario - Esclaviza a otro jugador por ${SLAVERY_DURATION / 3600000} horas`,
+    `Costo: $${formatNumber(SLAVERY_COST)}. Recibes el ${SLAVERY_CUT}% de lo que gane tu esclavo`,
+    `Máximo ${MAX_SLAVES} esclavos. No funciona con jugadores en modo pasivo`
   ],
+  usage: ['esclavizar @usuario'],
   register: true,
   group: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
     const master = db.getUser(m.sender);
     const now = Date.now();
 
-    // Verificar si el atacante está en modo pasivo
-    if (master.passiveMode && master.passiveModeUntil > now) {
-      await m.reply(
+    if (isPassiveActive(master, now)) {
+      return m.reply(
         `${EMOJI.error} Estás en *modo pasivo*.\n\n` +
         `🕊️ No puedes esclavizar a nadie mientras estés protegido.\n` +
-        `💡 Usa */pasivo* para desactivarlo (cooldown de 6h).`
+        `💡 Usa *${usedPrefix}pasivo* para desactivarlo.`
       );
-      return;
     }
 
-    // Verificar si ya tiene esclavos máximos (3)
-    const activeSlaves = master.slaves.filter(slaveJid => {
-      const slave = db.getUser(slaveJid);
-      return slave.slaveUntil > now;
-    });
-
-    if (activeSlaves.length >= 3) {
-      await m.reply(
-        `${EMOJI.error} Ya tienes el máximo de esclavos (3).\n\n` +
-        `⛓️ Esclavos actuales: ${activeSlaves.length}/3\n` +
+    const activeSlaves = getActiveSlaves(db, m.sender, now);
+    if (activeSlaves.length >= MAX_SLAVES) {
+      return m.reply(
+        `${EMOJI.error} Ya tienes el máximo de esclavos (${MAX_SLAVES}).\n\n` +
         `⏳ Espera a que expire la esclavitud de alguno.`
       );
-      return;
     }
 
-    // Obtener objetivo
-    const targetJid = getTargetUser(ctx);
-
-    if (!targetJid) {
-      await m.reply(
-        `${EMOJI.error} ¿A quién quieres esclavizar?\n\n` +
-        `📝 *Uso:* /esclavizar @usuario\n` +
-        `💰 Costo: *$${formatNumber(SLAVERY_COST)}*`
-      );
-      return;
-    }
-
-    if (targetJid === m.sender) {
-      await m.reply(`${EMOJI.error} No puedes esclavizarte a ti mismo... ¿o sí? 🤔`);
-      return;
-    }
+    const targetJid = ctx.target({ args });
+    if (!targetJid) return usageError(ctx, esclavizarPlugin, '¿A quién quieres esclavizar?');
 
     const target = db.getUser(targetJid);
+    if (!target.registered) return m.reply(`${EMOJI.error} Ese jugador no está registrado.`);
 
-    if (!target.registered) {
-      await m.reply(`${EMOJI.error} Ese jugador no está registrado.`);
-      return;
+    if (isPassiveActive(target, now)) {
+      return m.reply(`🕊️ *${target.name}* está en *modo pasivo*. No puedes esclavizar a jugadores protegidos.`);
     }
 
-    // Verificar si el objetivo está en modo pasivo
-    if (target.passiveMode && target.passiveModeUntil > now) {
-      await m.reply(
-        `🕊️ *${target.name}* está en *modo pasivo*.\n\n` +
-        `No puedes esclavizar a jugadores protegidos.`
-      );
-      return;
-    }
-
-    // Verificar si ya es esclavo de alguien
-    if (target.slaveMaster && target.slaveUntil > now) {
+    if (isEnslaved(target, now) && target.slaveMaster) {
       const currentMaster = db.getUser(target.slaveMaster);
-      await m.reply(
-        `⛓️ *${target.name}* ya es esclavo de *${currentMaster.name}*.\n\n` +
-        `⏳ Esclavitud expira en: *${Math.ceil((target.slaveUntil - now) / (60 * 60 * 1000))}h*`
+      return m.reply(
+        `⛓️ *${target.name}* ya es esclavo de *${currentMaster.name}*.\n` +
+        `⏳ Esclavitud expira en: *${msToTime(target.slaveUntil - now)}*`
       );
-      return;
     }
 
-    // Verificar si el atacante es esclavo del objetivo (no puedes esclavizar a tu amo)
-    if (master.slaveMaster === targetJid && master.slaveUntil > now) {
-      await m.reply(
+    if (isEnslaved(master, now) && master.slaveMaster === targetJid) {
+      return m.reply(
         `${EMOJI.error} No puedes esclavizar a tu amo.\n\n` +
-        `⛓️ *${target.name}* es tu dueño actual.\n` +
-        `💡 Primero debes comprar tu libertad con */liberar*`
+        `⛓️ *${target.name}* es tu dueño actual. Primero compra tu libertad con *${usedPrefix}liberar*.`
       );
-      return;
     }
 
-    // Verificar si tiene dinero para esclavizar
     if (master.money < SLAVERY_COST) {
-      await m.reply(
+      return m.reply(
         `${EMOJI.error} No tienes suficiente dinero.\n\n` +
         `💰 Tu dinero: *$${formatNumber(master.money)}*\n` +
         `💵 Costo: *$${formatNumber(SLAVERY_COST)}*`
       );
-      return;
     }
 
-    // Realizar la esclavización
-    const slaveUntil = now + SLAVERY_DURATION;
-
-    // Actualizar al amo
-    db.updateUser(m.sender, {
-      money: master.money - SLAVERY_COST,
-      slaves: [...master.slaves.filter(s => {
-        const slave = db.getUser(s);
-        return slave.slaveUntil > now;
-      }), targetJid]
-    });
-
-    // Actualizar al esclavo
-    db.updateUser(targetJid, {
-      slaveMaster: m.sender,
-      slaveUntil: slaveUntil
-    });
+    db.updateUser(m.sender, { money: master.money - SLAVERY_COST, slaves: [...activeSlaves, targetJid] });
+    db.updateUser(targetJid, { slaveMaster: m.sender, slaveUntil: now + SLAVERY_DURATION });
+    const questLines = updateQuestProgress(db, m.sender, 'spend', SLAVERY_COST).lines;
 
     const message = pickRandom(SLAVERY_MESSAGES)
       .replace(/{master}/g, master.name)
-      .replace(/{victim}/g, target.name);
+      .replace(/{victim}/g, mentionTag(targetJid));
 
-    let response = message + '\n\n';
-    response += `⛓️ *CONTRATO DE ESCLAVITUD*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `👑 Amo: *${master.name}*\n`;
-    response += `🔗 Esclavo: *${target.name}*\n`;
-    response += `⏳ Duración: *4 horas*\n`;
-    response += `💰 Costo pagado: *$${formatNumber(SLAVERY_COST)}*\n\n`;
-    response += `📊 *BENEFICIOS:*\n`;
-    response += `• Recibirás el *${SLAVERY_CUT}%* de lo que gane el esclavo\n`;
-    response += `• Aplica a: /trabajar, /minar, /daily\n\n`;
-    response += `💡 _El esclavo puede liberarse pagando $${formatNumber(SLAVERY_COST * 2)}_`;
-
-    await m.reply(response);
+    await ctx.send({
+      text: `${message}\n\n` +
+        `⛓️ *CONTRATO DE ESCLAVITUD*\n━━━━━━━━━━━━━━━━━━━━━\n` +
+        `👑 Amo: *${master.name}*\n` +
+        `🔗 Esclavo: *${target.name}*\n` +
+        `⏳ Duración: *${msToTime(SLAVERY_DURATION)}*\n` +
+        `💰 Costo pagado: *$${formatNumber(SLAVERY_COST)}*\n\n` +
+        `📊 Recibirás el *${SLAVERY_CUT}%* de todo lo que gane (work, minar, daily, pescar, cazar...).\n` +
+        `💡 _El esclavo puede liberarse pagando $${formatNumber(SLAVERY_COST * 2)}_` +
+        (questLines.length ? `\n\n${questLines.join('\n')}` : ''),
+      mentions: [targetJid]
+    });
     await m.react('⛓️');
   }
 };
 
-/**
- * Plugin: Liberar - Libérate de la esclavitud
- */
 export const liberarPlugin: PluginHandler = {
   command: ['liberar', 'free', 'liberarse', 'libertad'],
   tags: ['rpg'],
   help: [
-    'liberar - Compra tu libertad (costo: $20,000)',
+    `liberar - Compra tu libertad (costo: $${formatNumber(SLAVERY_COST * 2)})`,
     'Solo funciona si eres esclavo de alguien'
   ],
+  usage: ['liberar'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
@@ -542,280 +412,180 @@ export const liberarPlugin: PluginHandler = {
     const user = db.getUser(m.sender);
     const now = Date.now();
 
-    // Verificar si es esclavo
-    if (!user.slaveMaster || user.slaveUntil <= now) {
-      await m.reply(
-        `${EMOJI.success} ¡Ya eres libre!\n\n` +
-        `🕊️ No tienes ningún amo que te esclavice.`
-      );
-      return;
+    if (!isEnslaved(user, now) || !user.slaveMaster) {
+      return m.reply(`${EMOJI.success} ¡Ya eres libre!\n\n🕊️ No tienes ningún amo que te esclavice.`);
     }
 
     const freedomCost = SLAVERY_COST * 2;
+    const master = db.getUser(user.slaveMaster);
 
     if (user.money < freedomCost) {
-      const master = db.getUser(user.slaveMaster);
-      const timeLeft = Math.ceil((user.slaveUntil - now) / (60 * 60 * 1000));
-
-      await m.reply(
+      return m.reply(
         `${EMOJI.error} No tienes suficiente dinero para comprar tu libertad.\n\n` +
         `⛓️ Amo actual: *${master.name}*\n` +
         `💰 Tu dinero: *$${formatNumber(user.money)}*\n` +
         `💵 Costo de libertad: *$${formatNumber(freedomCost)}*\n` +
-        `⏳ Esclavitud expira en: *${timeLeft}h*`
+        `⏳ Esclavitud expira en: *${msToTime(user.slaveUntil - now)}*`
       );
-      return;
     }
 
-    const master = db.getUser(user.slaveMaster);
     const masterJid = user.slaveMaster;
-
-    // Liberar al esclavo
-    db.updateUser(m.sender, {
-      money: user.money - freedomCost,
-      slaveMaster: null,
-      slaveUntil: 0
-    });
-
-    // Actualizar lista de esclavos del amo
-    db.updateUser(masterJid, {
-      slaves: master.slaves.filter(s => s !== m.sender)
-    });
+    db.updateUser(m.sender, { money: user.money - freedomCost, slaveMaster: null, slaveUntil: 0 });
+    db.updateUser(masterJid, { slaves: master.slaves.filter(s => s !== m.sender) });
+    updateQuestProgress(db, m.sender, 'spend', freedomCost);
 
     await m.reply(
       `🕊️ *¡LIBERTAD!*\n\n` +
       `Has comprado tu libertad de *${master.name}*.\n\n` +
       `💵 Pagaste: *$${formatNumber(freedomCost)}*\n` +
-      `💰 Dinero restante: *$${formatNumber(user.money - freedomCost)}*\n\n` +
-      `✨ _Ya no eres esclavo de nadie_`
+      `💰 Dinero restante: *$${formatNumber(user.money - freedomCost)}*`
     );
     await m.react('🕊️');
   }
 };
 
-/**
- * Plugin: Ver Esclavos - Lista tus esclavos
- */
 export const esclavosPlugin: PluginHandler = {
   command: ['esclavos', 'slaves', 'misesclavos'],
   tags: ['rpg'],
   help: ['esclavos - Ve tu lista de esclavos actuales'],
+  usage: ['esclavos'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
+    const { m, usedPrefix } = ctx;
     const db = getDatabase();
-    const user = db.getUser(m.sender);
     const now = Date.now();
-
-    // Filtrar esclavos activos
-    const activeSlaves = user.slaves.filter(slaveJid => {
-      const slave = db.getUser(slaveJid);
-      return slave.slaveUntil > now && slave.slaveMaster === m.sender;
-    });
+    const activeSlaves = getActiveSlaves(db, m.sender, now);
 
     if (activeSlaves.length === 0) {
-      await m.reply(
-        `⛓️ *TUS ESCLAVOS*\n\n` +
-        `No tienes esclavos actualmente.\n\n` +
-        `💡 Usa */esclavizar @usuario* para conseguir uno.\n` +
-        `💰 Costo: *$${formatNumber(SLAVERY_COST)}*`
+      return m.reply(
+        `⛓️ *TUS ESCLAVOS*\n\nNo tienes esclavos actualmente.\n\n` +
+        `💡 Usa *${usedPrefix}esclavizar @usuario* (costo $${formatNumber(SLAVERY_COST)}).`
       );
-      return;
     }
 
-    let response = `⛓️ *TUS ESCLAVOS (${activeSlaves.length}/3)*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    const list = activeSlaves.map(jid => {
+      const slave = db.getUser(jid);
+      return `🔗 *${slave.name}* · ⏳ ${msToTime(slave.slaveUntil - now)}`;
+    }).join('\n');
 
-    for (const slaveJid of activeSlaves) {
-      const slave = db.getUser(slaveJid);
-      const timeLeft = Math.ceil((slave.slaveUntil - now) / (60 * 60 * 1000));
-      response += `🔗 *${slave.name}*\n`;
-      response += `   ⏳ Expira en: ${timeLeft}h\n\n`;
-    }
-
-    response += `📊 *BENEFICIOS:*\n`;
-    response += `• Recibes ${SLAVERY_CUT}% de sus ganancias\n`;
-    response += `• Aplica a trabajo, minería y daily`;
-
-    await m.reply(response);
+    await m.reply(
+      `⛓️ *TUS ESCLAVOS (${activeSlaves.length}/${MAX_SLAVES})*\n━━━━━━━━━━━━━━━━━━━━━\n\n${list}\n\n` +
+      `📊 Recibes el ${SLAVERY_CUT}% de todas sus ganancias.`
+    );
   }
 };
 
-/**
- * Plugin: Modo Pasivo - Activa/desactiva modo pacífico
- */
 export const pasivoPlugin: PluginHandler = {
   command: ['pasivo', 'passive', 'pacifico', 'paz'],
   tags: ['rpg'],
   help: [
-    'pasivo - Activa/desactiva el modo pasivo',
-    'En modo pasivo no puedes robar ni ser robado',
-    'Tampoco puedes bombardear ni ser bombardeado',
-    'Cooldown de 6 horas para cambiar de modo'
+    'pasivo - Activa/desactiva el modo pasivo (también: pasivo on|off)',
+    'En modo pasivo no puedes robar, bombardear ni esclavizar, ni te lo pueden hacer a ti',
+    `Cooldown de ${COOLDOWNS.PASSIVE_MODE / 3600000} horas entre cambios`
   ],
+  usage: ['pasivo', 'pasivo on', 'pasivo off'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
     const now = Date.now();
+    const current = isPassiveActive(user, now);
 
-    // Verificar cooldown
-    if (user.passiveModeChangedAt > 0) {
-      const timeSinceChange = now - user.passiveModeChangedAt;
-      if (timeSinceChange < PASSIVE_MODE_COOLDOWN) {
-        const remaining = PASSIVE_MODE_COOLDOWN - timeSinceChange;
-        const hoursLeft = Math.ceil(remaining / (60 * 60 * 1000));
-        const minsLeft = Math.ceil((remaining % (60 * 60 * 1000)) / (60 * 1000));
+    const wanted = (args[0] ?? '').toLowerCase();
+    const newMode = ['on', 'si', 'sí', 'activar'].includes(wanted) ? true
+      : ['off', 'no', 'desactivar'].includes(wanted) ? false
+      : !current;
 
-        await m.reply(
-          `${EMOJI.time} *COOLDOWN ACTIVO*\n\n` +
-          `🕊️ Estado actual: *${user.passiveMode ? 'Pasivo' : 'Activo'}*\n` +
-          `⏳ Puedes cambiar en: *${hoursLeft}h ${minsLeft}m*\n\n` +
-          `💡 _El cooldown evita el abuso del modo pasivo_`
-        );
-        return;
-      }
+    if (newMode === current) {
+      return m.reply(`${EMOJI.info} Tu modo pasivo ya está *${current ? 'activado' : 'desactivado'}*.`);
     }
 
-    // Verificar si es esclavo
-    if (user.slaveMaster && user.slaveUntil > now) {
-      await m.reply(
-        `${EMOJI.error} No puedes cambiar el modo pasivo siendo esclavo.\n\n` +
-        `⛓️ Primero debes comprar tu libertad con */liberar*`
+    if (user.passiveModeChangedAt > 0 && now - user.passiveModeChangedAt < COOLDOWNS.PASSIVE_MODE) {
+      return m.reply(
+        `${EMOJI.time} *COOLDOWN ACTIVO*\n\n` +
+        `🕊️ Estado actual: *${current ? 'Pasivo' : 'Activo'}*\n` +
+        `⏳ Puedes cambiar en: *${msToTime(COOLDOWNS.PASSIVE_MODE - (now - user.passiveModeChangedAt))}*`
       );
-      return;
     }
 
-    // Cambiar modo
-    const newMode = !user.passiveMode;
-    const modeUntil = newMode ? now + (30 * 24 * 60 * 60 * 1000) : 0; // 30 días si activo
+    if (isEnslaved(user, now)) {
+      return m.reply(
+        `${EMOJI.error} No puedes cambiar el modo pasivo siendo esclavo.\n\n` +
+        `⛓️ Primero compra tu libertad con *${usedPrefix}liberar*`
+      );
+    }
 
-    db.updateUser(m.sender, {
-      passiveMode: newMode,
-      passiveModeUntil: modeUntil,
-      passiveModeChangedAt: now
-    });
+    db.updateUser(m.sender, { passiveMode: newMode, passiveModeUntil: 0, passiveModeChangedAt: now });
 
     if (newMode) {
       await m.reply(
         `🕊️ *MODO PASIVO ACTIVADO*\n\n` +
-        `✅ Ya no puedes:\n` +
-        `• Robar a otros jugadores\n` +
-        `• Ser robado por otros\n` +
-        `• Bombardear a otros\n` +
-        `• Ser bombardeado\n` +
-        `• Esclavizar a otros\n` +
-        `• Ser esclavizado\n\n` +
-        `⏳ Cooldown para desactivar: *6 horas*\n` +
-        `_Modo pacífico perfecto para farmear tranquilo_`
+        `No puedes robar, bombardear ni esclavizar, y nadie puede hacértelo a ti.\n` +
+        `⏳ Podrás desactivarlo en *${msToTime(COOLDOWNS.PASSIVE_MODE)}*.`
       );
-      await m.react('🕊️');
-    } else {
-      await m.reply(
-        `⚔️ *MODO PASIVO DESACTIVADO*\n\n` +
-        `✅ Ahora puedes:\n` +
-        `• Robar a otros jugadores\n` +
-        `• Bombardear a otros\n` +
-        `• Esclavizar a otros\n\n` +
-        `⚠️ También pueden:\n` +
-        `• Robarte\n` +
-        `• Bombardearte\n` +
-        `• Esclavizarte\n\n` +
-        `⏳ Cooldown para reactivar: *6 horas*\n` +
-        `_¡Prepárate para la acción!_`
-      );
-      await m.react('⚔️');
+      return m.react('🕊️');
     }
+
+    await m.reply(
+      `⚔️ *MODO PASIVO DESACTIVADO*\n\n` +
+      `Vuelves a poder robar, bombardear y esclavizar... y a ser objetivo.\n` +
+      `⏳ Podrás reactivarlo en *${msToTime(COOLDOWNS.PASSIVE_MODE)}*.`
+    );
+    await m.react('⚔️');
   }
 };
 
-/**
- * Plugin: Ver Estado - Muestra tu estado económico completo
- */
 export const estadoEconomiaPlugin: PluginHandler = {
   command: ['economia', 'economy', 'mieconomia', 'wallet'],
   tags: ['rpg'],
   help: ['economia - Ve tu estado económico completo'],
+  usage: ['economia'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
     const db = getDatabase();
-    const user = db.getUser(m.sender);
     const now = Date.now();
 
-    let response = `💰 *ESTADO ECONÓMICO*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    response += `👤 *${user.name}*\n\n`;
+    await notifyDebtInterest(ctx, applyDebtInterest(db, m.sender, db.getUser(m.sender), now));
+    const user = db.getUser(m.sender);
 
-    // Dinero
-    response += `💵 *FINANZAS:*\n`;
-    response += `• Efectivo: *$${formatNumber(user.money)}*\n`;
-    response += `• Banco: *$${formatNumber(user.bank)}*\n`;
-    response += `• Diamantes: *💎${formatNumber(user.limit)}*\n`;
-
+    let text = `💰 *ESTADO ECONÓMICO*\n━━━━━━━━━━━━━━━━━━━━━\n\n👤 *${user.name}*\n\n`;
+    text += `💵 *FINANZAS:*\n`;
+    text += `• Efectivo: *$${formatNumber(user.money)}*\n`;
+    text += `• Banco: *$${formatNumber(user.bank)}*\n`;
+    text += `• Diamantes: *💎${formatNumber(user.limit)}*\n`;
+    text += `• Total ganado: *$${formatNumber(user.totalEarned)}*\n`;
     if (user.debt > 0) {
-      response += `• ⚠️ Deuda IMSS: *$${formatNumber(user.debt)}*\n`;
+      text += `• ⚠️ Deuda IMSS: *$${formatNumber(user.debt)}* (+${DEBT_INTEREST_RATE * 100}% cada 24h)\n`;
     }
 
-    response += `\n`;
+    text += `\n🛡️ *ESTADO:*\n• Modo: *${isPassiveActive(user, now) ? '🕊️ Pasivo' : '⚔️ Activo'}*\n`;
 
-    // Modo pasivo
-    response += `🛡️ *ESTADO:*\n`;
-    if (user.passiveMode && user.passiveModeUntil > now) {
-      response += `• Modo: *🕊️ Pasivo*\n`;
-    } else {
-      response += `• Modo: *⚔️ Activo*\n`;
-    }
-
-    // Esclavitud
-    if (user.slaveMaster && user.slaveUntil > now) {
+    if (isEnslaved(user, now) && user.slaveMaster) {
       const master = db.getUser(user.slaveMaster);
-      const timeLeft = Math.ceil((user.slaveUntil - now) / (60 * 60 * 1000));
-      response += `• ⛓️ Esclavo de: *${master.name}*\n`;
-      response += `• ⏳ Expira en: *${timeLeft}h*\n`;
+      text += `• ⛓️ Esclavo de: *${master.name}* (expira en ${msToTime(user.slaveUntil - now)})\n`;
     }
 
-    // Esclavos
-    const activeSlaves = user.slaves.filter(slaveJid => {
-      const slave = db.getUser(slaveJid);
-      return slave.slaveUntil > now && slave.slaveMaster === m.sender;
-    });
-
+    const activeSlaves = getActiveSlaves(db, m.sender, now);
     if (activeSlaves.length > 0) {
-      response += `• 👑 Esclavos: *${activeSlaves.length}/3*\n`;
+      text += `• 👑 Esclavos: *${activeSlaves.length}/${MAX_SLAVES}*\n`;
     }
 
-    // Protecciones
-    response += `\n🛡️ *PROTECCIONES:*\n`;
-
-    if (user.bankDepositTime > 0) {
-      const bankExpired = now > user.bankDepositTime + BANK_DURATION;
-      if (!bankExpired && user.bank > 0) {
-        const timeLeft = Math.ceil((user.bankDepositTime + BANK_DURATION - now) / (60 * 60 * 1000));
-        response += `• 🏦 Banco protegido: *${timeLeft}h*\n`;
-      }
+    const protections: string[] = [];
+    if (user.bank > 0 && now < user.bankDepositTime + BANK_DURATION) {
+      protections.push(`• 🏦 Banco protegido: *${msToTime(user.bankDepositTime + BANK_DURATION - now)}*`);
     }
+    if (user.shieldRobo > now) protections.push(`• 🛡️ Anti-robo: *${msToTime(user.shieldRobo - now)}*`);
+    if (user.shieldBombas > now) protections.push(`• 🧱 Anti-bombas: *${msToTime(user.shieldBombas - now)}*`);
+    if (user.seguroVida > now) protections.push(`• 📜 Seguro de vida: *${msToTime(user.seguroVida - now)}*`);
 
-    if (user.shieldRobo > now) {
-      const timeLeft = Math.ceil((user.shieldRobo - now) / (60 * 60 * 1000));
-      response += `• 🛡️ Anti-robo: *${timeLeft}h*\n`;
-    }
+    text += `\n🛡️ *PROTECCIONES:*\n` + (protections.length ? protections.join('\n') : '• _Ninguna activa_');
 
-    if (user.shieldBombas > now) {
-      const timeLeft = Math.ceil((user.shieldBombas - now) / (60 * 60 * 1000));
-      response += `• 🧱 Anti-bombas: *${timeLeft}h*\n`;
-    }
-
-    if (user.seguroVida > now) {
-      const timeLeft = Math.ceil((user.seguroVida - now) / (60 * 60 * 1000));
-      response += `• 📜 Seguro de vida: *${timeLeft}h*\n`;
-    }
-
-    await m.reply(response);
+    await m.reply(text);
   }
 };
 

@@ -1,8 +1,4 @@
-/**
- * Simple LRU Cache Implementation
- * Limita el tamaño del cache eliminando elementos menos usados
- */
-
+/** Caché LRU mínima: al superar maxSize descarta la entrada menos usada. */
 export class LRUCache<K, V> {
   private cache: Map<K, V>;
   private readonly maxSize: number;

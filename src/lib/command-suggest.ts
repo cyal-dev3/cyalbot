@@ -6,7 +6,7 @@
 import type { PluginHandler } from '../types/message.js';
 
 /** Regex del estilo /^(a|b|c)$/i: una sola alternancia literal entre anclas. */
-const SIMPLE_ALTERNATION = /^\^\(\?:?([^()]+)\)\$$/;
+const SIMPLE_ALTERNATION = /^\^\((?:\?:)?([^()]+)\)\$$/;
 
 function unescapeAlias(alias: string): string {
   return alias.replace(/\\(.)/g, '$1');

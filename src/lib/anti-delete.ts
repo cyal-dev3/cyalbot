@@ -3,10 +3,11 @@
  * en un grupo con la opción activa, lo reenvía.
  */
 
-import { downloadMediaMessage, type WASocket, type proto, type WAMessageUpdate } from 'baileys';
+import type { WASocket, proto, WAMessageUpdate } from 'baileys';
 import { LRUCache } from './lru-cache.js';
 import { getDatabase } from './database.js';
 import { createLogger } from './logger.js';
+import { unwrapMessage, getText, getMediaSize, downloadMedia } from './wa-message.js';
 
 const log = createLogger('antidelete');
 
@@ -19,8 +20,10 @@ const keyOf = (chatId: string, msgId: string): string => `${chatId}|${msgId}`;
 /** Guarda un mensaje de grupo para poder reenviarlo si lo borran. */
 export function rememberMessage(msg: proto.IWebMessageInfo): void {
   const chatId = msg.key.remoteJid;
-  if (!chatId || !msg.key.id || !msg.message || msg.key.fromMe) return;
+  if (!chatId || !msg.key.id || msg.key.fromMe) return;
   if (!chatId.endsWith('@g.us')) return;
+  // Los mensajes de protocolo (borrados, reacciones, llaves) no tienen nada que reenviar.
+  if (!unwrapMessage(msg)) return;
   cache.set(keyOf(chatId, msg.key.id), msg);
 }
 
@@ -28,43 +31,38 @@ function isRevoke(update: WAMessageUpdate): boolean {
   return update.update?.messageStubType === 1 || update.update?.message === null;
 }
 
-async function download(conn: WASocket, msg: proto.IWebMessageInfo): Promise<Buffer> {
-  return (await downloadMediaMessage(msg, 'buffer', {}, {
-    logger: console as never,
-    reuploadRequest: conn.updateMediaMessage,
-  })) as Buffer;
-}
-
 async function resend(conn: WASocket, chatId: string, cached: proto.IWebMessageInfo): Promise<void> {
-  const content = cached.message;
+  const content = unwrapMessage(cached);
   if (!content) return;
+  const text = getText(content);
 
   if (content.imageMessage) {
-    await conn.sendMessage(chatId, { image: await download(conn, cached), caption: content.imageMessage.caption || undefined });
+    await conn.sendMessage(chatId, { image: await downloadMedia(conn, cached), caption: text || undefined });
   } else if (content.videoMessage) {
     const isGif = Boolean(content.videoMessage.gifPlayback);
     await conn.sendMessage(chatId, {
-      video: await download(conn, cached),
-      caption: isGif ? undefined : content.videoMessage.caption || undefined,
+      video: await downloadMedia(conn, cached),
+      caption: isGif ? undefined : text || undefined,
       mimetype: content.videoMessage.mimetype || 'video/mp4',
       gifPlayback: isGif,
     });
   } else if (content.audioMessage) {
     await conn.sendMessage(chatId, {
-      audio: await download(conn, cached),
+      audio: await downloadMedia(conn, cached),
       mimetype: content.audioMessage.mimetype || 'audio/mpeg',
       ptt: Boolean(content.audioMessage.ptt),
     });
   } else if (content.stickerMessage) {
-    await conn.sendMessage(chatId, { sticker: await download(conn, cached) });
+    await conn.sendMessage(chatId, { sticker: await downloadMedia(conn, cached) });
   } else if (content.documentMessage) {
     await conn.sendMessage(chatId, {
-      document: await download(conn, cached),
+      document: await downloadMedia(conn, cached),
       mimetype: content.documentMessage.mimetype || 'application/octet-stream',
       fileName: content.documentMessage.fileName || 'documento',
+      caption: text || undefined,
     });
-  } else if (content.conversation || content.extendedTextMessage?.text) {
-    await conn.sendMessage(chatId, { text: content.conversation || content.extendedTextMessage?.text || '' });
+  } else if (text) {
+    await conn.sendMessage(chatId, { text });
   } else if (content.contactMessage) {
     await conn.sendMessage(chatId, {
       contacts: {
@@ -90,22 +88,16 @@ export async function handleMessageUpdates(conn: WASocket, updates: WAMessageUpd
     const msgId = update.key?.id;
     if (!chatId || !msgId || !chatId.endsWith('@g.us')) continue;
 
-    if (!getDatabase().getChatSettings(chatId).antiDelete) continue;
+    const db = getDatabase();
+    if (!db.data.chats[chatId]?.antiDelete) continue;
 
     const cacheKey = keyOf(chatId, msgId);
     const cached = cache.get(cacheKey);
-    if (!cached?.message) continue;
+    if (!cached) continue;
     cache.delete(cacheKey);
 
-    const content = cached.message;
-    const mediaSize = Number(
-      content.imageMessage?.fileLength ??
-      content.videoMessage?.fileLength ??
-      content.audioMessage?.fileLength ??
-      content.documentMessage?.fileLength ??
-      0,
-    );
     const who = cached.pushName || 'usuario';
+    const mediaSize = getMediaSize(unwrapMessage(cached));
     if (mediaSize > MAX_MEDIA_BYTES) {
       log.debug(`media de ${who} omitida (${(mediaSize / 1024 / 1024).toFixed(1)} MB)`);
       continue;

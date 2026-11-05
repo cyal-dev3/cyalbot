@@ -1,105 +1,182 @@
-/**
- * Plugin de Mute para Grupos
- * Comandos: mute, unmute, automute, listmute
- */
-
+import { areJidsSameUser } from 'baileys';
 import type { MessageHandler } from '../handler.js';
-import type { PluginHandler } from '../types/message.js';
+import type { PluginHandler, MessageContext } from '../types/message.js';
+import type { ChatSettings } from '../types/database.js';
+import { getDatabase } from '../lib/database.js';
+import { mentionTag, msToTime } from '../lib/utils.js';
+import { resolveTarget, assertCanModerate } from '../lib/participants.js';
+import { automutePlugin } from './group-toggles.js';
 
-// Referencia al handler para acceder a los métodos de mute
-let handlerRef: MessageHandler;
+/** Campo pendiente en types/database.ts (ver handoff): vencimiento por jid de los mutes temporales. */
+type MuteSettings = ChatSettings & { mutedUntil?: Record<string, number> };
 
-/**
- * Obtiene el JID del usuario objetivo (mencionado o citado)
- */
-function getTargetUser(ctx: { m: { mentionedJid: string[]; quoted?: { sender: string } }; args: string[] }): string | null {
-  // Primero verificar menciones
-  if (ctx.m.mentionedJid.length > 0) {
-    return ctx.m.mentionedJid[0];
-  }
-
-  // Luego verificar mensaje citado
-  if (ctx.m.quoted?.sender) {
-    return ctx.m.quoted.sender;
-  }
-
-  // Finalmente verificar si pasaron un número
-  if (ctx.args[0]) {
-    const number = ctx.args[0].replace(/[^0-9]/g, '');
-    if (number.length >= 10) {
-      return `${number}@s.whatsapp.net`;
-    }
-  }
-
-  return null;
+export function getMutedUntil(settings: ChatSettings): Record<string, number> {
+  const until = (settings as MuteSettings).mutedUntil;
+  return until && typeof until === 'object' ? until : {};
 }
 
 /**
- * Plugin: Mute - Silenciar a un usuario (eliminar sus mensajes automáticamente)
+ * true si el jid está silenciado y, si el mute es temporal, aún no venció.
+ * Es pura: no limpia nada. handler.isUserMuted debería usarla (ver handoff).
  */
-const mutePlugin: PluginHandler = {
+export function isMutedNow(settings: ChatSettings, jid: string, now = Date.now()): boolean {
+  const muted = settings.mutedUsers?.find((u) => areJidsSameUser(u, jid));
+  if (!muted) return false;
+  const until = getMutedUntil(settings)[muted];
+  return until === undefined || until > now;
+}
+
+const MIN_MUTE_MS = 60_000;
+const MAX_MUTE_MS = 30 * 24 * 3_600_000;
+
+const UNIT_MS: Record<string, number> = {
+  s: 1000, seg: 1000, segundos: 1000,
+  m: 60_000, min: 60_000, minuto: 60_000, minutos: 60_000,
+  h: 3_600_000, hr: 3_600_000, hora: 3_600_000, horas: 3_600_000,
+  d: 86_400_000, dia: 86_400_000, dias: 86_400_000, día: 86_400_000, días: 86_400_000,
+};
+
+/** "10m", "2h", "1d", "30 min" -> ms; null si no es una duración válida (1 minuto a 30 días). */
+export function parseMuteDuration(text: string | undefined | null): number | null {
+  const match = (text ?? '').trim().toLowerCase().match(/^(\d+)\s*([a-zá-ú]+)$/);
+  if (!match) return null;
+  const unit = UNIT_MS[match[2]];
+  if (!unit) return null;
+  const ms = parseInt(match[1], 10) * unit;
+  if (!Number.isFinite(ms) || ms < MIN_MUTE_MS || ms > MAX_MUTE_MS) return null;
+  return ms;
+}
+
+function saveMutedUntil(chat: string, until: Record<string, number>): void {
+  getDatabase().updateChatSettings(chat, { mutedUntil: until } as Partial<ChatSettings>);
+}
+
+/** Quita el mute a quienes ya vencieron. Usa handler.unmuteUser para mantener su registro en memoria. */
+function expireMutes(ctx: MessageContext): void {
+  const { m, handler } = ctx;
+  const settings = getDatabase().getChatSettings(m.chat);
+  const until = { ...getMutedUntil(settings) };
+  const now = Date.now();
+  let changed = false;
+  for (const [jid, expiresAt] of Object.entries(until)) {
+    if (expiresAt > now) continue;
+    handler.unmuteUser(m.chat, jid);
+    delete until[jid];
+    changed = true;
+  }
+  if (changed) saveMutedUntil(m.chat, until);
+}
+
+function setMutedUntil(chat: string, jid: string, expiresAt: number | null): void {
+  const until = { ...getMutedUntil(getDatabase().getChatSettings(chat)) };
+  if (expiresAt === null) delete until[jid];
+  else until[jid] = expiresAt;
+  saveMutedUntil(chat, until);
+}
+
+async function sendMention(ctx: MessageContext, text: string, mentions: string[]): Promise<void> {
+  const sent = await ctx.conn.sendMessage(ctx.m.chat, { text, mentions }, { quoted: ctx.m.rawMessage });
+  if (sent?.key) ctx.handler.trackMessage(ctx.m.chat, sent.key);
+}
+
+/** Validaciones comunes de mute/tempmute; devuelve el jid canónico o null si ya respondió. */
+async function prepareMute(ctx: MessageContext, usage: string): Promise<string | null> {
+  const { m, handler, usedPrefix } = ctx;
+  const target = resolveTarget(ctx, { allowNumber: true, allowSelf: true });
+  if (!target) {
+    await m.reply(`❌ Menciona o responde al mensaje de alguien para silenciarlo.\n\n📝 Ejemplo: ${usedPrefix}${usage}`);
+    return null;
+  }
+  const reason = assertCanModerate(ctx, target, 'mute');
+  if (reason) {
+    await m.reply(`❌ ${reason}`);
+    return null;
+  }
+  expireMutes(ctx);
+  if (handler.isUserMuted(m.chat, target)) {
+    await m.reply('⚠️ Ese usuario ya está silenciado.');
+    return null;
+  }
+  return target;
+}
+
+/** Activa automute si estaba apagado; devuelve true si lo activó. */
+function ensureAutoMute(ctx: MessageContext): boolean {
+  if (ctx.handler.isAutoMuteEnabled(ctx.m.chat)) return false;
+  ctx.handler.setAutoMute(ctx.m.chat, true);
+  return true;
+}
+
+export const mutePlugin: PluginHandler = {
   command: ['mute', 'silenciar', 'callar'],
   tags: ['grupo', 'admin'],
-  help: ['mute @usuario - Silencia a un usuario (se eliminan sus mensajes)'],
+  help: ['mute @usuario - Silencia a un usuario (sus mensajes se eliminan)'],
   group: true,
   admin: true,
   botAdmin: true,
 
   handler: async (ctx) => {
-    const targetUser = getTargetUser(ctx);
+    const { m, handler, usedPrefix } = ctx;
+    const target = await prepareMute(ctx, 'mute @usuario');
+    if (!target) return;
 
-    if (!targetUser) {
-      await ctx.m.reply('❌ Menciona o responde al mensaje de alguien para silenciarlo.\n\n📝 Ejemplo: /mute @usuario');
+    const activated = ensureAutoMute(ctx);
+    handler.muteUser(m.chat, target);
+    setMutedUntil(m.chat, target, null);
+
+    if (handler.isCompactMode(m.chat)) {
+      await m.react('🔇');
       return;
     }
-
-    // Verificar que no sea el mismo
-    if (targetUser === ctx.m.sender) {
-      await ctx.m.reply('❌ No puedes silenciarte a ti mismo.');
-      return;
-    }
-
-    // Verificar que esté en el grupo
-    if (!ctx.participants?.includes(targetUser)) {
-      await ctx.m.reply('❌ Ese usuario no está en el grupo.');
-      return;
-    }
-
-    // No permitir mutear admins (a menos que sea owner)
-    if (ctx.groupAdmins?.includes(targetUser) && !ctx.isOwner) {
-      await ctx.m.reply('❌ No puedes silenciar a un administrador.');
-      return;
-    }
-
-    // Verificar si automute está activado
-    if (!handlerRef.isAutoMuteEnabled(ctx.m.chat)) {
-      await ctx.m.reply('⚠️ El modo automute no está activado en este grupo.\n\n📝 Un admin debe activarlo primero con: /automute on');
-      return;
-    }
-
-    // Verificar si ya está muteado
-    if (handlerRef.isUserMuted(ctx.m.chat, targetUser)) {
-      await ctx.m.reply('⚠️ Ese usuario ya está silenciado.');
-      return;
-    }
-
-    // Mutear al usuario
-    handlerRef.muteUser(ctx.m.chat, targetUser);
-
-    // Modo compacto: solo reacción
-    if (ctx.handler.isCompactMode(ctx.m.chat)) {
-      await ctx.m.react('🔇');
-    } else {
-      const userName = targetUser.split('@')[0];
-      await ctx.m.reply(`🔇 @${userName} ha sido silenciado.\n\n⚠️ Sus mensajes serán eliminados automáticamente hasta que se le quite el mute.`);
-    }
-  }
+    await sendMention(
+      ctx,
+      `🔇 ${mentionTag(target)} ha sido silenciado.\n\nSus mensajes se eliminarán hasta que un admin use ${usedPrefix}unmute.` +
+      (activated ? '\n\n_Automute se activó automáticamente en este grupo._' : ''),
+      [target],
+    );
+  },
 };
 
-/**
- * Plugin: Unmute - Quitar silencio a un usuario
- */
-const unmutePlugin: PluginHandler = {
+export const tempMutePlugin: PluginHandler = {
+  command: ['tempmute', 'mutetemp', 'silenciartemp'],
+  tags: ['grupo', 'admin'],
+  help: ['tempmute @usuario <10m|2h|1d> - Silencia a un usuario por un tiempo'],
+  group: true,
+  admin: true,
+  botAdmin: true,
+
+  handler: async (ctx) => {
+    const { m, handler, args, usedPrefix } = ctx;
+    const durationMs = args.map(parseMuteDuration).find((ms): ms is number => ms !== null) ?? null;
+    if (durationMs === null) {
+      await m.reply(
+        `❌ Indica cuánto tiempo (de 1 minuto a 30 días).\n\n📝 Ejemplos:\n` +
+        `• ${usedPrefix}tempmute @usuario 10m\n• ${usedPrefix}tempmute @usuario 2h\n• ${usedPrefix}tempmute @usuario 1d`,
+      );
+      return;
+    }
+
+    const target = await prepareMute(ctx, 'tempmute @usuario 10m');
+    if (!target) return;
+
+    const activated = ensureAutoMute(ctx);
+    handler.muteUser(m.chat, target);
+    setMutedUntil(m.chat, target, Date.now() + durationMs);
+
+    if (handler.isCompactMode(m.chat)) {
+      await m.react('⏳');
+      return;
+    }
+    await sendMention(
+      ctx,
+      `🔇 ${mentionTag(target)} silenciado por *${msToTime(durationMs)}*.` +
+      (activated ? '\n\n_Automute se activó automáticamente en este grupo._' : ''),
+      [target],
+    );
+  },
+};
+
+export const unmutePlugin: PluginHandler = {
   command: ['unmute', 'desilenciar', 'hablar'],
   tags: ['grupo', 'admin'],
   help: ['unmute @usuario - Quita el silencio a un usuario'],
@@ -107,89 +184,31 @@ const unmutePlugin: PluginHandler = {
   admin: true,
 
   handler: async (ctx) => {
-    const targetUser = getTargetUser(ctx);
-
-    if (!targetUser) {
-      await ctx.m.reply('❌ Menciona o responde al mensaje de alguien para quitarle el silencio.\n\n📝 Ejemplo: /unmute @usuario');
+    const { m, handler, usedPrefix } = ctx;
+    const target = resolveTarget(ctx, { allowNumber: true, allowSelf: true });
+    if (!target) {
+      await m.reply(`❌ Menciona o responde al mensaje de alguien para quitarle el silencio.\n\n📝 Ejemplo: ${usedPrefix}unmute @usuario`);
       return;
     }
 
-    // Verificar si está muteado
-    if (!handlerRef.isUserMuted(ctx.m.chat, targetUser)) {
-      await ctx.m.reply('⚠️ Ese usuario no está silenciado.');
+    expireMutes(ctx);
+    if (!handler.isUserMuted(m.chat, target)) {
+      await m.reply('⚠️ Ese usuario no está silenciado.');
       return;
     }
 
-    // Quitar mute
-    const removed = handlerRef.unmuteUser(ctx.m.chat, targetUser);
+    handler.unmuteUser(m.chat, target);
+    setMutedUntil(m.chat, target, null);
 
-    if (removed) {
-      // Modo compacto: solo reacción
-      if (ctx.handler.isCompactMode(ctx.m.chat)) {
-        await ctx.m.react('🔊');
-      } else {
-        const userName = targetUser.split('@')[0];
-        await ctx.m.reply(`🔊 @${userName} ya puede hablar de nuevo.`);
-      }
-    } else {
-      await ctx.m.react('❌');
+    if (handler.isCompactMode(m.chat)) {
+      await m.react('🔊');
+      return;
     }
-  }
+    await sendMention(ctx, `🔊 ${mentionTag(target)} ya puede hablar de nuevo.`, [target]);
+  },
 };
 
-/**
- * Plugin: Automute - Activar/desactivar el sistema de mute automático
- * Solo el owner puede activarlo
- */
-const automutePlugin: PluginHandler = {
-  command: ['automute', 'autosilencio'],
-  tags: ['grupo', 'owner'],
-  help: ['automute on/off - Activa/desactiva el sistema de mute automático'],
-  group: true,
-  owner: true,
-  botAdmin: true,
-
-  handler: async (ctx) => {
-    const option = ctx.args[0]?.toLowerCase();
-
-    if (!option || !['on', 'off', 'activar', 'desactivar'].includes(option)) {
-      const currentStatus = handlerRef.isAutoMuteEnabled(ctx.m.chat) ? '✅ Activado' : '❌ Desactivado';
-      await ctx.m.reply(
-        `🔇 *Sistema de Auto-Mute*\n\n` +
-        `Estado actual: ${currentStatus}\n\n` +
-        `📝 Uso:\n` +
-        `• /automute on - Activar\n` +
-        `• /automute off - Desactivar\n\n` +
-        `ℹ️ Cuando está activado, los mensajes de usuarios silenciados serán eliminados automáticamente.`
-      );
-      return;
-    }
-
-    const enable = option === 'on' || option === 'activar';
-    handlerRef.setAutoMute(ctx.m.chat, enable);
-
-    if (enable) {
-      await ctx.m.reply(
-        `✅ *Sistema de Auto-Mute ACTIVADO*\n\n` +
-        `🔇 A partir de ahora:\n` +
-        `• Los admins pueden usar /mute @usuario\n` +
-        `• Los mensajes de usuarios silenciados serán eliminados\n` +
-        `• Usa /unmute @usuario para quitar el silencio\n` +
-        `• Usa /listmute para ver los silenciados`
-      );
-    } else {
-      await ctx.m.reply(
-        `❌ *Sistema de Auto-Mute DESACTIVADO*\n\n` +
-        `Los usuarios silenciados ya no tendrán sus mensajes eliminados automáticamente.`
-      );
-    }
-  }
-};
-
-/**
- * Plugin: Listmute - Ver usuarios silenciados
- */
-const listmutePlugin: PluginHandler = {
+export const listMutePlugin: PluginHandler = {
   command: ['listmute', 'mutelist', 'silenciados'],
   tags: ['grupo', 'admin'],
   help: ['listmute - Muestra los usuarios silenciados'],
@@ -197,38 +216,34 @@ const listmutePlugin: PluginHandler = {
   admin: true,
 
   handler: async (ctx) => {
-    const muteRegistry = handlerRef.getMuteRegistry();
-    const groupConfig = muteRegistry.get(ctx.m.chat);
-    const isEnabled = handlerRef.isAutoMuteEnabled(ctx.m.chat);
+    const { m, handler, usedPrefix } = ctx;
+    expireMutes(ctx);
 
-    if (!groupConfig || groupConfig.mutedUsers.size === 0) {
-      await ctx.m.reply(
-        `🔇 *Lista de Silenciados*\n\n` +
-        `Estado: ${isEnabled ? '✅ Activo' : '❌ Inactivo'}\n\n` +
-        `No hay usuarios silenciados en este grupo.`
-      );
+    const settings = getDatabase().getChatSettings(m.chat);
+    const until = getMutedUntil(settings);
+    const muted = settings.mutedUsers ?? [];
+    const status = `Automute: ${handler.isAutoMuteEnabled(m.chat) ? '🟢 Activo' : `🔴 Inactivo (${usedPrefix}automute on)`}`;
+
+    if (muted.length === 0) {
+      await m.reply(`🔇 *Silenciados*\n\n${status}\n\nNo hay usuarios silenciados en este grupo.`);
       return;
     }
 
-    const mutedList = Array.from(groupConfig.mutedUsers)
-      .map((jid, i) => `${i + 1}. @${jid.split('@')[0]}`)
-      .join('\n');
-
-    await ctx.m.reply(
-      `🔇 *Lista de Silenciados*\n\n` +
-      `Estado: ${isEnabled ? '✅ Activo' : '❌ Inactivo'}\n\n` +
-      `${mutedList}`
-    );
-  }
+    const now = Date.now();
+    const lines = muted.map((jid, i) => {
+      const expiresAt = until[jid];
+      const remaining = expiresAt ? ` (quedan ${msToTime(expiresAt - now)})` : '';
+      return `${i + 1}. ${mentionTag(jid)}${remaining}`;
+    });
+    await sendMention(ctx, `🔇 *Silenciados*\n\n${status}\n\n${lines.join('\n')}`, muted);
+  },
 };
 
-/**
- * Registra los plugins de mute
- */
+/** @deprecated plugins/index.ts debe registrar estos plugins desde ENTRIES.grupos (automute está en TOGGLE_ENTRIES). */
 export function registerGroupMutePlugins(handler: MessageHandler): void {
-  handlerRef = handler;
-  handler.registerPlugin('mute', mutePlugin);
-  handler.registerPlugin('unmute', unmutePlugin);
-  handler.registerPlugin('automute', automutePlugin);
-  handler.registerPlugin('listmute', listmutePlugin);
+  handler.registerPlugin('group-mute', mutePlugin);
+  handler.registerPlugin('group-tempmute', tempMutePlugin);
+  handler.registerPlugin('group-unmute', unmutePlugin);
+  handler.registerPlugin('group-automute', automutePlugin);
+  handler.registerPlugin('group-listmute', listMutePlugin);
 }

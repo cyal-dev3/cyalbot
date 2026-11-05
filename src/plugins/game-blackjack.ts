@@ -402,11 +402,25 @@ export function registerBlackjack(handler: MessageHandler): void {
   attachContexts(handler, [BJ_CONTEXT]);
 }
 
-/** @deprecated plugins/index.ts debe pasar a registerBlackjack; `bj` cubre jugar/unirse/salir. */
+// Exports que plugins/index.ts todavía importa. Alias viejos como atajos del
+// comando nuevo; se retiran cuando index.ts pase a registerBlackjack.
+
+/** @deprecated usa registerBlackjack */
 export const blackjackPlugin = bjPlugin;
-/** @deprecated ver registerBlackjack */
-export const jugarPlugin = bjPlugin;
-/** @deprecated ver registerBlackjack */
-export const bjSalirPlugin = bjPlugin;
+/** @deprecated `bj <apuesta>` ya une a la mesa abierta */
+export const jugarPlugin: PluginHandler = {
+  command: ['jugar', 'unirse', 'entrar'], category: 'casino', description: 'Atajo de bj <apuesta>', register: true,
+  handler: bjPlugin.handler,
+};
+/** @deprecated `bj salir` */
+export const bjSalirPlugin: PluginHandler = {
+  command: ['bjsalir', 'salirmesa', 'bjleave'], category: 'casino', description: 'Atajo de bj salir',
+  async handler(ctx) {
+    enter(ctx);
+    await leaveTable(ctx);
+  },
+};
 /** @deprecated `mesa` genérico (game-mesa.ts) */
-export const bjMesaPlugin = mesaPlugin;
+export const bjMesaPlugin: PluginHandler = {
+  command: ['bjmesa', 'bjstatus'], category: 'casino', description: 'Atajo de mesa', handler: mesaPlugin.handler,
+};
