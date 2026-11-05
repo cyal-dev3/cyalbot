@@ -1,9 +1,4 @@
 /**
- * Utilidades
- * Funciones auxiliares y constantes
- */
-
-/**
  * Convierte milisegundos a formato legible
  * @param duration - Duración en milisegundos
  * @returns String formateado (ej: "2 horas 30 minutos")

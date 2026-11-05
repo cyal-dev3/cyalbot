@@ -102,7 +102,6 @@ export const CONFIG = {
     adventure: 25 * 60 * 1000,
     hunt: 45 * 60 * 1000,
     rob: 60 * 60 * 1000,
-    crime: 60 * 60 * 1000,
   },
 
   messages: {
@@ -121,7 +120,6 @@ export const CONFIG = {
     intervalMs: 10_000,
     maxWarnings: 3,
     linkRegex: /chat\.whatsapp\.com\/[a-zA-Z0-9]{15,}/gi,
-    telegramRegex: /t\.me\/[a-zA-Z0-9_]+/gi,
   },
 
   /** Lista inicial de palabras para /antibad (se puede editar por grupo). */
@@ -162,4 +160,14 @@ export type Config = typeof CONFIG;
 export function isOwnerId(id: string): boolean {
   const n = normalizeNumber(id);
   return n.length > 0 && CONFIG.owners.includes(n);
+}
+
+/**
+ * true si dos identificadores (JID, LID o número) son la misma cuenta:
+ * coincidencia exacta de dígitos, nunca por subcadena.
+ */
+export function sameUser(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const na = normalizeNumber(a);
+  return na.length > 0 && na === normalizeNumber(b);
 }

@@ -1,11 +1,13 @@
 /**
  * Eventos de grupo: bienvenidas, despedidas, cambios de admin y metadatos.
+ * También resuelve los roles (admin / bot admin) a partir de la metadata cacheada.
  */
 
-import type { WASocket, GroupMetadata, ParticipantAction } from 'baileys';
+import type { WASocket, GroupMetadata, GroupParticipant, ParticipantAction } from 'baileys';
 import { LRUCache } from './lru-cache.js';
 import { getDatabase } from './database.js';
 import { createLogger } from './logger.js';
+import { sameUser } from '../config.js';
 
 const log = createLogger('grupos');
 
@@ -18,7 +20,8 @@ export async function getGroupMetadataCached(conn: WASocket, groupId: string): P
     const metadata = await conn.groupMetadata(groupId);
     metadataCache.set(groupId, metadata);
     return metadata;
-  } catch {
+  } catch (error) {
+    log.debug(`sin metadata de ${groupId}:`, error instanceof Error ? error.message : error);
     return null;
   }
 }
@@ -31,6 +34,55 @@ export function invalidateGroupMetadata(groupId: string): void {
   metadataCache.delete(groupId);
 }
 
+function isAdminParticipant(p: GroupParticipant): boolean {
+  return p.admin === 'admin' || p.admin === 'superadmin' || p.isAdmin === true || p.isSuperAdmin === true;
+}
+
+/** Un participante puede venir con JID de teléfono o con LID; se compara con ambos. */
+function participantMatches(p: GroupParticipant, ids: readonly string[]): boolean {
+  return ids.some((id) => sameUser(p.id, id) || sameUser(p.lid, id));
+}
+
+/** Identificadores del bot (número y LID) tal y como los expone el socket. */
+export function botIdentities(conn: Pick<WASocket, 'user'>): string[] {
+  const user = conn.user as { id?: string; lid?: string } | undefined;
+  return [user?.id, user?.lid].filter((id): id is string => Boolean(id));
+}
+
+/** true si `jid` es admin del grupo según la metadata dada (coincidencia exacta de dígitos). */
+export function isGroupAdmin(metadata: GroupMetadata | null | undefined, jid: string): boolean {
+  if (!metadata) return false;
+  return metadata.participants.some((p) => isAdminParticipant(p) && participantMatches(p, [jid]));
+}
+
+export interface GroupRoles {
+  isAdmin: boolean;
+  isBotAdmin: boolean;
+  admins: string[];
+  participants: string[];
+  /** null cuando WhatsApp no devolvió la metadata (el caller decide qué hacer). */
+  metadata: GroupMetadata | null;
+}
+
+/** Roles de `sender` y del bot en el grupo, a partir de la metadata cacheada. */
+export async function resolveGroupRoles(conn: WASocket, groupId: string, sender: string): Promise<GroupRoles> {
+  const metadata = await getGroupMetadataCached(conn, groupId);
+  if (!metadata) {
+    return { isAdmin: false, isBotAdmin: false, admins: [], participants: [], metadata: null };
+  }
+  const botIds = botIdentities(conn);
+  let isAdmin = false;
+  let isBotAdmin = false;
+  const admins: string[] = [];
+  for (const p of metadata.participants) {
+    const admin = isAdminParticipant(p);
+    if (admin) admins.push(p.id);
+    if (admin && participantMatches(p, [sender])) isAdmin = true;
+    if (admin && participantMatches(p, botIds)) isBotAdmin = true;
+  }
+  return { isAdmin, isBotAdmin, admins, participants: metadata.participants.map((p) => p.id), metadata };
+}
+
 interface ParticipantsUpdate {
   id: string;
   participants: string[];
@@ -40,6 +92,8 @@ interface ParticipantsUpdate {
 export async function handleParticipantsUpdate(conn: WASocket, update: ParticipantsUpdate): Promise<void> {
   const { id: groupId, participants, action } = update;
   try {
+    // Cualquier cambio de miembros deja la metadata cacheada desfasada.
+    invalidateGroupMetadata(groupId);
     const groupName = await getGroupName(conn, groupId);
     const settings = getDatabase().getChatSettings(groupId);
 
@@ -69,13 +123,11 @@ export async function handleParticipantsUpdate(conn: WASocket, update: Participa
         case 'promote':
           log.info(`[${groupName}] ${number} ahora es admin`);
           await conn.sendMessage(groupId, { text: `👑 @${number} ahora es administrador.`, mentions: [participant] });
-          invalidateGroupMetadata(groupId);
           break;
 
         case 'demote':
           log.info(`[${groupName}] ${number} dejó de ser admin`);
           await conn.sendMessage(groupId, { text: `📉 @${number} ya no es administrador.`, mentions: [participant] });
-          invalidateGroupMetadata(groupId);
           break;
       }
     }

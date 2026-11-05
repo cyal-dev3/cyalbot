@@ -112,3 +112,66 @@ export function getActiveModes(now: number = Date.now()): { key: GlobalModeKey; 
       activatedBy: globalModes[key].activatedBy
     }));
 }
+
+export interface RewardAmounts {
+  exp: number;
+  money: number;
+}
+
+export interface AppliedModes extends RewardAmounts {
+  /** Líneas para el mensaje al jugador, una por modo que aportó algo */
+  lines: string[];
+}
+
+/**
+ * Aplica los modos globales activos (bonus, caos, evento) a una recompensa.
+ * Cada modo suma su extra sobre la cantidad base (no se componen entre sí),
+ * que es como lo hacían daily y work. Única implementación: antes había seis
+ * copias con órdenes distintos.
+ */
+export function applyGlobalModes(base: RewardAmounts, now: number = Date.now()): AppliedModes {
+  checkExpiredModes(now);
+  const baseExp = Math.max(0, Math.floor(base.exp));
+  const baseMoney = Math.max(0, Math.floor(base.money));
+  let exp = baseExp;
+  let money = baseMoney;
+  const lines: string[] = [];
+
+  const { bonusMode, chaosMode, eventMode } = globalModes;
+
+  if (bonusMode.active) {
+    const extraExp = Math.floor(baseExp * (bonusMode.expMultiplier - 1));
+    const extraMoney = Math.floor(baseMoney * (bonusMode.moneyMultiplier - 1));
+    exp += extraExp;
+    money += extraMoney;
+    if (extraExp || extraMoney) {
+      lines.push(`🎁 Modo Bonus: +${extraExp} XP, +${extraMoney} monedas`);
+    }
+  }
+  if (chaosMode.active) {
+    const extraExp = Math.floor(baseExp * (chaosMode.multiplier - 1));
+    const extraMoney = Math.floor(baseMoney * (chaosMode.multiplier - 1));
+    exp += extraExp;
+    money += extraMoney;
+    if (extraExp || extraMoney) {
+      lines.push(`🌀 Modo Caos: +${extraExp} XP, +${extraMoney} monedas (x${chaosMode.multiplier})`);
+    }
+  }
+  if (eventMode.active) {
+    const extraExp = Math.floor(baseExp * (eventMode.dropMultiplier - 1));
+    const extraMoney = Math.floor(baseMoney * (eventMode.dropMultiplier - 1));
+    exp += extraExp;
+    money += extraMoney;
+    if (extraExp || extraMoney) {
+      lines.push(`🎉 ${eventMode.eventName || 'Evento'}: +${extraExp} XP, +${extraMoney} monedas (x${eventMode.dropMultiplier})`);
+    }
+  }
+
+  return { exp, money, lines };
+}
+
+/** Multiplicador de daño PvP activo (1 si no hay modo PvP). */
+export function pvpDamageMultiplier(now: number = Date.now()): number {
+  checkExpiredModes(now);
+  return globalModes.pvpMode.active ? globalModes.pvpMode.damageMultiplier : 1;
+}
