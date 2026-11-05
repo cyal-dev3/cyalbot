@@ -17,6 +17,7 @@ import {
   ALL_DAILY_QUESTS
 } from '../src/lib/quests.js';
 import { DEFAULT_USER } from '../src/types/user.js';
+import { xpRange } from '../src/lib/levelling.js';
 
 setLogLevel('error');
 
@@ -33,13 +34,16 @@ async function withDb(fn: (db: Database) => Promise<void> | void): Promise<void>
 }
 
 const JID = 'q@s.whatsapp.net';
+// Nivel alto para que la XP de una misión no suba de nivel (el bonus de nivel daría dinero extra)
+const SEED_LEVEL = 60;
 
 function seed(db: Database, now: number) {
   db.updateUser(JID, {
     name: 'Q',
     registered: true,
     money: 0,
-    exp: 0,
+    level: SEED_LEVEL,
+    exp: xpRange(SEED_LEVEL).min,
     dailyQuests: [
       { questId: 'daily_work_3', progress: 0, completed: false },
       { questId: 'daily_mine_3', progress: 0, completed: false }
@@ -108,7 +112,8 @@ test('al completar una misión se cobra sola: recompensa, línea y claimedAt', a
     assert.equal(progress.completed, true);
     assert.equal(progress.claimedAt, now);
     assert.equal(user.money, quest.rewards.money);
-    assert.equal(user.exp, quest.rewards.exp);
+    assert.equal(user.exp, xpRange(SEED_LEVEL).min + quest.rewards.exp);
+    assert.equal(user.level, SEED_LEVEL);
     assert.equal(user.limit, DEFAULT_USER.limit + (quest.rewards.diamonds ?? 0));
 
     // Una misión cobrada no vuelve a avanzar ni a cobrarse

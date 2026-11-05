@@ -78,13 +78,31 @@ describe('servidor HTTP', () => {
       body: '{no json',
     });
     assert.equal(bad.status, 400);
+    // Un body grande recibe un 413 con cuerpo JSON, nunca un reset de conexion.
+    const payload = JSON.stringify({ url: 'https://example.com/' + 'a'.repeat(70 * 1024) });
     const big = await fetch(`${base}/v1/info`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': 'secreto' },
-      body: JSON.stringify({ url: 'https://example.com/' + 'a'.repeat(70 * 1024) }),
-    }).catch(() => null);
-    // El servidor puede cortar la conexion al pasar el limite; si responde, debe ser 413.
-    if (big) assert.equal(big.status, 413);
+      body: payload,
+    });
+    assert.equal(big.status, 413);
+    assert.equal(((await big.json()) as { error: { code: string } }).error.code, 'TOO_LARGE');
+    // Tambien cuando llega en trozos sin Content-Length (chunked).
+    const chunked = await fetch(`${base}/v1/info`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': 'secreto' },
+      body: new ReadableStream({
+        start(controller) {
+          for (let i = 0; i < payload.length; i += 16 * 1024) controller.enqueue(new TextEncoder().encode(payload.slice(i, i + 16 * 1024)));
+          controller.close();
+        },
+      }),
+      // @ts-expect-error: duplex es necesario para streams en undici y no esta en los tipos del DOM.
+      duplex: 'half',
+    });
+    assert.equal(chunked.status, 413);
+    // La conexion sigue siendo utilizable despues.
+    assert.equal((await fetch(`${base}/health`)).status, 200);
   });
 
   it('responde INTERNAL cuando el binario de yt-dlp no existe', async () => {
@@ -130,6 +148,73 @@ describe('servidor HTTP', () => {
 
     const missingIndex = await fetch(`${base}/files/${token}/1`);
     assert.equal(missingIndex.status, 404);
+
+    // Unidad de rango desconocida: se ignora la cabecera y se sirve completo (RFC 9110 14.2).
+    const items = await fetch(`${base}/files/${token}`, { headers: { range: 'items=0-1' } });
+    assert.equal(items.status, 200);
+    assert.equal(await items.text(), '0123456789');
+    const upper = await fetch(`${base}/files/${token}`, { headers: { range: 'BYTES=0-1' } });
+    assert.equal(upper.status, 206);
+    assert.equal(await upper.text(), '01');
+  });
+
+  it('GET /files cierra el descriptor del archivo cuando el cliente aborta', { skip: process.platform !== 'linux' && 'necesita /proc' }, async () => {
+    const { readdir, writeFile: wf } = await import('node:fs/promises');
+    const token = 'e'.repeat(32);
+    const dir = await app.context.store.createDir(token);
+    await wf(path.join(dir, 'big.mp4'), Buffer.alloc(4 * 1024 * 1024, 1));
+    app.context.store.register(token, dir, await app.context.store.collect(token, dir));
+    const countFds = async () => (await readdir('/proc/self/fd')).length;
+    const before = await countFds();
+    for (let i = 0; i < 25; i += 1) {
+      const aborter = new AbortController();
+      const res = await fetch(`${base}/files/${token}`, { signal: aborter.signal });
+      const reader = res.body!.getReader();
+      await reader.read();
+      aborter.abort();
+      await reader.cancel().catch(() => undefined);
+    }
+    // Se da tiempo a que el servidor procese los cierres.
+    let after = await countFds();
+    for (let i = 0; i < 20 && after > before + 3; i += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      after = await countFds();
+    }
+    assert.ok(after <= before + 3, `descriptores antes=${before} despues=${after}`);
+  });
+
+  it('la limpieza no borra carpetas de descargas en curso', async () => {
+    const token = 'f'.repeat(32);
+    const dir = await app.context.store.createDir(token);
+    await writeFile(path.join(dir, 'video.mp4.part'), 'parcial');
+    const { utimes, access } = await import('node:fs/promises');
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
+    await utimes(dir, old, old);
+    assert.equal(app.context.store.isInProgress(token), true);
+    await app.context.store.cleanup(Date.now() + 60 * 60_000);
+    await access(dir);
+    // Al registrarse deja de estar en curso y ya puede vencer.
+    app.context.store.register(token, dir, [], undefined, null);
+    assert.equal(app.context.store.isInProgress(token), false);
+    await app.context.store.cleanup(Date.now() + 60 * 60_000);
+    await assert.rejects(access(dir));
+    // Y al descartarse tambien sale de la lista de en curso.
+    const other = 'a'.repeat(31) + 'b';
+    await app.context.store.createDir(other);
+    await app.context.store.discard(other);
+    assert.equal(app.context.store.isInProgress(other), false);
+  });
+
+  it('la metadata vive en la entrada y muere con ella', async () => {
+    const token = 'a'.repeat(31) + 'c';
+    const dir = await app.context.store.createDir(token);
+    await writeFile(path.join(dir, 'a.mp3'), 'x');
+    const meta = { title: 'T', author: 'A', duration: 1, thumbnail: null, platform: 'youtube', isPlaylist: false, entries: 1 };
+    const entry = app.context.store.register(token, dir, await app.context.store.collect(token, dir), 'clave-meta', meta);
+    assert.equal(entry.meta, meta);
+    assert.equal(app.context.store.fromCache('clave-meta')?.meta?.title, 'T');
+    await app.context.store.cleanup(Date.now() + 60 * 60_000);
+    assert.equal(app.context.store.get(token), null);
   });
 
   it('la limpieza elimina entradas vencidas', async () => {

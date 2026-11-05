@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { DownloadError } from '../src/errors.js';
-import { isPrivateIp, sanitizeFilename, validateUrl } from '../src/validate.js';
+import { assertPublicHost, assertPublicUrl, isPrivateIp, proxyConfigured, sanitizeFilename, validateUrl } from '../src/validate.js';
 
 function expectInvalid(input: unknown): void {
   assert.throws(
@@ -93,5 +93,50 @@ describe('sanitizeFilename', () => {
   });
   it('conserva nombres normales con unicode', () => {
     assert.equal(sanitizeFilename('Canción  bonita.mp3'), 'Canción bonita.mp3');
+  });
+});
+
+const PROXY_VARS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'];
+
+function withoutProxy<T>(fn: () => Promise<T>): Promise<T> {
+  const saved = PROXY_VARS.map((k) => [k, process.env[k]] as const);
+  for (const k of PROXY_VARS) delete process.env[k];
+  return fn().finally(() => {
+    for (const [k, v] of saved) if (v !== undefined) process.env[k] = v;
+  });
+}
+
+describe('assertPublicHost', () => {
+  it('rechaza hosts que resuelven a IP privada', async () => {
+    await assert.rejects(assertPublicHost('localhost'), (e: unknown) => e instanceof DownloadError && e.code === 'INVALID_URL');
+  });
+
+  it('no deja pasar un fallo de DNS sin proxy (fail-closed)', async () => {
+    await withoutProxy(async () => {
+      assert.equal(proxyConfigured(), false);
+      await assert.rejects(
+        assertPublicHost('this-domain-does-not-exist-zz123.invalid'),
+        (e: unknown) => e instanceof DownloadError && e.code === 'INVALID_URL' && /resolver/.test(e.message),
+      );
+    });
+  });
+
+  it('con proxy configurado delega la resolucion en el proxy', async () => {
+    assert.equal(proxyConfigured({ HTTPS_PROXY: 'http://proxy:3128' }), true);
+    assert.equal(proxyConfigured({}), false);
+    const saved = process.env.HTTPS_PROXY;
+    process.env.HTTPS_PROXY = 'http://proxy.test:3128';
+    try {
+      assert.deepEqual(await assertPublicHost('this-domain-does-not-exist-zz123.invalid'), []);
+    } finally {
+      if (saved === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = saved;
+    }
+  });
+
+  it('assertPublicUrl valida sintaxis y host en un paso (URLs derivadas de la metadata)', async () => {
+    for (const bad of ['http://127.0.0.1/x.jpg', 'http://169.254.169.254/latest/meta-data/', 'http://localhost:8080/img.png', 'file:///etc/passwd', 'http://[::1]/a']) {
+      await assert.rejects(assertPublicUrl(bad), (e: unknown) => e instanceof DownloadError && e.code === 'INVALID_URL', bad);
+    }
   });
 });

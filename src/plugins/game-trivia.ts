@@ -4,7 +4,7 @@ import { getDatabase } from '../lib/database.js';
 import { mentionTag } from '../lib/utils.js';
 import { GameSessionManager, activeGameOf } from '../lib/games/session.js';
 import { creditWin, formatCoins } from '../lib/games/bets.js';
-import { enter, requireRegistered, requireGroup, say, declareContext, attachContexts, type GameInfo } from '../lib/games/common.js';
+import { enter, requireRegistered, requireGroup, say, isRegistered, declareContext, attachContexts, type GameInfo } from '../lib/games/common.js';
 import { nextTriviaQuestion } from '../lib/ai-games.js';
 import { TRIVIA_TEMAS, type TriviaQuestion } from '../constants/trivia.js';
 
@@ -105,7 +105,7 @@ async function finishSeries(groupId: string): Promise<void> {
 }
 
 export const triviaPlugin: PluginHandler = {
-  command: ['trivia', 'pregunta'],
+  command: ['trivia', 'quiz'],
   description: 'Trivia de opción múltiple con premios',
   category: 'juegos',
   usage: ['trivia', 'trivia ciencia', 'trivia historia 5'],
@@ -164,7 +164,7 @@ export const respuestaTriviaPlugin: PluginHandler = {
     }
     st.correct.push(ctx.m.sender);
     st.scores.set(ctx.m.sender, (st.scores.get(ctx.m.sender) ?? 0) + (first ? 3 : 1));
-    if (db.getUser(ctx.m.sender).registered) creditWin(db, ctx.m.sender, first ? FIRST_PRIZE : OTHER_PRIZE, GAME);
+    if (isRegistered(ctx.m.sender, db)) creditWin(db, ctx.m.sender, first ? FIRST_PRIZE : OTHER_PRIZE, GAME);
   },
 };
 

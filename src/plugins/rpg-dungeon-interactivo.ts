@@ -1,1420 +1,682 @@
-/**
- * Plugin de Dungeons Interactivos - RPG
- * Sistema de combate por turnos con decisiones del jugador
- */
-
-import type { PluginHandler, MessageContext } from '../types/message.js';
+import type { PluginHandler, MessageContext, SerializedMessage, CommandContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, msToTime, formatNumber, randomInt, pickRandom, matchesIgnoreAccents } from '../lib/utils.js';
-import { DUNGEONS, MONSTERS, ITEMS, CLASSES, SKILLS, type Dungeon, type Monster, type Skill } from '../types/rpg.js';
-import { calculateTotalStats, type UserRPG } from '../types/user.js';
-import { updateQuestProgress } from './rpg-misiones.js';
-import { globalModes, checkExpiredModes } from './owner-rpg.js';
-import { applyDeathPenalty, generateIMSSMessage } from './rpg-bombardear.js';
-import { PVP } from '../constants/rpg.js';
+import { EMOJI, formatNumber, msToTime } from '../lib/utils.js';
+import { ITEMS, CLASSES, SKILLS, type Dungeon, type Skill } from '../types/rpg.js';
+import type { UserRPG } from '../types/user.js';
+import { PVE, PVP } from '../constants/rpg.js';
+import { calculateDamage, type TotalStats } from '../lib/rpg-utils.js';
+import { createLogger } from '../lib/logger.js';
+import { checkExpiredModes } from '../lib/global-modes.js';
+import {
+  applySkillEffect, clearBusy, consumeEvasion, createCombatState, effectiveAttack, effectiveDefense, getDropLuck,
+  grantCombatRewards, handlePlayerDeath, playerStats, setBusy, tickEffects, type CombatantState
+} from '../lib/rpg-combat.js';
+import { countItem, formatAmbiguous, inventoryItems, removeItem, resolveItem } from '../lib/rpg-inventory.js';
+import { addPetExp } from './rpg-mascotas.js';
+import {
+  buildEncounters, finalizeDungeonLoot, healthBar, monsterDrops, monsterRewards, type DungeonEndReason, type Encounter
+} from './rpg-dungeon-common.js';
 
-// ==================== CONFIGURACIÓN ====================
-
-const DUNGEON_COOLDOWN = PVP.DUNGEON_COOLDOWN;
-const ACTION_TIMEOUT = 60000; // 60 segundos para actuar
-const DEFEND_DAMAGE_REDUCTION = 0.5; // 50% menos daño al defender
-const DEFEND_MANA_REGEN = 5; // Regenera maná al defender
-const FLEE_BASE_CHANCE = 0.4; // 40% base de huir
-const FLEE_BOSS_PENALTY = 0.25; // -25% chance contra boss
-
-// ==================== TIPOS ====================
+const log = createLogger('rpg');
+const D = PVE.DUNGEON;
+const PET_EXP_PER_DUNGEON = 40;
 
 interface DungeonSession {
   jid: string;
-  groupJid: string;
+  chat: string;
+  ctx: MessageContext;
   dungeon: Dungeon;
   playerName: string;
-  // Stats del jugador
-  playerStats: ReturnType<typeof calculateTotalStats>;
-  playerClass: string | null;
-  playerLevel: number;
-  // Recursos actuales
+  playerClass: UserRPG['playerClass'];
+  stats: TotalStats;
   currentHealth: number;
   maxHealth: number;
   currentMana: number;
   maxMana: number;
   currentStamina: number;
   maxStamina: number;
-  // Estado del dungeon
-  currentEncounterIndex: number;
-  isBossFight: boolean;
-  // Monstruo actual
-  currentMonster: Monster | null;
+  encounters: Encounter[];
+  encounterIndex: number;
   monsterHealth: number;
   monsterMaxHealth: number;
-  monsterIsEnhanced: boolean; // Para bosses
-  // Sistema de turnos
+  playerState: CombatantState;
+  monsterState: CombatantState;
   isPlayerTurn: boolean;
-  playerDefending: boolean;
-  // Buffs activos
-  playerAttackBuff: number;
-  playerDefenseBuff: number;
-  buffDuration: number;
-  // Recompensas acumuladas
+  defending: boolean;
   monstersKilled: number;
   totalDamageDealt: number;
-  expGained: number;
-  moneyGained: number;
-  itemsGained: string[];
-  // Log de combate
-  combatLog: string[];
-  // Timestamps
+  exp: number;
+  money: number;
+  items: string[];
+  luckBonus: number;
+  log: string[];
   startTime: number;
+  /** Última acción del jugador; los turnos automáticos no la refrescan */
   lastActionTime: number;
+  timeouts: number;
   actionTimeout: NodeJS.Timeout | null;
-  // Cooldowns de habilidades (skill.id -> turno cuando termina)
   skillCooldowns: Map<string, number>;
-  currentTurn: number;
+  turn: number;
 }
 
-// Sesiones activas de dungeons
-const activeDungeons = new Map<string, DungeonSession>();
+export const activeDungeons = new Map<string, DungeonSession>();
 
-// Tiempo máximo de inactividad antes de limpiar sesión (10 minutos)
-const SESSION_INACTIVITY_TIMEOUT = 10 * 60 * 1000;
+let cleanupTimer: NodeJS.Timeout | null = null;
 
-/**
- * Limpia sesiones inactivas (más de 10 minutos sin actividad)
- */
-function cleanupInactiveSessions() {
-  const now = Date.now();
-  for (const [jid, session] of activeDungeons.entries()) {
-    if (now - session.lastActionTime > SESSION_INACTIVITY_TIMEOUT) {
-      if (session.actionTimeout) clearTimeout(session.actionTimeout);
-      activeDungeons.delete(jid);
+function cleanupInactiveSessions(now: number = Date.now()): void {
+  for (const session of [...activeDungeons.values()]) {
+    if (now - session.lastActionTime > D.SESSION_INACTIVITY) {
+      log.info(`dungeon de ${session.jid} abandonado por inactividad`);
+      void endDungeon(session, 'timeout');
     }
   }
 }
 
-// Limpiar sesiones inactivas cada 5 minutos
-setInterval(cleanupInactiveSessions, 5 * 60 * 1000);
-
-// ==================== UTILIDADES ====================
-
-/**
- * Calcula el daño en combate
- */
-function calculateDamage(
-  attack: number,
-  defense: number,
-  critChance: number,
-  damageMultiplier: number = 1
-): { damage: number; isCrit: boolean } {
-  const baseDamage = Math.max(1, attack - defense * 0.5);
-  const variance = randomInt(-10, 10) / 100;
-  let damage = Math.floor(baseDamage * (1 + variance) * damageMultiplier);
-
-  const isCrit = randomInt(1, 100) <= critChance;
-  if (isCrit) damage = Math.floor(damage * 1.5);
-
-  return { damage: Math.max(1, damage), isCrit };
+/** Arranca el barrido de sesiones colgadas; lo llama index.ts al iniciar */
+export function startDungeonCleanup(): void {
+  if (cleanupTimer) return;
+  cleanupTimer = setInterval(() => cleanupInactiveSessions(), D.CLEANUP_INTERVAL);
+  cleanupTimer.unref();
 }
 
-/**
- * Obtiene las habilidades disponibles del jugador
- */
-function getAvailableSkills(session: DungeonSession): Skill[] {
+export function stopDungeonCleanup(): void {
+  if (cleanupTimer) clearInterval(cleanupTimer);
+  cleanupTimer = null;
+}
+
+function currentEncounter(session: DungeonSession): Encounter {
+  return session.encounters[session.encounterIndex];
+}
+
+function availableSkills(session: DungeonSession): Skill[] {
   if (!session.playerClass) return [];
-
-  const classInfo = CLASSES[session.playerClass as keyof typeof CLASSES];
+  const classInfo = CLASSES[session.playerClass];
   if (!classInfo) return [];
-
-  return classInfo.skills
-    .map(id => SKILLS[id])
-    .filter(s => {
-      if (!s) return false;
-      // Verificar recursos
-      if (session.currentMana < s.manaCost) return false;
-      if (session.currentStamina < s.staminaCost) return false;
-      // Verificar cooldown
-      const cooldownEnd = session.skillCooldowns.get(s.id) || 0;
-      if (session.currentTurn < cooldownEnd) return false;
-      return true;
-    });
+  return classInfo.skills.map(id => SKILLS[id]).filter((s): s is Skill => Boolean(s));
 }
 
-/**
- * Genera el mensaje del estado actual del combate
- */
-function generateCombatStatus(session: DungeonSession): string {
-  const monster = session.currentMonster!;
+function skillReady(session: DungeonSession, skill: Skill): { ready: boolean; reason?: string } {
+  if (session.currentMana < skill.manaCost) return { ready: false, reason: `💙${skill.manaCost}` };
+  if (session.currentStamina < skill.staminaCost) return { ready: false, reason: `⚡${skill.staminaCost}` };
+  const until = session.skillCooldowns.get(skill.id) || 0;
+  if (session.turn < until) return { ready: false, reason: `⏳${until - session.turn}t` };
+  return { ready: true };
+}
+
+export function formatSessionStatus(session: DungeonSession): string {
+  const encounter = currentEncounter(session);
+  const monster = encounter.monster;
   const dungeon = session.dungeon;
 
-  // Barras de vida
-  const playerHpPct = Math.max(0, Math.floor((session.currentHealth / session.maxHealth) * 10));
-  const monsterHpPct = Math.max(0, Math.floor((session.monsterHealth / session.monsterMaxHealth) * 10));
-  const playerHpBar = '█'.repeat(playerHpPct) + '░'.repeat(10 - playerHpPct);
-  const monsterHpBar = '█'.repeat(monsterHpPct) + '░'.repeat(10 - monsterHpPct);
+  let msg = `${dungeon.emoji} *${dungeon.name.toUpperCase()}*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  msg += encounter.boss
+    ? `👹 BOSS FINAL | 🔄 Turno ${session.turn}\n\n`
+    : `⚔️ Encuentro ${session.encounterIndex + 1}/${session.encounters.length - 1} | 🔄 Turno ${session.turn}\n\n`;
 
-  let msg = `${dungeon.emoji} *${dungeon.name.toUpperCase()}*\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-
-  // Encuentro actual
-  const encounterNum = session.isBossFight
-    ? '👹 BOSS FINAL'
-    : `⚔️ Encuentro ${session.currentEncounterIndex + 1}/${dungeon.monsters.length}`;
-  msg += `${encounterNum} | 🔄 Turno ${session.currentTurn}\n\n`;
-
-  // Monstruo
-  msg += `${monster.emoji} *${monster.name}* ${session.monsterIsEnhanced ? '👑' : ''}\n`;
-  msg += `   Nv.${monster.level} | [${monsterHpBar}]\n`;
-  msg += `   ❤️ ${session.monsterHealth}/${session.monsterMaxHealth}\n\n`;
-
-  // Jugador
-  msg += `🧙 *${session.playerName}*${session.playerDefending ? ' 🛡️' : ''}\n`;
-  msg += `   [${playerHpBar}] ❤️ ${session.currentHealth}/${session.maxHealth}\n`;
-  msg += `   💙 ${session.currentMana}/${session.maxMana} | ⚡ ${session.currentStamina}/${session.maxStamina}\n`;
-
-  // Buffs activos
-  if (session.buffDuration > 0) {
-    const buffs: string[] = [];
-    if (session.playerAttackBuff > 0) buffs.push(`⚔️+${session.playerAttackBuff}%`);
-    if (session.playerDefenseBuff > 0) buffs.push(`🛡️+${session.playerDefenseBuff}%`);
-    if (buffs.length > 0) {
-      msg += `   ✨ ${buffs.join(' ')} (${session.buffDuration} turnos)\n`;
-    }
-  }
+  msg += `${monster.emoji} *${monster.name}* ${encounter.boss ? '👑' : ''}\n`;
+  msg += `   Nv.${monster.level} | [${healthBar(session.monsterHealth, session.monsterMaxHealth)}]\n`;
+  msg += `   ❤️ ${session.monsterHealth}/${session.monsterMaxHealth}\n`;
+  const debuff = session.monsterState.effects.find(e => e.type === 'defenseDown');
+  if (debuff) msg += `   🪤 -${debuff.value}% defensa (${debuff.remaining} acciones)\n`;
   msg += '\n';
 
-  // Log de combate (últimas 3 acciones)
-  if (session.combatLog.length > 0) {
-    msg += `📜 *Combate:*\n`;
-    for (const line of session.combatLog.slice(-3)) {
-      msg += `   ${line}\n`;
-    }
-    msg += '\n';
+  msg += `🧙 *${session.playerName}*${session.defending ? ' 🛡️' : ''}\n`;
+  msg += `   [${healthBar(session.currentHealth, session.maxHealth)}] ❤️ ${session.currentHealth}/${session.maxHealth}\n`;
+  msg += `   💙 ${session.currentMana}/${session.maxMana} | ⚡ ${session.currentStamina}/${session.maxStamina}\n`;
+  const buffs = session.playerState.effects.map(e =>
+    e.type === 'attackUp' ? `⚔️+${e.value}% (${e.remaining})` :
+    e.type === 'defenseUp' ? `🛡️+${e.value}% (${e.remaining})` :
+    e.type === 'evading' ? '💨 evasión' : '');
+  if (buffs.some(Boolean)) msg += `   ✨ ${buffs.filter(Boolean).join(' ')}\n`;
+  msg += '\n';
+
+  if (session.log.length > 0) {
+    msg += `📜 *Combate:*\n${session.log.slice(-3).map(l => `   ${l}`).join('\n')}\n\n`;
   }
 
-  // Acciones disponibles
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `📝 *Acciones:*\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━━━\n📝 *Acciones:*\n`;
   msg += `   ⚔️ *a* - Atacar\n`;
-  msg += `   🛡️ *d* - Defender (+💙, -50% daño)\n`;
-  msg += `   🎒 *i* - Usar item/poción\n`;
-
-  // Habilidades de clase
-  const skills = getAvailableSkills(session);
-  if (skills.length > 0) {
-    msg += `   ✨ *h* - Usar habilidad\n`;
-  }
-
-  // Huir (no disponible contra boss)
-  if (!session.isBossFight) {
-    msg += `   🏃 *huir* - Escapar del dungeon\n`;
-  }
-
-  msg += `\n⏰ _Tienes 60 segundos para actuar_`;
-
+  msg += `   🛡️ *d* - Defender (+${D.DEFEND_MANA_REGEN}💙, -${Math.round(D.DEFEND_REDUCTION * 100)}% daño)\n`;
+  msg += `   🎒 *i* - Usar poción\n`;
+  if (availableSkills(session).length > 0) msg += `   ✨ *h* - Usar habilidad\n`;
+  if (!encounter.boss) msg += `   🏃 *huir* - Escapar del dungeon\n`;
+  msg += `\n⏰ _Tienes ${Math.round(D.ACTION_TIMEOUT / 1000)} segundos para actuar_`;
+  if (session.timeouts > 0) msg += ` _(${session.timeouts}/${D.MAX_TIMEOUTS} turnos perdidos)_`;
   return msg;
 }
 
-/**
- * Genera el menú de habilidades
- */
-function generateSkillsMenu(session: DungeonSession): string {
-  const classInfo = session.playerClass ? CLASSES[session.playerClass as keyof typeof CLASSES] : null;
-
-  let msg = `✨ *HABILIDADES*${classInfo ? ` (${classInfo.emoji} ${classInfo.name})` : ''}\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-
-  // Verificar si tiene clase
-  if (!session.playerClass || !classInfo) {
-    msg += `❌ No tienes una clase asignada.\n\n`;
-    msg += `💡 Usa */clases* para ver las clases disponibles\n`;
-    msg += `💡 Usa */clase [nombre]* para elegir una clase`;
-    return msg;
+function formatSkillsMenu(session: DungeonSession): string {
+  const classInfo = session.playerClass ? CLASSES[session.playerClass] : null;
+  let msg = `✨ *HABILIDADES*${classInfo ? ` (${classInfo.emoji} ${classInfo.name})` : ''}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  if (!classInfo) {
+    return msg + `❌ No tienes una clase asignada.\n\n💡 Usa */clases* para ver las clases y */clase [nombre]* para elegir una.`;
   }
-
-  const skills = getAvailableSkills(session);
-
-  if (skills.length === 0) {
-    msg += `❌ No tienes habilidades disponibles.\n`;
-    msg += `_Falta maná, energía o están en cooldown._\n\n`;
-    msg += `💡 Usa *d* para defender y regenerar maná.`;
-    return msg;
-  }
-
-  msg += `💙 Maná: ${session.currentMana}/${session.maxMana}\n`;
-  msg += `⚡ Energía: ${session.currentStamina}/${session.maxStamina}\n\n`;
-
-  for (let i = 0; i < skills.length; i++) {
-    const skill = skills[i];
-    const cooldownEnd = session.skillCooldowns.get(skill.id) || 0;
-    const onCooldown = session.currentTurn < cooldownEnd;
-    const cdText = onCooldown ? ` ⏳${cooldownEnd - session.currentTurn}t` : '';
-
-    msg += `*${i + 1}.* ${skill.emoji} *${skill.name}*${cdText}\n`;
-    msg += `   ${skill.description}\n`;
-    msg += `   💙${skill.manaCost} ⚡${skill.staminaCost}`;
-    if (skill.cooldown > 0) msg += ` | CD: ${skill.cooldown}t`;
-    msg += '\n\n';
-  }
-
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `📝 Usa *h1*, *h2*, etc. o escribe el nombre`;
-
-  return msg;
-}
-
-/**
- * Genera el menú de items consumibles
- */
-function generateItemsMenu(session: DungeonSession, user: UserRPG): string {
-  let msg = `🎒 *INVENTARIO - CONSUMIBLES*\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-
-  // Filtrar solo consumibles del inventario
-  const consumables = user.inventory.filter(inv => {
-    const item = ITEMS[inv.itemId];
-    return item && item.type === 'consumable' && item.consumeEffect &&
-           (item.consumeEffect.health || item.consumeEffect.mana || item.consumeEffect.stamina);
+  msg += `💙 Maná: ${session.currentMana}/${session.maxMana}\n⚡ Energía: ${session.currentStamina}/${session.maxStamina}\n\n`;
+  availableSkills(session).forEach((skill, i) => {
+    const state = skillReady(session, skill);
+    msg += `*${i + 1}.* ${skill.emoji} *${skill.name}* ${state.ready ? '✅' : `❌ ${state.reason}`}\n`;
+    msg += `   ${skill.description}\n   💙${skill.manaCost} ⚡${skill.staminaCost}${skill.cooldown > 0 ? ` | CD: ${skill.cooldown}t` : ''}\n\n`;
   });
-
-  if (consumables.length === 0) {
-    msg += `❌ No tienes items consumibles.\n\n`;
-    msg += `💡 Compra pociones en la tienda con */tienda*`;
-    return msg;
-  }
-
-  msg += `❤️ Salud: ${session.currentHealth}/${session.maxHealth}\n`;
-  msg += `💙 Maná: ${session.currentMana}/${session.maxMana}\n`;
-  msg += `⚡ Energía: ${session.currentStamina}/${session.maxStamina}\n\n`;
-
-  for (let i = 0; i < consumables.length; i++) {
-    const inv = consumables[i];
-    const item = ITEMS[inv.itemId];
-    if (!item) continue;
-
-    const effects: string[] = [];
-    if (item.consumeEffect?.health) effects.push(`+${item.consumeEffect.health} ❤️`);
-    if (item.consumeEffect?.mana) effects.push(`+${item.consumeEffect.mana} 💙`);
-    if (item.consumeEffect?.stamina) effects.push(`+${item.consumeEffect.stamina} ⚡`);
-
-    msg += `*${i + 1}.* ${item.emoji} *${item.name}* x${inv.quantity}\n`;
-    msg += `   ${effects.join(' | ')}\n\n`;
-  }
-
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `📝 Usa *i1*, *i2*, etc. o escribe el nombre`;
-
+  msg += `━━━━━━━━━━━━━━━━━━━━━\n📝 Usa *h1*, *h2*... o *h [nombre]*`;
   return msg;
 }
 
-/**
- * Limpia una sesión de dungeon
- */
-function cleanupDungeonSession(jid: string) {
-  const session = activeDungeons.get(jid);
-  if (session) {
-    if (session.actionTimeout) clearTimeout(session.actionTimeout);
-    activeDungeons.delete(jid);
-  }
+function usableConsumables(user: UserRPG) {
+  return inventoryItems(user).filter(item =>
+    item.type === 'consumable' && item.consumeEffect &&
+    Boolean(item.consumeEffect.health || item.consumeEffect.mana || item.consumeEffect.stamina));
 }
 
-/**
- * Inicia el timeout de acción
- */
-function startActionTimeout(session: DungeonSession, ctx: MessageContext) {
+function formatItemsMenu(session: DungeonSession, user: UserRPG): string {
+  const consumables = usableConsumables(user);
+  let msg = `🎒 *POCIONES*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  if (consumables.length === 0) return msg + `❌ No tienes pociones.\n\n💡 Compra en la tienda con */tienda consumibles*`;
+  msg += `❤️ ${session.currentHealth}/${session.maxHealth} | 💙 ${session.currentMana}/${session.maxMana} | ⚡ ${session.currentStamina}/${session.maxStamina}\n\n`;
+  consumables.forEach((item, i) => {
+    const e = item.consumeEffect!;
+    const effects = [e.health && `+${e.health} ❤️`, e.mana && `+${e.mana} 💙`, e.stamina && `+${e.stamina} ⚡`].filter(Boolean);
+    msg += `*${i + 1}.* ${item.emoji} *${item.name}* x${countItem(user, item.id)}\n   ${effects.join(' | ')}\n\n`;
+  });
+  msg += `━━━━━━━━━━━━━━━━━━━━━\n📝 Usa *i1*, *i2*... o *i [nombre]* (no gasta turno)`;
+  return msg;
+}
+
+function clearActionTimeout(session: DungeonSession): void {
   if (session.actionTimeout) clearTimeout(session.actionTimeout);
+  session.actionTimeout = null;
+}
 
+function startActionTimeout(session: DungeonSession): void {
+  clearActionTimeout(session);
   session.actionTimeout = setTimeout(async () => {
-    const currentSession = activeDungeons.get(session.jid);
-    if (!currentSession || currentSession.startTime !== session.startTime) return;
-
-    // Timeout - el monstruo ataca
-    await ctx.m.reply(`⏰ *¡Tiempo agotado!* El monstruo aprovecha tu distracción...`);
-    await processMonsterTurn(currentSession, ctx);
-  }, ACTION_TIMEOUT);
-}
-
-/**
- * Procesa el turno del monstruo
- */
-async function processMonsterTurn(session: DungeonSession, ctx: MessageContext) {
-  const { m } = ctx;
-  const monster = session.currentMonster!;
-
-  // Calcular daño del monstruo
-  let monsterAttack = monster.attack;
-  if (session.monsterIsEnhanced) {
-    monsterAttack = Math.floor(monsterAttack * 1.2);
-  }
-
-  let playerDefense = session.playerStats.defense;
-  // Aplicar buff de defensa
-  if (session.buffDuration > 0 && session.playerDefenseBuff > 0) {
-    playerDefense = Math.floor(playerDefense * (1 + session.playerDefenseBuff / 100));
-  }
-
-  const result = calculateDamage(monsterAttack, playerDefense, 5);
-  let finalDamage = result.damage;
-
-  // Reducir daño si está defendiendo
-  const wasDefending = session.playerDefending;
-  if (wasDefending) {
-    finalDamage = Math.floor(finalDamage * DEFEND_DAMAGE_REDUCTION);
-    session.playerDefending = false;
-  }
-
-  session.currentHealth = Math.max(0, session.currentHealth - finalDamage);
-
-  // Log del ataque
-  let attackLog = `${monster.emoji} ${monster.name} ataca → *${finalDamage}*`;
-  if (result.isCrit) attackLog += ' 💥CRIT';
-  if (wasDefending) attackLog += ' 🛡️';
-  session.combatLog.push(attackLog);
-
-  // Verificar muerte del jugador
-  if (session.currentHealth <= 0) {
-    await endDungeon(session, ctx, false, 'death');
-    return;
-  }
-
-  // Reducir duración de buffs
-  if (session.buffDuration > 0) {
-    session.buffDuration--;
-    if (session.buffDuration <= 0) {
-      session.playerAttackBuff = 0;
-      session.playerDefenseBuff = 0;
-    }
-  }
-
-  // Turno del jugador
-  session.isPlayerTurn = true;
-  session.currentTurn++;
-  session.lastActionTime = Date.now();
-
-  // Mostrar estado y reiniciar timeout
-  const statusMsg = generateCombatStatus(session);
-  await m.reply(statusMsg);
-  startActionTimeout(session, ctx);
-}
-
-/**
- * Procesa la muerte del monstruo actual
- */
-async function processMonsterDeath(session: DungeonSession, ctx: MessageContext) {
-  const { m } = ctx;
-  const monster = session.currentMonster!;
-  const dungeon = session.dungeon;
-
-  // Recompensas del monstruo
-  let expReward = monster.expReward;
-  let moneyReward = randomInt(monster.moneyReward[0], monster.moneyReward[1]);
-
-  // Bonus por boss
-  if (session.isBossFight) {
-    expReward *= 2;
-    moneyReward *= 2;
-  }
-
-  session.expGained += expReward;
-  session.moneyGained += moneyReward;
-  session.monstersKilled++;
-
-  // Drops
-  const dropChanceMultiplier = session.isBossFight ? 1 : 0.5;
-  for (const drop of monster.drops) {
-    if (Math.random() <= drop.chance * dropChanceMultiplier) {
-      session.itemsGained.push(drop.itemId);
-    }
-  }
-
-  // Log de victoria
-  const dropItems = session.itemsGained.slice(-monster.drops.length)
-    .map(id => ITEMS[id]?.name || id)
-    .filter(Boolean);
-
-  let victoryLog = `✅ *${monster.name}* derrotado!`;
-  session.combatLog.push(victoryLog);
-
-  // Verificar si era el boss
-  if (session.isBossFight) {
-    // Dungeon completado
-    await endDungeon(session, ctx, true, 'victory');
-    return;
-  }
-
-  // Siguiente encuentro o boss
-  session.currentEncounterIndex++;
-
-  if (session.currentEncounterIndex >= dungeon.monsters.length) {
-    // Toca el boss
-    await startBossFight(session, ctx);
-  } else {
-    // Siguiente monstruo normal
-    await startNextEncounter(session, ctx);
-  }
-}
-
-/**
- * Inicia el siguiente encuentro normal
- */
-async function startNextEncounter(session: DungeonSession, ctx: MessageContext) {
-  const { m } = ctx;
-  const dungeon = session.dungeon;
-
-  const monsterId = dungeon.monsters[session.currentEncounterIndex];
-  const monster = MONSTERS[monsterId];
-
-  if (!monster) {
-    await endDungeon(session, ctx, false, 'error');
-    return;
-  }
-
-  session.currentMonster = monster;
-  session.monsterHealth = monster.health;
-  session.monsterMaxHealth = monster.health;
-  session.monsterIsEnhanced = false;
-  session.isPlayerTurn = true;
-  session.playerDefending = false;
-  session.combatLog = [];
-  session.lastActionTime = Date.now();
-
-  // Regenerar un poco de recursos entre encuentros
-  session.currentMana = Math.min(session.maxMana, session.currentMana + 5);
-  session.currentStamina = Math.min(session.maxStamina, session.currentStamina + 10);
-
-  let msg = `\n🚪 *Avanzas más profundo...*\n\n`;
-  msg += `⚔️ *¡Nuevo encuentro!*\n`;
-  msg += `${monster.emoji} *${monster.name}* (Nv.${monster.level}) aparece!\n\n`;
-
-  await m.reply(msg);
-
-  // Mostrar estado de combate
-  const statusMsg = generateCombatStatus(session);
-  await m.reply(statusMsg);
-  startActionTimeout(session, ctx);
-}
-
-/**
- * Inicia la pelea contra el boss
- */
-async function startBossFight(session: DungeonSession, ctx: MessageContext) {
-  const { m } = ctx;
-  const dungeon = session.dungeon;
-
-  const boss = MONSTERS[dungeon.bossId];
-  if (!boss) {
-    await endDungeon(session, ctx, false, 'error');
-    return;
-  }
-
-  // Stats mejorados del boss
-  const enhancedHealth = Math.floor(boss.health * 1.5);
-
-  session.currentMonster = boss;
-  session.monsterHealth = enhancedHealth;
-  session.monsterMaxHealth = enhancedHealth;
-  session.monsterIsEnhanced = true;
-  session.isBossFight = true;
-  session.isPlayerTurn = true;
-  session.playerDefending = false;
-  session.combatLog = [];
-  session.lastActionTime = Date.now();
-
-  // Regenerar recursos antes del boss
-  session.currentMana = Math.min(session.maxMana, session.currentMana + 10);
-  session.currentStamina = Math.min(session.maxStamina, session.currentStamina + 15);
-
-  let msg = `\n👹 *¡EL BOSS APARECE!*\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-  msg += `${boss.emoji} *${boss.name}* 👑\n`;
-  msg += `_"${boss.description}"_\n\n`;
-  msg += `⚠️ *Stats mejorados:*\n`;
-  msg += `   ❤️ Vida x1.5 | ⚔️ Ataque x1.2 | 🛡️ Defensa x1.2\n\n`;
-  msg += `💀 _¡No puedes huir del boss!_\n`;
-
-  await m.reply(msg);
-
-  // Mostrar estado de combate
-  const statusMsg = generateCombatStatus(session);
-  await m.reply(statusMsg);
-  startActionTimeout(session, ctx);
-}
-
-/**
- * Finaliza el dungeon
- */
-async function endDungeon(
-  session: DungeonSession,
-  ctx: MessageContext,
-  completed: boolean,
-  reason: 'victory' | 'death' | 'flee' | 'timeout' | 'error'
-) {
-  const { m } = ctx;
-  const db = getDatabase();
-  const dungeon = session.dungeon;
-
-  // Limpiar timeout
-  if (session.actionTimeout) {
-    clearTimeout(session.actionTimeout);
+    const current = activeDungeons.get(session.jid);
+    if (!current || current.startTime !== session.startTime) return;
     session.actionTimeout = null;
-  }
-
-  // Aplicar multiplicadores del dungeon si completó
-  if (completed) {
-    session.expGained = Math.floor(session.expGained * dungeon.rewards.expMultiplier);
-    session.moneyGained = Math.floor(session.moneyGained * dungeon.rewards.moneyMultiplier);
-
-    // Drops garantizados
-    for (const itemId of dungeon.rewards.guaranteedDrops) {
-      session.itemsGained.push(itemId);
-    }
-
-    // Bonus drops
-    for (const bonusDrop of dungeon.rewards.bonusDrops) {
-      if (Math.random() <= bonusDrop.chance) {
-        session.itemsGained.push(bonusDrop.itemId);
+    session.timeouts++;
+    try {
+      if (session.timeouts >= D.MAX_TIMEOUTS) {
+        await session.ctx.m.reply(`⏰ *Demasiados turnos sin actuar.* Abandonas el dungeon.`);
+        await endDungeon(session, 'timeout');
+        return;
       }
+      await session.ctx.m.reply(`⏰ *¡Tiempo agotado!* El monstruo aprovecha tu distracción... (${session.timeouts}/${D.MAX_TIMEOUTS})`);
+      session.isPlayerTurn = false;
+      await processMonsterTurn(session);
+    } catch (error) {
+      log.error('timeout de dungeon:', error);
     }
+  }, D.ACTION_TIMEOUT);
+}
+
+async function showStatus(session: DungeonSession): Promise<void> {
+  await session.ctx.m.reply(formatSessionStatus(session));
+  startActionTimeout(session);
+}
+
+async function processMonsterTurn(session: DungeonSession): Promise<void> {
+  const encounter = currentEncounter(session);
+  const monster = encounter.monster;
+
+  if (consumeEvasion(session.playerState)) {
+    session.log.push(`💨 ${session.playerName} esquiva el ataque de ${monster.name}`);
   } else {
-    // Penalización por no completar
-    const penalty = reason === 'death' ? 0.5 : (reason === 'flee' ? 0.3 : 0.2);
-    session.expGained = Math.floor(session.expGained * penalty);
-    session.moneyGained = Math.floor(session.moneyGained * penalty);
-    session.itemsGained = []; // Pierdes los items
+    const defense = effectiveDefense(session.stats.defense, session.playerState);
+    const hit = calculateDamage(encounter.fighter.attack, defense, PVE.MONSTER_CRIT_CHANCE);
+    let damage = hit.damage;
+    if (session.defending) damage = Math.floor(damage * D.DEFEND_REDUCTION);
+    session.currentHealth = Math.max(0, session.currentHealth - damage);
+
+    let line = `${monster.emoji} ${monster.name} ataca → *${damage}*`;
+    if (hit.isCrit) line += ' 💥CRIT';
+    if (session.defending) line += ' 🛡️';
+    session.log.push(line);
+  }
+  session.defending = false;
+
+  if (session.currentHealth <= 0) {
+    await endDungeon(session, 'death');
+    return;
   }
 
-  // Aplicar modos globales
-  const modeMessages: string[] = [];
+  tickEffects(session.playerState);
+  tickEffects(session.monsterState);
+  session.isPlayerTurn = true;
+  session.turn++;
+  await showStatus(session);
+}
 
-  if (globalModes.bonusMode.active) {
-    const bonusExp = Math.floor(session.expGained * (globalModes.bonusMode.expMultiplier - 1));
-    const bonusMoney = Math.floor(session.moneyGained * (globalModes.bonusMode.moneyMultiplier - 1));
-    session.expGained += bonusExp;
-    session.moneyGained += bonusMoney;
-    modeMessages.push(`🎁 Modo Bonus: +${bonusExp} XP, +${bonusMoney} 💰`);
+async function processMonsterDeath(session: DungeonSession): Promise<void> {
+  const encounter = currentEncounter(session);
+  const rewards = monsterRewards(encounter.monster, encounter.boss);
+  session.exp += rewards.exp;
+  session.money += rewards.money;
+  session.monstersKilled++;
+  session.items.push(...monsterDrops(encounter.monster, encounter.boss, session.luckBonus));
+  session.log.push(`✅ *${encounter.monster.name}* derrotado!`);
+
+  if (encounter.boss) {
+    await endDungeon(session, 'victory');
+    return;
   }
 
-  if (globalModes.pvpMode.active) {
-    const pvpExp = Math.floor(session.expGained * (globalModes.pvpMode.damageMultiplier - 1));
-    session.expGained += pvpExp;
-    modeMessages.push(`⚔️ Modo PvP: +${pvpExp} XP`);
-  }
+  session.encounterIndex++;
+  const next = currentEncounter(session);
+  session.monsterHealth = next.fighter.health;
+  session.monsterMaxHealth = next.fighter.health;
+  session.monsterState = createCombatState();
+  session.isPlayerTurn = true;
+  session.defending = false;
+  session.log = [];
 
-  if (globalModes.chaosMode.active) {
-    const chaosExp = Math.floor(session.expGained * (globalModes.chaosMode.multiplier - 1));
-    const chaosMoney = Math.floor(session.moneyGained * (globalModes.chaosMode.multiplier - 1));
-    session.expGained += chaosExp;
-    session.moneyGained += chaosMoney;
-    modeMessages.push(`🌀 Modo Caos: +${chaosExp} XP, +${chaosMoney} 💰`);
-  }
+  const regen = next.boss ? D.REGEN_BEFORE_BOSS : D.REGEN_BETWEEN;
+  session.currentMana = Math.min(session.maxMana, session.currentMana + regen.MANA);
+  session.currentStamina = Math.min(session.maxStamina, session.currentStamina + regen.STAMINA);
 
-  if (globalModes.eventMode.active) {
-    const eventExp = Math.floor(session.expGained * (globalModes.eventMode.dropMultiplier - 1));
-    const eventMoney = Math.floor(session.moneyGained * (globalModes.eventMode.dropMultiplier - 1));
-    session.expGained += eventExp;
-    session.moneyGained += eventMoney;
-    modeMessages.push(`🎉 ${globalModes.eventMode.eventName}: +${eventExp} XP, +${eventMoney} 💰`);
+  if (next.boss) {
+    const mult = D.BOSS_STATS_MULTIPLIER;
+    await session.ctx.m.reply(
+      `\n👹 *¡EL BOSS APARECE!*\n━━━━━━━━━━━━━━━━━━━━━\n\n${next.monster.emoji} *${next.monster.name}* 👑\n_"${next.monster.description}"_\n\n` +
+      `⚠️ *Stats mejorados:* ❤️ x${mult.HEALTH} | ⚔️ x${mult.ATTACK} | 🛡️ x${mult.DEFENSE}\n\n💀 _¡No puedes huir del boss!_`
+    );
+  } else {
+    await session.ctx.m.reply(`\n🚪 *Avanzas más profundo...*\n\n⚔️ *¡Nuevo encuentro!*\n${next.monster.emoji} *${next.monster.name}* (Nv.${next.monster.level}) aparece!`);
   }
+  await showStatus(session);
+}
 
-  // Obtener usuario actual
+async function endDungeon(session: DungeonSession, reason: DungeonEndReason): Promise<void> {
+  clearActionTimeout(session);
+  activeDungeons.delete(session.jid);
+  clearBusy(session.jid);
+
+  const db = getDatabase();
+  const { m } = session.ctx;
+  const dungeon = session.dungeon;
+  const completed = reason === 'victory';
+  const diedToBoss = reason === 'death' && currentEncounter(session).boss;
+
+  const loot = finalizeDungeonLoot(dungeon, { exp: session.exp, money: session.money, items: session.items }, reason, { diedToBoss, luckBonus: session.luckBonus });
+
   const user = db.getUser(session.jid);
-
-  // Actualizar estadísticas de combate
-  const newCombatStats = { ...user.combatStats };
-  newCombatStats.totalKills += session.monstersKilled;
-  newCombatStats.totalDamageDealt += session.totalDamageDealt;
-
+  const combatStats = { ...user.combatStats };
+  combatStats.totalKills += session.monstersKilled;
+  combatStats.totalDamageDealt += session.totalDamageDealt;
   if (completed) {
-    newCombatStats.dungeonsCompleted++;
-    newCombatStats.bossesKilled++;
+    combatStats.dungeonsCompleted++;
+    combatStats.bossesKilled++;
   }
+  const petLeveled = completed && addPetExp(user.pet, PET_EXP_PER_DUNGEON);
 
-  // Agregar items al inventario
-  for (const itemId of session.itemsGained) {
-    const existingItem = user.inventory.find(i => i.itemId === itemId);
-    if (existingItem) {
-      existingItem.quantity++;
-    } else {
-      user.inventory.push({ itemId, quantity: 1 });
-    }
-  }
-
-  // Guardar cambios
+  // Vida, maná y energía gastados dentro del dungeon se persisten
   db.updateUser(session.jid, {
-    health: Math.max(1, session.currentHealth),
-    exp: user.exp + session.expGained,
-    money: user.money + session.moneyGained,
-    totalEarned: user.totalEarned + session.moneyGained,
-    combatStats: newCombatStats,
-    inventory: user.inventory
+    health: reason === 'death' ? 0 : Math.max(1, Math.min(session.currentHealth, session.maxHealth)),
+    mana: Math.max(0, Math.min(session.currentMana, session.maxMana)),
+    stamina: Math.max(0, Math.min(session.currentStamina, session.maxStamina)),
+    combatStats,
+    pet: user.pet
   });
 
-  // Construir mensaje de resultado
-  let resultEmoji = completed ? '🏆' : (reason === 'death' ? '💀' : '🏃');
-  let resultTitle = completed ? '¡DUNGEON COMPLETADO!' : (
-    reason === 'death' ? '¡HAS CAÍDO!' :
-    reason === 'flee' ? 'ESCAPASTE' :
-    reason === 'timeout' ? 'TIEMPO AGOTADO' : 'ERROR'
-  );
+  const rewards = grantCombatRewards(db, session.jid, {
+    exp: loot.exp,
+    money: loot.money,
+    items: loot.items,
+    quest: completed ? { objective: 'dungeon', amount: 1 } : undefined
+  });
 
-  let msg = `\n${resultEmoji} *${resultTitle}*\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  const title = completed ? '🏆 *¡DUNGEON COMPLETADO!*'
+    : reason === 'death' ? '💀 *¡HAS CAÍDO!*'
+    : reason === 'flee' ? '🏃 *ESCAPASTE*'
+    : reason === 'timeout' ? '⏰ *DUNGEON ABANDONADO*' : '❌ *ERROR*';
 
-  msg += `${dungeon.emoji} *${dungeon.name}*\n\n`;
-
-  // Log final de combate
-  if (session.combatLog.length > 0) {
-    msg += `📜 *Últimas acciones:*\n`;
-    for (const line of session.combatLog.slice(-4)) {
-      msg += `   ${line}\n`;
-    }
-    msg += '\n';
-  }
-
+  let msg = `\n${title}\n━━━━━━━━━━━━━━━━━━━━━\n\n${dungeon.emoji} *${dungeon.name}*\n\n`;
+  if (session.log.length > 0) msg += `📜 *Últimas acciones:*\n${session.log.slice(-4).map(l => `   ${l}`).join('\n')}\n\n`;
   msg += `📊 *Resultados:*\n`;
   msg += `   💀 Monstruos: ${session.monstersKilled}\n`;
-  msg += `   ${EMOJI.exp} XP: +${formatNumber(session.expGained)}\n`;
-  msg += `   ${EMOJI.coin} Monedas: +${formatNumber(session.moneyGained)}\n`;
+  msg += `   ${EMOJI.exp} XP: +${formatNumber(rewards.exp)}\n`;
+  msg += `   ${EMOJI.coin} Monedas: +${formatNumber(rewards.money)}\n`;
+  if (rewards.items.length > 0) msg += `   🎁 Botín: ${rewards.items.join(', ')}\n`;
+  if (rewards.lost.length > 0) msg += `   ${EMOJI.warning} Inventario lleno, se perdió: ${rewards.lost.join(', ')}\n`;
+  if (!completed && session.items.length > 0) msg += `   _Los drops recogidos se perdieron al no completar el dungeon_\n`;
+  if (rewards.lines.length > 0) msg += `\n🎮 *Bonificaciones:*\n${rewards.lines.map(l => `   ${l}`).join('\n')}\n`;
+  if (petLeveled && user.pet) msg += `\n🐾 ¡Tu mascota *${user.pet.name}* subió al nivel ${user.pet.level}!\n`;
 
-  if (session.itemsGained.length > 0) {
-    const itemNames = session.itemsGained.map(id => {
-      const item = ITEMS[id];
-      return item ? `${item.emoji} ${item.name}` : id;
-    });
-    msg += `   🎁 Items: ${itemNames.join(', ')}\n`;
-  }
-
-  // Modos activos
-  if (modeMessages.length > 0) {
-    msg += `\n🎮 *Bonificaciones:*\n`;
-    msg += modeMessages.map(m => `   ${m}`).join('\n') + '\n';
-  }
-
-  msg += `\n❤️ Salud: *${Math.max(1, session.currentHealth)}/${session.maxHealth}*\n`;
-
-  // Penalización IMSS si murió
   if (reason === 'death') {
-    const freshUser = db.getUser(session.jid);
-    const imssResult = applyDeathPenalty(db, session.jid, freshUser);
-    msg += generateIMSSMessage(imssResult, session.playerName);
-    db.updateUser(session.jid, { health: 1 });
+    const death = handlePlayerDeath(db, session.jid, session.playerName);
+    msg += `\n❤️ Salud: *1/${session.maxHealth}*\n${death.message}`;
+  } else {
+    msg += `\n❤️ Salud: *${Math.max(1, session.currentHealth)}/${session.maxHealth}*`;
   }
-
-  msg += `\n⏰ Próximo dungeon: *30 minutos*`;
-
-  // Limpiar sesión
-  cleanupDungeonSession(session.jid);
+  msg += `\n\n⏰ Próximo dungeon: *${msToTime(PVP.DUNGEON_COOLDOWN)}*`;
 
   await m.reply(msg);
   await m.react(completed ? '🏆' : '💀');
-
-  // Actualizar misiones
-  if (completed) {
-    updateQuestProgress(db, session.jid, 'dungeon', 1);
-  }
-  if (session.moneyGained > 0) {
-    updateQuestProgress(db, session.jid, 'earn', session.moneyGained);
-  }
 }
 
-// ==================== PLUGINS ====================
-
 /**
- * Plugin: Dungeon Interactivo - Ver dungeons disponibles
+ * Crea la sesión interactiva: cobra energía y cooldown, marca al jugador como
+ * ocupado y muestra el primer encuentro. Las comprobaciones de entrada
+ * (checkDungeonEntry) las hace el comando antes de llamar.
  */
-export const dungeonsInteractivoPlugin: PluginHandler = {
-  command: ['dungeons', 'mazmorras', 'exploraciones'],
-  tags: ['rpg'],
-  help: [
-    'dungeons - Ver todas las mazmorras disponibles',
-    'Cada dungeon tiene diferentes dificultades y recompensas'
-  ],
-  register: true,
-
-  handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-    const db = getDatabase();
-    const user = db.getUser(m.sender);
-
-    let response = `🏰 *DUNGEONS DISPONIBLES*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📊 Tu nivel: *${user.level}*\n`;
-    response += `⚡ Tu energía: *${user.stamina}/${user.maxStamina}*\n\n`;
-
-    for (const [dungeonId, dungeon] of Object.entries(DUNGEONS)) {
-      const canEnter = user.level >= dungeon.requiredLevel;
-      const hasStamina = user.stamina >= dungeon.staminaCost;
-      const status = canEnter ? (hasStamina ? '✅' : '⚡') : '🔒';
-
-      response += `${status} ${dungeon.emoji} *${dungeon.name}*\n`;
-      response += `   📖 _${dungeon.description}_\n`;
-      response += `   📊 Nivel: ${dungeon.requiredLevel}+ | ⚡ Costo: ${dungeon.staminaCost}\n`;
-      response += `   🎁 XP x${dungeon.rewards.expMultiplier} | 💰 x${dungeon.rewards.moneyMultiplier}\n\n`;
-    }
-
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📝 */dungeon [nombre]* - Modo interactivo ⚔️\n`;
-    response += `📝 */dr [nombre]* - Modo rápido/automático ⚡\n`;
-    response += `⏰ Cooldown: 30 minutos`;
-
-    await m.reply(response);
+export async function startInteractiveDungeon(ctx: MessageContext, user: UserRPG, dungeon: Dungeon): Promise<void> {
+  const { m } = ctx;
+  const encounters = buildEncounters(dungeon);
+  if (encounters.length < 2) {
+    await m.reply(`${EMOJI.error} Ese dungeon no tiene encuentros configurados.`);
+    return;
   }
-};
-
-/**
- * Plugin: Dungeon Interactivo - Entrar a un dungeon
- */
-export const dungeonInteractivoPlugin: PluginHandler = {
-  command: ['dungeon', 'mazmorra', 'explorar'],
-  tags: ['rpg'],
-  help: [
-    'dungeon [nombre] - Entra a una mazmorra interactiva',
-    'Combate por turnos con decisiones estratégicas',
-    'Usa /dr para modo automático rápido'
-  ],
-  register: true,
-
-  handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
-    const db = getDatabase();
-    const user = db.getUser(m.sender);
-
-    // Limpiar sesiones inactivas antes de verificar
-    cleanupInactiveSessions();
-
-    // Verificar si ya tiene un dungeon activo
-    if (activeDungeons.has(m.sender)) {
-      const session = activeDungeons.get(m.sender)!;
-      await m.reply(
-        `${EMOJI.warning} Ya estás en un dungeon.\n\n` +
-        `${session.dungeon.emoji} *${session.dungeon.name}*\n` +
-        `Usa tus comandos de combate o *salir* para abandonar.`
-      );
-      // Mostrar estado actual
-      if (session.currentMonster) {
-        const statusMsg = generateCombatStatus(session);
-        await m.reply(statusMsg);
-      }
-      return;
-    }
-
-    // Verificar modos globales expirados
-    checkExpiredModes();
-
-    // Verificar cooldown
-    const now = Date.now();
-    const lastDungeon = user.lastDungeon || 0;
-
-    if (now - lastDungeon < DUNGEON_COOLDOWN) {
-      const remaining = DUNGEON_COOLDOWN - (now - lastDungeon);
-      await m.reply(
-        `${EMOJI.time} Necesitas descansar después de tu última expedición.\n\n` +
-        `⏳ Espera *${msToTime(remaining)}* para entrar a otro dungeon.`
-      );
-      return;
-    }
-
-    // Si no especifica dungeon, mostrar lista
-    if (!text.trim()) {
-      let recommendedDungeon: Dungeon | null = null;
-      for (const dungeon of Object.values(DUNGEONS)) {
-        if (user.level >= dungeon.requiredLevel) {
-          recommendedDungeon = dungeon;
-        }
-      }
-
-      let response = `${EMOJI.error} Especifica a qué dungeon quieres entrar.\n\n`;
-      response += `📝 *Uso:* /dungeon cueva slimes\n\n`;
-      response += `🏰 *Dungeons disponibles:*\n`;
-
-      for (const dungeon of Object.values(DUNGEONS)) {
-        const canEnter = user.level >= dungeon.requiredLevel;
-        response += `   ${canEnter ? '✅' : '🔒'} ${dungeon.name} (Nv.${dungeon.requiredLevel}+)\n`;
-      }
-
-      if (recommendedDungeon) {
-        response += `\n💡 *Recomendado:* ${recommendedDungeon.name}`;
-      }
-
-      response += `\n\n⚡ */dr* - Modo rápido (automático)`;
-
-      await m.reply(response);
-      return;
-    }
-
-    // Buscar dungeon
-    const searchTerm = text.toLowerCase().trim();
-    let selectedDungeon: Dungeon | null = null;
-
-    for (const dungeon of Object.values(DUNGEONS)) {
-      if (matchesIgnoreAccents(dungeon.name, searchTerm) ||
-          dungeon.id.includes(searchTerm.replace(/\s+/g, '_'))) {
-        selectedDungeon = dungeon;
-        break;
-      }
-    }
-
-    if (!selectedDungeon) {
-      await m.reply(
-        `${EMOJI.error} Dungeon no encontrado.\n\n` +
-        `💡 Usa */dungeons* para ver las mazmorras disponibles.`
-      );
-      return;
-    }
-
-    // Verificar nivel
-    if (user.level < selectedDungeon.requiredLevel) {
-      await m.reply(
-        `${EMOJI.error} Necesitas nivel *${selectedDungeon.requiredLevel}* para entrar.\n\n` +
-        `📊 Tu nivel: *${user.level}*`
-      );
-      return;
-    }
-
-    // Verificar stamina
-    if (user.stamina < selectedDungeon.staminaCost) {
-      await m.reply(
-        `${EMOJI.error} No tienes suficiente energía.\n\n` +
-        `⚡ Requerida: *${selectedDungeon.staminaCost}*\n` +
-        `⚡ Tu energía: *${user.stamina}/${user.maxStamina}*\n\n` +
-        `💡 Espera o usa una poción de energía.`
-      );
-      return;
-    }
-
-    // Calcular stats del jugador
-    const playerStats = calculateTotalStats(user, ITEMS, CLASSES);
-
-    // Verificar salud
-    if (user.health < PVP.MIN_HEALTH_DUNGEON) {
-      await m.reply(
-        `${EMOJI.error} Estás muy débil para entrar a un dungeon.\n\n` +
-        `❤️ Salud: *${user.health}/${playerStats.maxHealth}*\n\n` +
-        `💡 Cúrate antes de entrar.`
-      );
-      return;
-    }
-
-    await m.react('🏰');
-
-    // Consumir stamina y aplicar cooldown
-    db.updateUser(m.sender, {
-      stamina: user.stamina - selectedDungeon.staminaCost,
-      lastDungeon: now
-    });
-
-    // Crear sesión de dungeon
-    const firstMonsterId = selectedDungeon.monsters[0];
-    const firstMonster = MONSTERS[firstMonsterId];
-
-    if (!firstMonster) {
-      await m.reply(`${EMOJI.error} Error al iniciar el dungeon.`);
-      return;
-    }
-
-    const session: DungeonSession = {
-      jid: m.sender,
-      groupJid: m.chat,
-      dungeon: selectedDungeon,
-      playerName: user.name,
-      playerStats,
-      playerClass: user.playerClass,
-      playerLevel: user.level,
-      currentHealth: user.health,
-      maxHealth: playerStats.maxHealth,
-      currentMana: user.mana,
-      maxMana: playerStats.maxMana,
-      currentStamina: user.stamina - selectedDungeon.staminaCost,
-      maxStamina: playerStats.maxStamina,
-      currentEncounterIndex: 0,
-      isBossFight: false,
-      currentMonster: firstMonster,
-      monsterHealth: firstMonster.health,
-      monsterMaxHealth: firstMonster.health,
-      monsterIsEnhanced: false,
-      isPlayerTurn: true,
-      playerDefending: false,
-      playerAttackBuff: 0,
-      playerDefenseBuff: 0,
-      buffDuration: 0,
-      monstersKilled: 0,
-      totalDamageDealt: 0,
-      expGained: 0,
-      moneyGained: 0,
-      itemsGained: [],
-      combatLog: [],
-      startTime: now,
-      lastActionTime: now,
-      actionTimeout: null,
-      skillCooldowns: new Map(),
-      currentTurn: 1
-    };
-
-    activeDungeons.set(m.sender, session);
-
-    // Mensaje de entrada
-    let entryMsg = `${selectedDungeon.emoji} *${selectedDungeon.name.toUpperCase()}*\n`;
-    entryMsg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    entryMsg += `📖 _${selectedDungeon.description}_\n\n`;
-    entryMsg += `🚪 *Entrando al dungeon...*\n\n`;
-    entryMsg += `⚔️ Encuentros: ${selectedDungeon.monsters.length} monstruos + 1 boss\n`;
-    entryMsg += `🎯 Objetivo: Derrotar al boss final\n\n`;
-    entryMsg += `💡 *Sistema de combate interactivo*\n`;
-    entryMsg += `   • Toma decisiones cada turno\n`;
-    entryMsg += `   • Usa habilidades y pociones\n`;
-    entryMsg += `   • ¡Sobrevive al boss!\n`;
-
-    await m.reply(entryMsg);
-
-    // Primer encuentro
-    let encounterMsg = `\n⚔️ *¡PRIMER ENCUENTRO!*\n`;
-    encounterMsg += `${firstMonster.emoji} *${firstMonster.name}* (Nv.${firstMonster.level}) aparece!\n`;
-
-    await m.reply(encounterMsg);
-
-    // Mostrar estado de combate
-    const statusMsg = generateCombatStatus(session);
-    await m.reply(statusMsg);
-    startActionTimeout(session, ctx);
+  if (!setBusy(m.sender, 'dungeon')) {
+    await m.reply(`${EMOJI.error} Ya estás en otra actividad.`);
+    return;
   }
-};
 
-/**
- * Plugin: Atacar en dungeon
- */
-export const atacarDungeonPlugin: PluginHandler = {
+  checkExpiredModes();
+  const now = Date.now();
+  const stats = playerStats(user);
+  const stamina = user.stamina - dungeon.staminaCost;
+  getDatabase().updateUser(m.sender, { stamina, lastDungeon: now });
+
+  const first = encounters[0];
+  const session: DungeonSession = {
+    jid: m.sender,
+    chat: m.chat,
+    ctx,
+    dungeon,
+    playerName: user.name,
+    playerClass: user.playerClass,
+    stats,
+    currentHealth: Math.min(user.health, stats.maxHealth),
+    maxHealth: stats.maxHealth,
+    currentMana: Math.min(user.mana, stats.maxMana),
+    maxMana: stats.maxMana,
+    currentStamina: Math.min(stamina, stats.maxStamina),
+    maxStamina: stats.maxStamina,
+    encounters,
+    encounterIndex: 0,
+    monsterHealth: first.fighter.health,
+    monsterMaxHealth: first.fighter.health,
+    playerState: createCombatState(),
+    monsterState: createCombatState(),
+    isPlayerTurn: true,
+    defending: false,
+    monstersKilled: 0,
+    totalDamageDealt: 0,
+    exp: 0,
+    money: 0,
+    items: [],
+    luckBonus: getDropLuck(user, now),
+    log: [],
+    startTime: now,
+    lastActionTime: now,
+    timeouts: 0,
+    actionTimeout: null,
+    skillCooldowns: new Map(),
+    turn: 1
+  };
+  activeDungeons.set(m.sender, session);
+
+  await m.react('🏰');
+  await m.reply(
+    `${dungeon.emoji} *${dungeon.name.toUpperCase()}*\n━━━━━━━━━━━━━━━━━━━━━\n\n📖 _${dungeon.description}_\n\n` +
+    `🚪 *Entrando al dungeon...*\n\n⚔️ Encuentros: ${encounters.length - 1} monstruos + 1 boss\n🎯 Objetivo: derrotar al boss final\n\n` +
+    `💡 Escribe *a*, *d*, *h* o *i* sin prefijo en cada turno.\n\n` +
+    `⚔️ *¡PRIMER ENCUENTRO!*\n${first.monster.emoji} *${first.monster.name}* (Nv.${first.monster.level}) aparece!`
+  );
+  await showStatus(session);
+}
+
+/** Sesión del remitente si es su turno; responde y devuelve null si no */
+async function sessionForAction(ctx: MessageContext): Promise<DungeonSession | null> {
+  const session = activeDungeons.get(ctx.m.sender);
+  if (!session) return null;
+  if (!session.isPlayerTurn) {
+    await ctx.m.reply(`⏳ Espera tu turno...`);
+    return null;
+  }
+  session.lastActionTime = Date.now();
+  return session;
+}
+
+function beginPlayerAction(session: DungeonSession): void {
+  clearActionTimeout(session);
+  session.isPlayerTurn = false;
+  session.defending = false;
+}
+
+async function resolvePlayerHit(session: DungeonSession, multiplier: number, label: string): Promise<number> {
+  const encounter = currentEncounter(session);
+  const attack = effectiveAttack(session.stats.attack, session.playerState);
+  const defense = effectiveDefense(encounter.fighter.defense, session.monsterState);
+  const hit = calculateDamage(attack, defense, session.stats.critChance, multiplier);
+  session.monsterHealth = Math.max(0, session.monsterHealth - hit.damage);
+  session.totalDamageDealt += hit.damage;
+  session.log.push(`${label} → *${hit.damage}*${hit.isCrit ? ' 💥CRIT' : ''}`);
+  return hit.damage;
+}
+
+const atacarDungeonPlugin: PluginHandler = {
   command: ['a', 'atacar', 'attack', 'atk'],
   tags: ['rpg'],
   help: ['a - Atacar al monstruo actual en el dungeon'],
-  register: true,
+  noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
+    const session = await sessionForAction(ctx);
+    if (!session) return;
+    beginPlayerAction(session);
 
-    const session = activeDungeons.get(m.sender);
-    if (!session) return; // No está en dungeon
-
-    if (!session.isPlayerTurn) {
-      await m.reply(`⏳ Espera tu turno...`);
-      return;
-    }
-
-    // Limpiar timeout
-    if (session.actionTimeout) {
-      clearTimeout(session.actionTimeout);
-      session.actionTimeout = null;
-    }
-
-    const monster = session.currentMonster!;
-    session.isPlayerTurn = false;
-    session.playerDefending = false;
-
-    // Calcular ataque del jugador
-    let playerAttack = session.playerStats.attack;
-    if (session.buffDuration > 0 && session.playerAttackBuff > 0) {
-      playerAttack = Math.floor(playerAttack * (1 + session.playerAttackBuff / 100));
-    }
-
-    let monsterDefense = monster.defense;
-    if (session.monsterIsEnhanced) {
-      monsterDefense = Math.floor(monsterDefense * 1.2);
-    }
-
-    const result = calculateDamage(playerAttack, monsterDefense, session.playerStats.critChance);
-    session.monsterHealth = Math.max(0, session.monsterHealth - result.damage);
-    session.totalDamageDealt += result.damage;
-
-    // Log del ataque
-    let attackLog = `⚔️ ${session.playerName} ataca → *${result.damage}*`;
-    if (result.isCrit) attackLog += ' 💥CRIT!';
-    session.combatLog.push(attackLog);
-
-    // Verificar muerte del monstruo
+    await resolvePlayerHit(session, 1, `⚔️ ${session.playerName} ataca`);
     if (session.monsterHealth <= 0) {
-      await processMonsterDeath(session, ctx);
+      await processMonsterDeath(session);
       return;
     }
-
-    // Turno del monstruo
-    await processMonsterTurn(session, ctx);
+    await processMonsterTurn(session);
   }
 };
 
-/**
- * Plugin: Defender en dungeon
- */
-export const defenderDungeonPlugin: PluginHandler = {
-  command: ['d', 'defender', 'defend', 'def'],
+const defenderDungeonPlugin: PluginHandler = {
+  command: ['d', 'defender', 'defend', 'def', 'b', 'bloquear'],
   tags: ['rpg'],
-  help: ['d - Defenderse (reduce 50% daño, regenera maná)'],
-  register: true,
+  help: ['d - Defenderse (reduce el daño y regenera maná)'],
+  noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-
-    const session = activeDungeons.get(m.sender);
+    const session = await sessionForAction(ctx);
     if (!session) return;
+    beginPlayerAction(session);
 
-    if (!session.isPlayerTurn) {
-      await m.reply(`⏳ Espera tu turno...`);
-      return;
-    }
-
-    // Limpiar timeout
-    if (session.actionTimeout) {
-      clearTimeout(session.actionTimeout);
-      session.actionTimeout = null;
-    }
-
-    session.isPlayerTurn = false;
-    session.playerDefending = true;
-
-    // Regenerar maná al defender
-    session.currentMana = Math.min(session.maxMana, session.currentMana + DEFEND_MANA_REGEN);
-
-    session.combatLog.push(`🛡️ ${session.playerName} se defiende (+${DEFEND_MANA_REGEN} 💙)`);
-
-    // Turno del monstruo
-    await processMonsterTurn(session, ctx);
+    session.defending = true;
+    session.currentMana = Math.min(session.maxMana, session.currentMana + D.DEFEND_MANA_REGEN);
+    session.log.push(`🛡️ ${session.playerName} se defiende (+${D.DEFEND_MANA_REGEN} 💙)`);
+    await processMonsterTurn(session);
   }
 };
 
-/**
- * Plugin: Usar habilidad en dungeon
- */
-export const habilidadDungeonPlugin: PluginHandler = {
-  command: ['h', 'habilidad', 'skill', 'poder'],
+const habilidadDungeonPlugin: PluginHandler = {
+  command: /^(h|habilidad|skill|poder|p|h\d+)$/i,
   tags: ['rpg'],
-  help: ['h - Ver/usar habilidades de clase'],
-  register: true,
+  help: ['h - Ver habilidades | h1, h2... o h [nombre] - Usar una habilidad'],
+  noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text, args } = ctx;
-
-    const session = activeDungeons.get(m.sender);
+    const { m, args, command } = ctx;
+    const session = await sessionForAction(ctx);
     if (!session) return;
 
-    if (!session.isPlayerTurn) {
-      await m.reply(`⏳ Espera tu turno...`);
+    const inline = command.match(/^h(\d+)$/i)?.[1];
+    const term = (inline ?? args.join(' ')).toLowerCase().trim();
+    const skills = availableSkills(session);
+
+    if (!term) {
+      await m.reply(formatSkillsMenu(session));
       return;
     }
 
-    // Si no especifica habilidad, mostrar menú
-    const skillArg = args.join(' ').toLowerCase() || text.replace(/^h\s*/i, '').trim();
-
-    if (!skillArg) {
-      const menuMsg = generateSkillsMenu(session);
-      await m.reply(menuMsg);
-      return;
-    }
-
-    // Buscar habilidad por número o nombre
-    const availableSkills = getAvailableSkills(session);
     let skill: Skill | undefined;
-
-    // Por número (h1, h2, etc.)
-    const numMatch = skillArg.match(/^(\d+)$/);
-    if (numMatch) {
-      const index = parseInt(numMatch[1]) - 1;
-      if (index >= 0 && index < availableSkills.length) {
-        skill = availableSkills[index];
+    if (/^\d+$/.test(term)) {
+      skill = skills[parseInt(term, 10) - 1];
+    } else {
+      const found = resolveItem(term, skills);
+      if (found.status === 'ambiguous') {
+        await m.reply(formatAmbiguous(found.candidates, 'Usa el número: h1, h2...'));
+        return;
       }
-    }
-
-    // Por nombre
-    if (!skill) {
-      skill = availableSkills.find(s =>
-        s.name.toLowerCase().includes(skillArg) ||
-        s.id.toLowerCase().includes(skillArg.replace(/\s+/g, '_'))
-      );
+      if (found.status === 'found') skill = found.item;
     }
 
     if (!skill) {
-      await m.reply(
-        `${EMOJI.error} Habilidad no encontrada o no disponible.\n\n` +
-        `💡 Usa *h* para ver tus habilidades.`
-      );
+      await m.reply(`${EMOJI.error} Habilidad no encontrada.\n\n💡 Usa *h* para ver tus habilidades.`);
+      return;
+    }
+    const state = skillReady(session, skill);
+    if (!state.ready) {
+      await m.reply(`${EMOJI.error} *${skill.name}* no está disponible (${state.reason}).`);
       return;
     }
 
-    // Verificar recursos
-    if (session.currentMana < skill.manaCost) {
-      await m.reply(`${EMOJI.error} No tienes suficiente maná (💙${skill.manaCost}).`);
-      return;
-    }
-    if (session.currentStamina < skill.staminaCost) {
-      await m.reply(`${EMOJI.error} No tienes suficiente energía (⚡${skill.staminaCost}).`);
-      return;
-    }
-
-    // Verificar cooldown
-    const cooldownEnd = session.skillCooldowns.get(skill.id) || 0;
-    if (session.currentTurn < cooldownEnd) {
-      await m.reply(`${EMOJI.error} *${skill.name}* en cooldown (${cooldownEnd - session.currentTurn} turnos).`);
-      return;
-    }
-
-    // Limpiar timeout
-    if (session.actionTimeout) {
-      clearTimeout(session.actionTimeout);
-      session.actionTimeout = null;
-    }
-
-    session.isPlayerTurn = false;
-    session.playerDefending = false;
-
-    // Consumir recursos
+    beginPlayerAction(session);
     session.currentMana -= skill.manaCost;
     session.currentStamina -= skill.staminaCost;
+    if (skill.cooldown > 0) session.skillCooldowns.set(skill.id, session.turn + skill.cooldown);
 
-    // Aplicar cooldown
-    if (skill.cooldown > 0) {
-      session.skillCooldowns.set(skill.id, session.currentTurn + skill.cooldown);
-    }
-
-    const monster = session.currentMonster!;
-
-    // Procesar efecto de la habilidad
-    let skillLog = `${skill.emoji} ${session.playerName} usa *${skill.name}*`;
+    const effects = applySkillEffect(skill, session.playerState, session.monsterState);
     let damage = 0;
-
-    // Daño
     if (skill.effect.damageMultiplier) {
-      let playerAttack = session.playerStats.attack;
-      if (session.buffDuration > 0 && session.playerAttackBuff > 0) {
-        playerAttack = Math.floor(playerAttack * (1 + session.playerAttackBuff / 100));
-      }
-
-      let monsterDefense = monster.defense;
-      if (session.monsterIsEnhanced) {
-        monsterDefense = Math.floor(monsterDefense * 1.2);
-      }
-
-      const result = calculateDamage(playerAttack, monsterDefense, session.playerStats.critChance, skill.effect.damageMultiplier);
-      damage = result.damage;
-      session.monsterHealth = Math.max(0, session.monsterHealth - damage);
-      session.totalDamageDealt += damage;
-
-      skillLog += ` → *${damage}*`;
-      if (result.isCrit) skillLog += ' 💥';
+      damage = await resolvePlayerHit(session, skill.effect.damageMultiplier, `${skill.emoji} ${session.playerName} usa *${skill.name}*`);
+    } else {
+      session.log.push(`${skill.emoji} ${session.playerName} usa *${skill.name}*`);
     }
-
-    // Curación (robo vital)
     if (skill.effect.heal && damage > 0) {
-      const healAmount = Math.floor(damage * (skill.effect.heal / 100));
-      session.currentHealth = Math.min(session.maxHealth, session.currentHealth + healAmount);
-      skillLog += ` +${healAmount}❤️`;
+      const heal = Math.floor(damage * (skill.effect.heal / 100));
+      session.currentHealth = Math.min(session.maxHealth, session.currentHealth + heal);
+      session.log.push(`💚 recupera ${heal} de vida`);
     }
+    for (const line of effects.lines) session.log.push(line);
 
-    // Buffs
-    if (skill.effect.buff) {
-      const buff = skill.effect.buff;
-      if (buff.stat === 'attack') {
-        session.playerAttackBuff = buff.value;
-      } else if (buff.stat === 'defense') {
-        session.playerDefenseBuff = buff.value;
-      }
-      session.buffDuration = buff.duration;
-      skillLog += ` (+${buff.value}% ${buff.stat === 'attack' ? '⚔️' : '🛡️'} x${buff.duration}t)`;
-    }
-
-    session.combatLog.push(skillLog);
-
-    // Verificar muerte del monstruo
     if (session.monsterHealth <= 0) {
-      await processMonsterDeath(session, ctx);
+      await processMonsterDeath(session);
       return;
     }
-
-    // Turno del monstruo
-    await processMonsterTurn(session, ctx);
+    await processMonsterTurn(session);
   }
 };
 
-/**
- * Plugin: Usar item en dungeon
- */
-export const itemDungeonPlugin: PluginHandler = {
-  command: ['i', 'item', 'pocion', 'usar'],
+const itemDungeonPlugin: PluginHandler = {
+  command: /^(i|item|pocion|usar|i\d+)$/i,
   tags: ['rpg'],
-  help: ['i - Ver/usar items consumibles'],
-  register: true,
+  help: ['i - Ver pociones | i1, i2... o i [nombre] - Usar una (no gasta turno)'],
+  noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text, args } = ctx;
-    const db = getDatabase();
-
-    const session = activeDungeons.get(m.sender);
+    const { m, args, command } = ctx;
+    const session = await sessionForAction(ctx);
     if (!session) return;
 
-    if (!session.isPlayerTurn) {
-      await m.reply(`⏳ Espera tu turno...`);
-      return;
-    }
-
+    const db = getDatabase();
     const user = db.getUser(m.sender);
+    const consumables = usableConsumables(user);
+    const inline = command.match(/^i(\d+)$/i)?.[1];
+    const term = (inline ?? args.join(' ')).toLowerCase().trim();
 
-    // Filtrar consumibles
-    const consumables = user.inventory.filter(inv => {
-      const item = ITEMS[inv.itemId];
-      return item && item.type === 'consumable' && item.consumeEffect &&
-             (item.consumeEffect.health || item.consumeEffect.mana || item.consumeEffect.stamina);
-    });
-
-    // Si no especifica item, mostrar menú
-    const itemArg = args.join(' ').toLowerCase() || text.replace(/^i\s*/i, '').trim();
-
-    if (!itemArg) {
-      const menuMsg = generateItemsMenu(session, user);
-      await m.reply(menuMsg);
+    if (!term) {
+      await m.reply(formatItemsMenu(session, user));
       return;
     }
 
-    // Buscar item por número o nombre
-    let selectedItem: { itemId: string; quantity: number } | undefined;
-    let itemInfo: typeof ITEMS[string] | undefined;
-
-    // Por número (i1, i2, etc.)
-    const numMatch = itemArg.match(/^(\d+)$/);
-    if (numMatch) {
-      const index = parseInt(numMatch[1]) - 1;
-      if (index >= 0 && index < consumables.length) {
-        selectedItem = consumables[index];
-        itemInfo = ITEMS[selectedItem.itemId];
+    let item = /^\d+$/.test(term) ? consumables[parseInt(term, 10) - 1] : undefined;
+    if (!item) {
+      const found = resolveItem(term, consumables);
+      if (found.status === 'ambiguous') {
+        await m.reply(formatAmbiguous(found.candidates, 'Usa el número: i1, i2...'));
+        return;
       }
+      if (found.status === 'found') item = found.item;
     }
-
-    // Por nombre
-    if (!selectedItem) {
-      selectedItem = consumables.find(inv => {
-        const item = ITEMS[inv.itemId];
-        return item && (
-          item.name.toLowerCase().includes(itemArg) ||
-          inv.itemId.toLowerCase().includes(itemArg)
-        );
-      });
-      if (selectedItem) {
-        itemInfo = ITEMS[selectedItem.itemId];
-      }
-    }
-
-    if (!selectedItem || !itemInfo) {
-      await m.reply(
-        `${EMOJI.error} Item no encontrado o no tienes.\n\n` +
-        `💡 Usa *i* para ver tu inventario.`
-      );
+    if (!item || !item.consumeEffect) {
+      await m.reply(`${EMOJI.error} Poción no encontrada.\n\n💡 Usa *i* para ver tus pociones.`);
       return;
     }
 
-    // Usar item (no consume turno pero aplica timeout)
-    const effect = itemInfo.consumeEffect!;
+    const effect = item.consumeEffect;
     const effects: string[] = [];
-
     if (effect.health) {
-      const healAmount = Math.min(effect.health, session.maxHealth - session.currentHealth);
-      session.currentHealth += healAmount;
-      effects.push(`+${healAmount} ❤️`);
+      const heal = Math.min(effect.health, session.maxHealth - session.currentHealth);
+      session.currentHealth += heal;
+      effects.push(`+${heal} ❤️`);
     }
     if (effect.mana) {
-      const manaAmount = Math.min(effect.mana, session.maxMana - session.currentMana);
-      session.currentMana += manaAmount;
-      effects.push(`+${manaAmount} 💙`);
+      const mana = Math.min(effect.mana, session.maxMana - session.currentMana);
+      session.currentMana += mana;
+      effects.push(`+${mana} 💙`);
     }
     if (effect.stamina) {
-      const staminaAmount = Math.min(effect.stamina, session.maxStamina - session.currentStamina);
-      session.currentStamina += staminaAmount;
-      effects.push(`+${staminaAmount} ⚡`);
+      const stamina = Math.min(effect.stamina, session.maxStamina - session.currentStamina);
+      session.currentStamina += stamina;
+      effects.push(`+${stamina} ⚡`);
     }
 
-    // Consumir item del inventario
-    const invItem = user.inventory.find(i => i.itemId === selectedItem!.itemId);
-    if (invItem) {
-      invItem.quantity--;
-      if (invItem.quantity <= 0) {
-        user.inventory = user.inventory.filter(i => i.itemId !== selectedItem!.itemId);
-      }
-    }
+    removeItem(user, item.id, 1);
     db.updateUser(m.sender, { inventory: user.inventory });
+    session.log.push(`🧪 ${session.playerName} usa ${item.emoji} ${item.name} (${effects.join(' ')})`);
 
-    session.combatLog.push(`🧪 ${session.playerName} usa ${itemInfo.emoji} ${itemInfo.name} (${effects.join(' ')})`);
-
-    // Mostrar estado actualizado (usar item no gasta turno)
-    await m.reply(`✅ Usaste ${itemInfo.emoji} *${itemInfo.name}*\n${effects.join(' | ')}`);
-
-    // Mostrar estado de combate
-    const statusMsg = generateCombatStatus(session);
-    await m.reply(statusMsg);
-
-    // Reiniciar timeout (usar item no gasta turno pero reinicia el tiempo)
-    startActionTimeout(session, ctx);
+    await m.reply(`✅ Usaste ${item.emoji} *${item.name}*\n${effects.join(' | ')}`);
+    await showStatus(session);
   }
 };
 
-/**
- * Plugin: Huir del dungeon
- */
-export const huirDungeonPlugin: PluginHandler = {
-  command: ['huir', 'escapar', 'flee', 'salir'],
+const huirDungeonPlugin: PluginHandler = {
+  command: ['huir', 'escapar', 'flee', 'salir', 'rendirse'],
   tags: ['rpg'],
-  help: ['huir - Escapar del dungeon (pierdes recompensas)'],
-  register: true,
+  help: ['huir - Escapar del dungeon (pierdes el botín)'],
+  noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
-
-    const session = activeDungeons.get(m.sender);
+    const session = await sessionForAction(ctx);
     if (!session) return;
 
-    // No se puede huir del boss
-    if (session.isBossFight) {
+    if (currentEncounter(session).boss) {
       await m.reply(`💀 *¡No puedes huir del boss!*\n\n_Debes enfrentarlo o morir en el intento..._`);
       return;
     }
 
-    // Limpiar timeout
-    if (session.actionTimeout) {
-      clearTimeout(session.actionTimeout);
-      session.actionTimeout = null;
-    }
-
-    // Calcular probabilidad de huir
-    let fleeChance = FLEE_BASE_CHANCE;
-    // Bonus por velocidad/agilidad (stamina)
-    fleeChance += (session.currentStamina / session.maxStamina) * 0.2;
-
-    if (Math.random() <= fleeChance) {
-      // Éxito al huir
-      session.combatLog.push(`🏃 ${session.playerName} escapa del dungeon!`);
-      await endDungeon(session, ctx, false, 'flee');
-    } else {
-      // Fallo al huir - el monstruo ataca con ventaja
-      session.combatLog.push(`🏃 ${session.playerName} intenta huir... ¡FALLA!`);
-      session.isPlayerTurn = false;
-      await m.reply(`❌ *¡No pudiste escapar!*\n_El monstruo aprovecha tu descuido..._`);
-      await processMonsterTurn(session, ctx);
-    }
-  }
-};
-
-/**
- * Plugin: Estado del dungeon
- */
-export const estadoDungeonPlugin: PluginHandler = {
-  command: ['estado', 'status', 'st'],
-  tags: ['rpg'],
-  help: ['estado - Ver estado actual del combate'],
-  register: true,
-
-  handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-
-    const session = activeDungeons.get(m.sender);
-    if (!session) {
-      await m.reply(`${EMOJI.info} No estás en ningún dungeon.`);
+    beginPlayerAction(session);
+    const chance = D.FLEE_BASE_CHANCE + (session.maxStamina > 0 ? session.currentStamina / session.maxStamina : 0) * D.FLEE_STAMINA_BONUS;
+    if (Math.random() <= chance) {
+      session.log.push(`🏃 ${session.playerName} escapa del dungeon!`);
+      await endDungeon(session, 'flee');
       return;
     }
-
-    const statusMsg = generateCombatStatus(session);
-    await m.reply(statusMsg);
+    session.log.push(`🏃 ${session.playerName} intenta huir... ¡FALLA!`);
+    await m.reply(`❌ *¡No pudiste escapar!*\n_El monstruo aprovecha tu descuido..._`);
+    await processMonsterTurn(session);
   }
 };
 
-export default dungeonInteractivoPlugin;
+const estadoDungeonPlugin: PluginHandler = {
+  command: ['estado', 'status', 'st'],
+  tags: ['rpg'],
+  help: ['estado - Ver el estado actual del combate'],
+  noPrefix: true,
+
+  handler: async (ctx: MessageContext) => {
+    const session = activeDungeons.get(ctx.m.sender);
+    if (!session) return;
+    await ctx.m.reply(formatSessionStatus(session));
+  }
+};
+
+/** Acciones del dungeon: solo responden mientras el remitente tiene una sesión */
+export const dungeonContext: CommandContext = {
+  name: 'dungeon',
+  isActive: (m: SerializedMessage) => activeDungeons.has(m.sender),
+  plugins: [atacarDungeonPlugin, defenderDungeonPlugin, habilidadDungeonPlugin, itemDungeonPlugin, huirDungeonPlugin, estadoDungeonPlugin],
+  noPrefix: true
+};
+
+/** Cierra a la fuerza la sesión de un jugador (owner); devuelve false si no tenía */
+export async function cancelDungeon(jid: string): Promise<boolean> {
+  const session = activeDungeons.get(jid);
+  if (!session) return false;
+  await endDungeon(session, 'timeout');
+  return true;
+}

@@ -80,7 +80,7 @@ export async function killAllProcesses(graceMs = 2000): Promise<number> {
   const children = [...activeChildren];
   if (!children.length) return 0;
   for (const child of children) killTree(child, 'SIGTERM');
-  await new Promise((r) => setTimeout(r, graceMs).unref());
+  await new Promise((r) => setTimeout(r, graceMs));
   for (const child of children) killTree(child, 'SIGKILL');
   return children.length;
 }
@@ -673,7 +673,7 @@ async function fetchImageResponse(url: string, deadline: Deadline): Promise<Resp
  * Escribe el cuerpo en disco por trozos sin pasar de `maxBytes`. Devuelve los bytes escritos, o -1 si
  * se supero el limite (el archivo parcial se borra).
  */
-async function streamToFile(res: Response, target: string, maxBytes: number): Promise<number> {
+export async function streamToFile(res: Response, target: string, maxBytes: number): Promise<number> {
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
     await res.body?.cancel().catch(() => undefined);

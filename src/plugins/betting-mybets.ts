@@ -1,33 +1,31 @@
-import type { PluginHandler, MessageContext } from '../types/message.js';
-import { getDatabase } from '../lib/database.js';
+import type { PluginHandler } from '../types/message.js';
 import type { BettingPick } from '../types/database.js';
+import { getDatabase } from '../lib/database.js';
 
 export const myBetsPlugin: PluginHandler = {
-  command: /^(misapuestas|mispicks|mybets|myplays)$/i,
+  command: ['misapuestas', 'mispicks', 'mybets', 'myplays'],
   tags: ['betting'],
+  description: 'Tus picks activos e historial en todos los grupos',
   help: ['misapuestas - Ver tus picks activos e historial personal'],
+  usage: ['misapuestas'],
 
-  handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
+  handler: async ({ m }) => {
     const db = getDatabase();
     const me = m.sender;
 
-    const chatIds = db.getAllChatIds();
     const mine: BettingPick[] = [];
-
-    for (const cid of chatIds) {
-      const sys = db.getBettingSystem(cid);
-      if (!sys.enabled) continue;
-      for (const p of sys.picks) {
-        if (p.createdBy === me || p.followers.includes(me)) {
-          mine.push(p);
-        }
+    for (const chatId of db.getAllChatIds()) {
+      // Se lee sin crear: recorrer todos los chats no debe fabricar sistemas de betting vacíos.
+      const system = db.betting.peekBettingSystem(chatId);
+      if (!system?.enabled) continue;
+      for (const pick of system.picks) {
+        if (pick.createdBy === me || pick.followers.includes(me)) mine.push(pick);
       }
     }
 
-    const active = mine.filter(p => p.status === 'pending');
+    const active = mine.filter((p) => p.status === 'pending');
     const recent = mine
-      .filter(p => p.status !== 'pending')
+      .filter((p) => p.status !== 'pending')
       .sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0))
       .slice(0, 10);
 
@@ -35,39 +33,26 @@ export const myBetsPlugin: PluginHandler = {
       return m.reply('📭 No tienes apuestas registradas.');
     }
 
-    const userBet = db.getUserBetting(me);
-    const { wonFollowed, lostFollowed } = userBet.stats;
+    const { wonFollowed, lostFollowed } = db.betting.getUserBetting(me).stats;
     const resolvedTotal = wonFollowed + lostFollowed;
-    const winrate = resolvedTotal > 0
-      ? ((wonFollowed / resolvedTotal) * 100).toFixed(1)
-      : '-';
+    const winrate = resolvedTotal > 0 ? `${((wonFollowed / resolvedTotal) * 100).toFixed(1)}%` : '-';
 
-    let msg = `🎰 MIS APUESTAS\n\n`;
-
+    let msg = `🎰 *MIS APUESTAS*\n\n`;
     if (active.length > 0) {
-      msg += `⏳ ACTIVAS (${active.length})\n`;
+      msg += `⏳ *Activas* (${active.length})\n`;
       for (const p of active) {
-        const role = p.createdBy === me ? '[creador]' : '[seguidor]';
-        msg += `• ${role} 🎫 ${p.tipsterOriginal} — ${p.units}u — ID: ${p.id.slice(-8)}\n`;
+        msg += `• ${p.createdBy === me ? '[creador]' : '[seguidor]'} 🎫 ${p.tipsterOriginal} · ${p.units}u · id ${p.id.slice(-8)}\n`;
       }
       msg += '\n';
     }
-
     if (recent.length > 0) {
-      msg += `📜 RECIENTES (${recent.length})\n`;
+      msg += `📜 *Recientes* (${recent.length})\n`;
       for (const p of recent) {
-        const icon = p.status === 'won' ? '✅' : '❌';
-        const role = p.createdBy === me ? '[creador]' : '[seguidor]';
-        msg += `• ${icon} ${role} 🎫 ${p.tipsterOriginal} — ${p.units}u\n`;
+        msg += `• ${p.status === 'won' ? '✅' : '❌'} ${p.createdBy === me ? '[creador]' : '[seguidor]'} 🎫 ${p.tipsterOriginal} · ${p.units}u\n`;
       }
       msg += '\n';
     }
-
-    msg +=
-      `📊 TOTALES\n` +
-      `✅ Ganados: ${wonFollowed} | ❌ Perdidos: ${lostFollowed}\n` +
-      `🏆 Winrate: ${winrate}%`;
-
+    msg += `📊 *Totales*\n✅ Ganados: ${wonFollowed} · ❌ Perdidos: ${lostFollowed} · 🏆 Winrate: ${winrate}`;
     await m.reply(msg);
-  }
+  },
 };

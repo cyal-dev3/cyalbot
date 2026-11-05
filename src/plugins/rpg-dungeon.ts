@@ -1,524 +1,190 @@
-/**
- * Plugin de Dungeons - RPG
- * Comando: dungeon - Explora mazmorras peligrosas
- */
-
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, msToTime, formatNumber, randomInt, pickRandom, matchesIgnoreAccents } from '../lib/utils.js';
-import { DUNGEONS, MONSTERS, ITEMS, CLASSES, type Dungeon, type Monster } from '../types/rpg.js';
-import { calculateTotalStats } from '../types/user.js';
-import { updateQuestProgress } from './rpg-misiones.js';
-import { globalModes, checkExpiredModes } from './owner-rpg.js';
-import { applyDeathPenalty, generateIMSSMessage } from './rpg-bombardear.js';
-import { PVP } from '../constants/rpg.js';
+import { EMOJI, msToTime, formatNumber } from '../lib/utils.js';
+import type { Dungeon } from '../types/rpg.js';
+import type { UserRPG } from '../types/user.js';
+import { PVE, PVP } from '../constants/rpg.js';
+import { checkExpiredModes } from '../lib/global-modes.js';
+import { clearBusy, fighterFromUser, getDropLuck, grantCombatRewards, handlePlayerDeath, playerStats, setBusy, simulateFight } from '../lib/rpg-combat.js';
+import { addPetExp } from './rpg-mascotas.js';
+import {
+  buildEncounters, checkDungeonEntry, findDungeon, finalizeDungeonLoot, formatAmbiguous, formatDungeonList,
+  monsterDrops, monsterRewards, type DungeonEndReason
+} from './rpg-dungeon-common.js';
+import { activeDungeons, formatSessionStatus, startInteractiveDungeon } from './rpg-dungeon-interactivo.js';
 
-// Usar constantes centralizadas
-const DUNGEON_COOLDOWN = PVP.DUNGEON_COOLDOWN;
-
-/**
- * Calcula el daño en combate de dungeon
- */
-function calculateDamage(attack: number, defense: number, critChance: number): { damage: number; isCrit: boolean } {
-  const baseDamage = Math.max(1, attack - defense * 0.5);
-  const variance = randomInt(-10, 10) / 100;
-  let damage = Math.floor(baseDamage * (1 + variance));
-
-  const isCrit = randomInt(1, 100) <= critChance;
-  if (isCrit) damage = Math.floor(damage * 1.5);
-
-  return { damage: Math.max(1, damage), isCrit };
-}
+const QUICK_WORDS = new Set(['rapido', 'rápido', 'fast', 'auto', 'r']);
+const PET_EXP_PER_DUNGEON = 40;
 
 /**
- * Simula un combate contra un monstruo en dungeon
+ * Simula el dungeon completo de golpe. Reutiliza los encuentros, recompensas y
+ * drops del modo interactivo; un combate que llega al límite de turnos obliga a
+ * retirarse (cuenta como huida).
  */
-function fightMonster(
-  playerStats: { attack: number; defense: number; critChance: number },
-  playerHealth: number,
-  monster: Monster
-): { won: boolean; playerDamage: number; playerHealth: number; log: string } {
-  let pHealth = playerHealth;
-  let mHealth = monster.health;
-  let turns = 0;
-
-  while (pHealth > 0 && mHealth > 0 && turns < 10) {
-    turns++;
-
-    // Jugador ataca
-    const pHit = calculateDamage(playerStats.attack, monster.defense, playerStats.critChance);
-    mHealth -= pHit.damage;
-
-    if (mHealth <= 0) break;
-
-    // Monstruo ataca
-    const mHit = calculateDamage(monster.attack, playerStats.defense, 5);
-    pHealth -= mHit.damage;
+async function runQuickDungeon(ctx: MessageContext, user: UserRPG, dungeon: Dungeon): Promise<void> {
+  const { m } = ctx;
+  const db = getDatabase();
+  const now = Date.now();
+  const encounters = buildEncounters(dungeon);
+  if (encounters.length < 2) {
+    await m.reply(`${EMOJI.error} Ese dungeon no tiene encuentros configurados.`);
+    return;
+  }
+  if (!setBusy(m.sender, 'dungeon')) {
+    await m.reply(`${EMOJI.error} Ya estás en otra actividad.`);
+    return;
   }
 
-  const won = mHealth <= 0;
-  const damageTaken = playerHealth - Math.max(0, pHealth);
+  checkExpiredModes();
+  await m.react('🏰');
 
-  let log = won
-    ? `✅ Derrotaste a ${monster.emoji} ${monster.name} (-${damageTaken} HP)`
-    : `❌ ${monster.emoji} ${monster.name} te venció`;
+  const stats = playerStats(user);
+  const luckBonus = getDropLuck(user, now);
+  db.updateUser(m.sender, { stamina: user.stamina - dungeon.staminaCost, lastDungeon: now });
 
-  return { won, playerDamage: damageTaken, playerHealth: Math.max(0, pHealth), log };
-}
-
-/**
- * Simula un dungeon completo
- */
-function runDungeon(
-  dungeon: Dungeon,
-  playerStats: ReturnType<typeof calculateTotalStats>,
-  playerHealth: number,
-  playerLevel: number
-): {
-  completed: boolean;
-  bossDefeated: boolean;
-  monstersKilled: number;
-  totalDamage: number;
-  finalHealth: number;
-  log: string[];
-  expGained: number;
-  moneyGained: number;
-  itemsGained: string[];
-} {
-  const log: string[] = [];
-  let currentHealth = playerHealth;
+  let health = Math.min(user.health, stats.maxHealth);
   let monstersKilled = 0;
   let totalDamage = 0;
-  let expGained = 0;
-  let moneyGained = 0;
-  const itemsGained: string[] = [];
+  const loot = { exp: 0, money: 0, items: [] as string[] };
+  const log: string[] = [`🚪 Entrando a *${dungeon.name}*...`, ''];
+  let reason: DungeonEndReason = 'victory';
+  let diedToBoss = false;
 
-  log.push(`🚪 Entrando a *${dungeon.name}*...`);
-  log.push('');
+  try {
+    for (const encounter of encounters) {
+      const { monster, boss } = encounter;
+      log.push(boss
+        ? `👹 *¡BOSS!* ${monster.emoji} ${monster.name} (Nv.${monster.level})`
+        : `⚔️ *Encuentro:* ${monster.emoji} ${monster.name} (Nv.${monster.level})`);
 
-  // Pelear contra cada monstruo
-  for (const monsterId of dungeon.monsters) {
-    const monster = MONSTERS[monsterId];
-    if (!monster) continue;
+      const fight = simulateFight(fighterFromUser(user, health), encounter.fighter, { maxTurns: PVE.DUNGEON.MAX_TURNS_PER_FIGHT });
+      health = fight.attackerHealth;
+      totalDamage += fight.damageDealt;
 
-    log.push(`⚔️ *Encuentro:* ${monster.emoji} ${monster.name} (Nv.${monster.level})`);
-
-    const result = fightMonster(playerStats, currentHealth, monster);
-    log.push(`   ${result.log}`);
-
-    currentHealth = result.playerHealth;
-    totalDamage += result.playerDamage;
-
-    if (result.won) {
-      monstersKilled++;
-      expGained += monster.expReward;
-      moneyGained += randomInt(monster.moneyReward[0], monster.moneyReward[1]);
-
-      // Drops de monstruos normales (chance reducida en dungeon)
-      for (const drop of monster.drops) {
-        if (Math.random() <= drop.chance * 0.5) {
-          itemsGained.push(drop.itemId);
-        }
+      if (fight.result === 'won') {
+        monstersKilled++;
+        const rewards = monsterRewards(monster, boss);
+        loot.exp += rewards.exp;
+        loot.money += rewards.money;
+        loot.items.push(...monsterDrops(monster, boss, luckBonus));
+        log.push(`   ✅ Derrotaste a ${monster.name} en ${fight.turns} turnos (-${fight.damageTaken} HP)`, '');
+        continue;
       }
-    }
-
-    if (currentHealth <= 0) {
-      log.push('');
-      log.push(`💀 *¡Has caído en el dungeon!*`);
-      return {
-        completed: false,
-        bossDefeated: false,
-        monstersKilled,
-        totalDamage,
-        finalHealth: 0,
-        log,
-        expGained: Math.floor(expGained * 0.5), // 50% de XP si mueres
-        moneyGained: Math.floor(moneyGained * 0.5),
-        itemsGained: []
-      };
-    }
-
-    log.push('');
-  }
-
-  // Pelear contra el boss
-  const boss = MONSTERS[dungeon.bossId];
-  if (boss) {
-    log.push(`👹 *¡BOSS APARECE!* ${boss.emoji} ${boss.name} (Nv.${boss.level})`);
-
-    // El boss tiene stats aumentados
-    const enhancedBoss = {
-      ...boss,
-      health: Math.floor(boss.health * 1.5),
-      attack: Math.floor(boss.attack * 1.2),
-      defense: Math.floor(boss.defense * 1.2)
-    };
-
-    const bossResult = fightMonster(playerStats, currentHealth, enhancedBoss);
-    log.push(`   ${bossResult.log}`);
-
-    currentHealth = bossResult.playerHealth;
-    totalDamage += bossResult.playerDamage;
-
-    if (!bossResult.won) {
-      log.push('');
-      log.push(`💀 *El boss te ha derrotado...*`);
-      return {
-        completed: false,
-        bossDefeated: false,
-        monstersKilled,
-        totalDamage,
-        finalHealth: Math.max(1, currentHealth),
-        log,
-        expGained: Math.floor(expGained * 0.7),
-        moneyGained: Math.floor(moneyGained * 0.7),
-        itemsGained
-      };
-    }
-
-    // Boss derrotado - recompensas extra
-    expGained += boss.expReward * 2;
-    moneyGained += randomInt(boss.moneyReward[0], boss.moneyReward[1]) * 2;
-
-    // Drops del boss
-    for (const drop of boss.drops) {
-      if (Math.random() <= drop.chance) {
-        itemsGained.push(drop.itemId);
+      if (fight.result === 'lost') {
+        log.push(`   ❌ ${monster.name} te venció`, '', `💀 *¡Has caído en el dungeon!*`);
+        reason = 'death';
+        diedToBoss = boss;
+      } else {
+        log.push(`   🏃 ${monster.name} aguantó ${fight.turns} turnos y tuviste que retirarte`);
+        reason = 'flee';
       }
+      break;
     }
-
-    log.push('');
-    log.push(`🏆 *¡BOSS DERROTADO!*`);
+  } finally {
+    clearBusy(m.sender);
   }
 
-  // Aplicar multiplicadores del dungeon
-  expGained = Math.floor(expGained * dungeon.rewards.expMultiplier);
-  moneyGained = Math.floor(moneyGained * dungeon.rewards.moneyMultiplier);
+  if (reason === 'victory') log.push(`✨ *¡DUNGEON COMPLETADO!*`);
 
-  // Drops garantizados
-  for (const itemId of dungeon.rewards.guaranteedDrops) {
-    itemsGained.push(itemId);
+  const fresh = db.getUser(m.sender);
+  const combatStats = { ...fresh.combatStats };
+  combatStats.totalKills += monstersKilled;
+  combatStats.totalDamageDealt += totalDamage;
+  combatStats.totalDamageReceived += Math.max(0, Math.min(user.health, stats.maxHealth) - health);
+  if (reason === 'victory') {
+    combatStats.dungeonsCompleted++;
+    combatStats.bossesKilled++;
   }
+  const petLeveled = reason === 'victory' && addPetExp(fresh.pet, PET_EXP_PER_DUNGEON);
+  db.updateUser(m.sender, { health: reason === 'death' ? 0 : Math.max(1, health), combatStats, pet: fresh.pet });
 
-  // Bonus drops
-  for (const bonusDrop of dungeon.rewards.bonusDrops) {
-    if (Math.random() <= bonusDrop.chance) {
-      itemsGained.push(bonusDrop.itemId);
-    }
+  const final = finalizeDungeonLoot(dungeon, loot, reason, { diedToBoss, luckBonus });
+  const rewards = grantCombatRewards(db, m.sender, {
+    exp: final.exp,
+    money: final.money,
+    items: final.items,
+    quest: reason === 'victory' ? { objective: 'dungeon', amount: 1 } : undefined
+  }, now);
+
+  let response = `⚡ *MODO RÁPIDO*\n${dungeon.emoji} *${dungeon.name.toUpperCase()}*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  response += log.join('\n') + '\n';
+  response += `\n━━━━━━━━━━━━━━━━━━━━━\n📊 *Resultados:*\n`;
+  response += `   💀 Monstruos: ${monstersKilled}\n`;
+  response += `   ${EMOJI.exp} XP: +${formatNumber(rewards.exp)}\n`;
+  response += `   ${EMOJI.coin} Monedas: +${formatNumber(rewards.money)}\n`;
+  if (rewards.items.length > 0) response += `   🎁 Botín: ${rewards.items.join(', ')}\n`;
+  if (rewards.lost.length > 0) response += `   ${EMOJI.warning} Inventario lleno, se perdió: ${rewards.lost.join(', ')}\n`;
+  if (reason !== 'victory' && loot.items.length > 0) response += `   _Los drops recogidos se perdieron al no completar el dungeon_\n`;
+  if (rewards.lines.length > 0) response += `\n🎮 *Bonificaciones:*\n${rewards.lines.map(l => `   ${l}`).join('\n')}\n`;
+  if (petLeveled && fresh.pet) response += `\n🐾 ¡Tu mascota *${fresh.pet.name}* subió al nivel ${fresh.pet.level}!\n`;
+
+  if (reason === 'death') {
+    const death = handlePlayerDeath(db, m.sender, user.name, now);
+    response += `\n❤️ Salud: *1/${stats.maxHealth}*\n${death.message}`;
+  } else {
+    response += `\n❤️ Salud: *${Math.max(1, health)}/${stats.maxHealth}*`;
   }
+  response += `\n\n⏰ Próximo dungeon: *${msToTime(PVP.DUNGEON_COOLDOWN)}*`;
 
-  log.push('');
-  log.push(`✨ *¡DUNGEON COMPLETADO!*`);
-
-  return {
-    completed: true,
-    bossDefeated: true,
-    monstersKilled: monstersKilled + 1, // +1 por el boss
-    totalDamage,
-    finalHealth: currentHealth,
-    log,
-    expGained,
-    moneyGained,
-    itemsGained
-  };
+  await m.reply(response);
+  await m.react(reason === 'victory' ? '🏆' : '💀');
 }
 
-/**
- * Plugin: Dungeons Rápido - Ver dungeons disponibles (modo automático)
- */
-export const dungeonsPlugin: PluginHandler = {
-  command: ['dungeonsrapido', 'dungeons-rapido', 'mazmorrasrapido'],
-  tags: ['rpg'],
-  help: [
-    'dungeonsrapido - Ver mazmorras (modo automático/rápido)',
-    'Simula el dungeon completo automáticamente'
-  ],
-  register: true,
-
-  handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-    const db = getDatabase();
-    const user = db.getUser(m.sender);
-
-    let response = `🏰 *DUNGEONS DISPONIBLES (MODO RÁPIDO)*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📊 Tu nivel: *${user.level}*\n`;
-    response += `⚡ Tu energía: *${user.stamina}/${user.maxStamina}*\n\n`;
-
-    for (const [dungeonId, dungeon] of Object.entries(DUNGEONS)) {
-      const canEnter = user.level >= dungeon.requiredLevel;
-      const hasStamina = user.stamina >= dungeon.staminaCost;
-      const status = canEnter ? (hasStamina ? '✅' : '⚡') : '🔒';
-
-      response += `${status} ${dungeon.emoji} *${dungeon.name}*\n`;
-      response += `   📖 _${dungeon.description}_\n`;
-      response += `   📊 Nivel: ${dungeon.requiredLevel}+ | ⚡ Costo: ${dungeon.staminaCost}\n`;
-      response += `   🎁 XP x${dungeon.rewards.expMultiplier} | 💰 x${dungeon.rewards.moneyMultiplier}\n\n`;
-    }
-
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📝 */dr [nombre]* - Dungeon automático\n`;
-    response += `📝 */dungeon [nombre]* - Dungeon interactivo\n`;
-    response += `⏰ Cooldown: 30 minutos`;
-
-    await m.reply(response);
-  }
-};
-
-/**
- * Plugin: Dungeon Rápido - Entrar a un dungeon (modo automático)
- */
 export const dungeonPlugin: PluginHandler = {
-  command: ['dungeonrapido', 'dungeon-rapido', 'dr', 'mazmorrarapida'],
+  command: ['dungeon', 'dungeons', 'mazmorra', 'dr'],
   tags: ['rpg'],
   help: [
-    'dr [nombre] - Dungeon automático/rápido',
-    'Simula el combate completo automáticamente',
-    'Usa /dungeon para modo interactivo'
+    'dungeon - Ver las mazmorras disponibles',
+    'dungeon [nombre] - Entrar en modo interactivo (por turnos)',
+    'dungeon [nombre] rapido - Simular el dungeon al instante',
+    'dr [nombre] - Atajo del modo rápido'
   ],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, args, command, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
-    // Verificar modos globales expirados
-    checkExpiredModes();
-
-    // Verificar cooldown
-    const now = Date.now();
-    const lastDungeon = user.lastDungeon || 0;
-
-    if (now - lastDungeon < DUNGEON_COOLDOWN) {
-      const remaining = DUNGEON_COOLDOWN - (now - lastDungeon);
-      await m.reply(
-        `${EMOJI.time} Necesitas descansar después de tu última expedición.\n\n` +
-        `⏳ Espera *${msToTime(remaining)}* para entrar a otro dungeon.`
-      );
+    const current = activeDungeons.get(m.sender);
+    if (current) {
+      await m.reply(`${EMOJI.warning} Ya estás en un dungeon. Usa *a*, *d*, *h*, *i* o *huir*.`);
+      await m.reply(formatSessionStatus(current));
       return;
     }
 
-    // Si no especifica dungeon, mostrar lista
-    if (!text.trim()) {
-      // Encontrar dungeon recomendado según nivel
-      let recommendedDungeon: Dungeon | null = null;
-      for (const dungeon of Object.values(DUNGEONS)) {
-        if (user.level >= dungeon.requiredLevel) {
-          recommendedDungeon = dungeon;
-        }
-      }
+    const words = [...args];
+    let quick = command === 'dr';
+    if (words.length > 0 && QUICK_WORDS.has(words[words.length - 1].toLowerCase())) {
+      quick = true;
+      words.pop();
+    }
+    const term = words.join(' ').trim();
 
-      let response = `${EMOJI.error} Especifica a qué dungeon quieres entrar.\n\n`;
-      response += `📝 *Uso:* /dr cueva slimes\n\n`;
-      response += `🏰 *Dungeons disponibles:*\n`;
-
-      for (const dungeon of Object.values(DUNGEONS)) {
-        const canEnter = user.level >= dungeon.requiredLevel;
-        response += `   ${canEnter ? '✅' : '🔒'} ${dungeon.name} (Nv.${dungeon.requiredLevel}+)\n`;
-      }
-
-      if (recommendedDungeon) {
-        response += `\n💡 *Recomendado:* ${recommendedDungeon.name}`;
-      }
-
-      response += `\n\n⚔️ */dungeon* - Modo interactivo por turnos`;
-
-      await m.reply(response);
+    if (!term) {
+      await m.reply(formatDungeonList(user, usedPrefix));
       return;
     }
 
-    // Buscar dungeon (sin importar tildes)
-    const searchTerm = text.toLowerCase().trim();
-    let selectedDungeon: Dungeon | null = null;
-
-    for (const dungeon of Object.values(DUNGEONS)) {
-      if (matchesIgnoreAccents(dungeon.name, searchTerm) ||
-          dungeon.id.includes(searchTerm.replace(/\s+/g, '_'))) {
-        selectedDungeon = dungeon;
-        break;
-      }
+    const found = findDungeon(term);
+    if (found.status === 'none') {
+      await m.reply(`${EMOJI.error} Dungeon no encontrado.\n\n💡 Usa *${usedPrefix}dungeon* para ver las mazmorras disponibles.`);
+      return;
     }
+    if (found.status === 'ambiguous') {
+      await m.reply(formatAmbiguous(found.candidates));
+      return;
+    }
+    const dungeon = found.item;
 
-    if (!selectedDungeon) {
-      await m.reply(
-        `${EMOJI.error} Dungeon no encontrado.\n\n` +
-        `💡 Usa */dungeonsrapido* para ver las mazmorras disponibles.`
-      );
+    const entry = checkDungeonEntry(user, m.sender, dungeon);
+    if (!entry.ok) {
+      await m.reply(entry.message);
       return;
     }
 
-    // Verificar nivel
-    if (user.level < selectedDungeon.requiredLevel) {
-      await m.reply(
-        `${EMOJI.error} Necesitas nivel *${selectedDungeon.requiredLevel}* para entrar.\n\n` +
-        `📊 Tu nivel: *${user.level}*`
-      );
-      return;
-    }
-
-    // Verificar stamina
-    if (user.stamina < selectedDungeon.staminaCost) {
-      await m.reply(
-        `${EMOJI.error} No tienes suficiente energía.\n\n` +
-        `⚡ Requerida: *${selectedDungeon.staminaCost}*\n` +
-        `⚡ Tu energía: *${user.stamina}/${user.maxStamina}*\n\n` +
-        `💡 Espera o usa una poción de energía.`
-      );
-      return;
-    }
-
-    // Calcular stats del jugador (incluyendo clase y equipamiento)
-    const playerStats = calculateTotalStats(user, ITEMS, CLASSES);
-
-    // Verificar salud
-    if (user.health < PVP.MIN_HEALTH_DUNGEON) {
-      await m.reply(
-        `${EMOJI.error} Estás muy débil para entrar a un dungeon.\n\n` +
-        `❤️ Salud: *${user.health}/${playerStats.maxHealth}*\n\n` +
-        `💡 Cúrate antes de entrar.`
-      );
-      return;
-    }
-
-    await m.react('🏰');
-
-    // Consumir stamina y aplicar cooldown
-    db.updateUser(m.sender, {
-      stamina: user.stamina - selectedDungeon.staminaCost,
-      lastDungeon: now
-    });
-
-    // Ejecutar dungeon
-    const result = runDungeon(selectedDungeon, playerStats, user.health, user.level);
-
-    // Aplicar multiplicadores de modos globales a las recompensas
-    let modeMessages: string[] = [];
-
-    // Bonus Mode
-    if (globalModes.bonusMode.active) {
-      const bonusExp = Math.floor(result.expGained * (globalModes.bonusMode.expMultiplier - 1));
-      const bonusMoney = Math.floor(result.moneyGained * (globalModes.bonusMode.moneyMultiplier - 1));
-      result.expGained += bonusExp;
-      result.moneyGained += bonusMoney;
-      modeMessages.push(`🎁 Modo Bonus: +${bonusExp} XP, +${bonusMoney} 💰`);
-    }
-
-    // PvP Mode - Mayor daño y recompensas en combate
-    if (globalModes.pvpMode.active) {
-      const pvpExp = Math.floor(result.expGained * (globalModes.pvpMode.damageMultiplier - 1));
-      result.expGained += pvpExp;
-      modeMessages.push(`⚔️ Modo PvP: +${pvpExp} XP`);
-    }
-
-    // Chaos Mode
-    if (globalModes.chaosMode.active) {
-      const chaosExp = Math.floor(result.expGained * (globalModes.chaosMode.multiplier - 1));
-      const chaosMoney = Math.floor(result.moneyGained * (globalModes.chaosMode.multiplier - 1));
-      result.expGained += chaosExp;
-      result.moneyGained += chaosMoney;
-      modeMessages.push(`🌀 Modo Caos: +${chaosExp} XP, +${chaosMoney} 💰`);
-    }
-
-    // Event Mode
-    if (globalModes.eventMode.active) {
-      const eventExp = Math.floor(result.expGained * (globalModes.eventMode.dropMultiplier - 1));
-      const eventMoney = Math.floor(result.moneyGained * (globalModes.eventMode.dropMultiplier - 1));
-      result.expGained += eventExp;
-      result.moneyGained += eventMoney;
-      modeMessages.push(`🎉 ${globalModes.eventMode.eventName}: +${eventExp} XP, +${eventMoney} 💰`);
-    }
-
-    // Actualizar estadísticas
-    const newCombatStats = { ...user.combatStats };
-    newCombatStats.totalKills += result.monstersKilled;
-    newCombatStats.totalDamageDealt += result.totalDamage;
-
-    if (result.completed) {
-      newCombatStats.dungeonsCompleted++;
-      if (result.bossDefeated) {
-        newCombatStats.bossesKilled++;
-      }
-    }
-
-    // Agregar items al inventario
-    for (const itemId of result.itemsGained) {
-      const existingItem = user.inventory.find(i => i.itemId === itemId);
-      if (existingItem) {
-        existingItem.quantity++;
-      } else {
-        user.inventory.push({ itemId, quantity: 1 });
-      }
-    }
-
-    // Guardar cambios
-    db.updateUser(m.sender, {
-      health: Math.max(1, result.finalHealth),
-      exp: user.exp + result.expGained,
-      money: user.money + result.moneyGained,
-      totalEarned: user.totalEarned + result.moneyGained,
-      combatStats: newCombatStats,
-      inventory: user.inventory
-    });
-
-    // Construir mensaje de resultado
-    let response = `⚡ *MODO RÁPIDO*\n`;
-    response += `${selectedDungeon.emoji} *${selectedDungeon.name.toUpperCase()}*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-
-    // Log de combate (resumido)
-    for (const line of result.log) {
-      response += `${line}\n`;
-    }
-
-    response += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📊 *Resultados:*\n`;
-    response += `   💀 Monstruos: ${result.monstersKilled}\n`;
-    response += `   ${EMOJI.exp} XP: +${formatNumber(result.expGained)}\n`;
-    response += `   ${EMOJI.coin} Monedas: +${formatNumber(result.moneyGained)}\n`;
-
-    if (result.itemsGained.length > 0) {
-      response += `   🎁 Items: `;
-      const itemNames = result.itemsGained.map(id => {
-        const item = ITEMS[id];
-        return item ? `${item.emoji} ${item.name}` : id;
-      });
-      response += itemNames.join(', ') + '\n';
-    }
-
-    // Mostrar modos activos
-    if (modeMessages.length > 0) {
-      response += `\n🎮 *Bonificaciones activas:*\n`;
-      response += modeMessages.map(msg => `   ${msg}`).join('\n') + '\n';
-    }
-
-    response += `\n❤️ Salud: *${result.finalHealth}/${playerStats.maxHealth}*\n`;
-
-    // Si el jugador murió (finalHealth <= 0), aplicar cuota del IMSS
-    if (result.finalHealth <= 0) {
-      const freshUser = db.getUser(m.sender);
-      const imssResult = applyDeathPenalty(db, m.sender, freshUser);
-      response += generateIMSSMessage(imssResult, user.name);
-
-      // Actualizar salud a 1 (revivir)
-      db.updateUser(m.sender, { health: 1 });
-    }
-
-    response += `\n⏰ Próximo dungeon: *30 minutos*`;
-
-    await m.reply(response);
-    await m.react(result.completed ? '🏆' : '💀');
-
-    // Actualizar progreso de misiones
-    if (result.completed) {
-      // Actualizar misión de dungeon completado
-      updateQuestProgress(db, m.sender, 'dungeon', 1);
-    }
-
-    // Actualizar misión de ganar monedas (siempre que se gane algo)
-    if (result.moneyGained > 0) {
-      updateQuestProgress(db, m.sender, 'earn', result.moneyGained);
-    }
+    if (quick) await runQuickDungeon(ctx, user, dungeon);
+    else await startInteractiveDungeon(ctx, user, dungeon);
   }
 };
 

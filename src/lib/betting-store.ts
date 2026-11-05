@@ -2,9 +2,15 @@ import type { Database } from './database.js';
 import type { BettingSystem, TipsterStats, BettingPick } from '../types/database.js';
 import { DEFAULT_BETTING_SYSTEM, DEFAULT_TIPSTER_STATS } from '../types/database.js';
 import { DEFAULT_USER_BETTING, type UserBetting } from '../types/user.js';
+import { LRUCache } from './lru-cache.js';
 
 /** Máximo de tipsters favoritos por usuario */
 export const MAX_FAVORITE_TIPSTERS = 20;
+
+/** Picks registrados por el puente de Telegram llevan este "autor" */
+export const TELEGRAM_BRIDGE_AUTHOR = 'TELEGRAM_BRIDGE';
+
+export type FollowResult = 'ok' | 'already' | 'limit';
 
 /** Copia independiente del betting por defecto; nunca compartir el objeto entre usuarios */
 export function createDefaultBetting(): UserBetting {
@@ -29,6 +35,13 @@ export function normalizeTipsterName(name: string): string {
  * persiste a través de la Database que recibe.
  */
 export class BettingStore {
+  /**
+   * Mensajes del bot (confirmación de /pick, tarjeta del bridge) asociados a un
+   * pick, para que responder a ellos también localice el pick. Es memoria de
+   * proceso: el messageId original del tipster sí persiste en el pick.
+   */
+  private readonly replyIndex = new LRUCache<string, { chatId: string; pickId: string }>(2000);
+
   constructor(private readonly db: Database) {}
 
   normalizeTipsterName(name: string): string {
@@ -42,6 +55,11 @@ export class BettingStore {
       this.db.markDirty();
     }
     return chat.bettingSystem;
+  }
+
+  /** Lee el sistema del chat sin crear la entrada del chat ni el sistema (para recorridos globales). */
+  peekBettingSystem(chatId: string): BettingSystem | null {
+    return this.db.data.chats[chatId]?.bettingSystem ?? null;
   }
 
   updateBettingSystem(chatId: string, updates: Partial<BettingSystem>): void {
@@ -185,7 +203,18 @@ export class BettingStore {
   }
 
   getPickByMessageId(chatId: string, messageId: string): BettingPick | null {
-    return this.getBettingSystem(chatId).picks.find(p => p.messageId === messageId) || null;
+    const system = this.getBettingSystem(chatId);
+    const direct = system.picks.find(p => p.messageId === messageId);
+    if (direct) return direct;
+    const reply = this.replyIndex.get(`${chatId}:${messageId}`);
+    if (!reply || reply.chatId !== chatId) return null;
+    return system.picks.find(p => p.id === reply.pickId) || null;
+  }
+
+  /** Asocia un mensaje enviado por el bot a un pick (ver replyIndex). */
+  rememberReply(chatId: string, messageId: string | null | undefined, pickId: string): void {
+    if (!messageId) return;
+    this.replyIndex.set(`${chatId}:${messageId}`, { chatId, pickId });
   }
 
   setPickMessageId(chatId: string, pickId: string, messageId: string): boolean {
@@ -237,25 +266,38 @@ export class BettingStore {
   }
 
   /**
-   * Sigue a un tipster. Devuelve false si ya lo seguía o si el usuario llegó
-   * al límite de favoritos (en ese caso no se añade como follower).
+   * Sigue a un tipster. 'already' si ya lo seguía; 'limit' si el usuario llegó
+   * al máximo de favoritos (en ese caso no se añade como follower).
    */
-  followTipster(chatId: string, tipsterName: string, userJid: string): boolean {
+  followTipsterStatus(chatId: string, tipsterName: string, userJid: string): FollowResult {
     const tipster = this.getOrCreateTipster(chatId, tipsterName);
-    if (tipster.followers.includes(userJid)) return false;
+    if (tipster.followers.includes(userJid)) return 'already';
 
     const betting = this.getUserBetting(userJid);
     const normalized = normalizeTipsterName(tipsterName);
     const alreadyFavorite = betting.favoriteTipsters.includes(normalized);
     if (!alreadyFavorite && betting.favoriteTipsters.length >= MAX_FAVORITE_TIPSTERS) {
-      return false;
+      return 'limit';
     }
 
     tipster.followers.push(userJid);
     if (!alreadyFavorite) betting.favoriteTipsters.push(normalized);
 
     this.db.markDirty();
-    return true;
+    return 'ok';
+  }
+
+  /** @deprecated Usa followTipsterStatus, que distingue "ya lo seguía" de "límite alcanzado". */
+  followTipster(chatId: string, tipsterName: string, userJid: string): boolean {
+    return this.followTipsterStatus(chatId, tipsterName, userJid) === 'ok';
+  }
+
+  /** Invierte las notificaciones de favoritos del usuario y devuelve el nuevo estado. */
+  toggleNotify(userJid: string): boolean {
+    const betting = this.getUserBetting(userJid);
+    betting.notifyOnFavorite = !betting.notifyOnFavorite;
+    this.db.markDirty();
+    return betting.notifyOnFavorite;
   }
 
   unfollowTipster(chatId: string, tipsterName: string, userJid: string): boolean {

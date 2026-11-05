@@ -4,7 +4,7 @@ import { loadConfig } from '../src/config.js';
 import { DownloadError } from '../src/errors.js';
 import { cacheKey, classifyFile, extensionForMime, newToken, publicFileUrl, TOKEN_RE, type StoredEntry } from '../src/files.js';
 import { buildDownloadData, parseDownloadRequest } from '../src/routes.js';
-import { collectImageUrls, errorFromWarnings, estimatedSize, formatSelector, hasVideoFormats, normalizeMetadata } from '../src/ytdlp.js';
+import { collectImageUrls, errorFromWarnings, estimatedSize, firstPlaylistEntryUrl, formatSelector, hasAudioFormats, hasVideoFormats, isImageFormat, normalizeMetadata } from '../src/ytdlp.js';
 
 describe('parseDownloadRequest', () => {
   it('aplica valores por defecto', () => {
@@ -36,6 +36,7 @@ describe('buildDownloadData', () => {
       token: 'a'.repeat(32),
       dir: '/tmp/x',
       createdAt: Date.now(),
+      meta: null,
       files: [
         { path: '/tmp/x/1.mp4', filename: '1.mp4', size: 100, type: 'video', mime: 'video/mp4' },
         { path: '/tmp/x/2.jpg', filename: '2.jpg', size: 50, type: 'image', mime: 'image/jpeg' },
@@ -66,6 +67,7 @@ describe('buildDownloadData', () => {
       token: 'b'.repeat(32),
       dir: '/tmp/y',
       createdAt: Date.now(),
+      meta: null,
       files: [{ path: '/tmp/y/a.mp3', filename: 'a.mp3', size: 1, type: 'audio', mime: 'audio/mpeg' }],
     };
     const data = buildDownloadData('http://h', entry, null);
@@ -157,6 +159,44 @@ describe('ytdlp helpers', () => {
     assert.deepEqual(collectImageUrls({ extractor_key: 'Instagram', duration: 12, thumbnails: [{ url: 'https://cdn/t.jpg' }] }), []);
     assert.deepEqual(collectImageUrls({ extractor_key: 'Instagram', thumbnails: [{ url: 'https://cdn/t.jpg' }] }), ['https://cdn/t.jpg']);
   });
+  it('una URL directa a imagen no cuenta como video y se descarga como imagen', () => {
+    // Asi devuelve el extractor generico un PNG: un "formato" con ext png y sin codecs.
+    const png = { id: 'PNG_demo', ext: 'png', format_id: '0', vcodec: 'none', acodec: 'none', url: 'https://upload.wikimedia.org/x/PNG_demo.png', extractor_key: 'Generic' };
+    assert.equal(isImageFormat(png), true);
+    assert.equal(isImageFormat({ ext: 'mp4', vcodec: 'h264' }), false);
+    assert.equal(isImageFormat({ ext: 'png', vcodec: 'png' }), false);
+    assert.equal(hasVideoFormats(png), false);
+    assert.deepEqual(collectImageUrls(png), ['https://upload.wikimedia.org/x/PNG_demo.png']);
+    // Varios formatos de imagen: se elige el mayor.
+    const multi = { formats: [{ format_id: 'a', ext: 'jpg', url: 'https://h/s.jpg', filesize: 10 }, { format_id: 'b', ext: 'jpg', url: 'https://h/l.jpg', filesize: 90 }] };
+    assert.equal(hasVideoFormats(multi), false);
+    assert.deepEqual(collectImageUrls(multi), ['https://h/l.jpg']);
+    // Mezcla imagen + video: es video.
+    assert.equal(hasVideoFormats({ formats: [{ format_id: 'a', ext: 'jpg' }, { format_id: 'b', ext: 'mp4', vcodec: 'avc1' }] }), true);
+  });
+  it('detecta videos sin pista de audio antes de pedir -x', () => {
+    assert.equal(hasAudioFormats({ formats: [{ format_id: 'v', vcodec: 'avc1', acodec: 'none' }] }), false);
+    assert.equal(hasAudioFormats({ requested_formats: [{ format_id: 'v', vcodec: 'avc1', acodec: 'none' }, { format_id: 'a', vcodec: 'none', acodec: 'mp4a' }] }), true);
+    // Sin informacion de codecs (generic) se asume que puede haber audio.
+    assert.equal(hasAudioFormats({ format_id: '0', ext: 'mp4' }), true);
+    assert.equal(hasAudioFormats({ format_id: '0', ext: 'png' }), false);
+  });
+  it('en una playlist pura usa solo la primera entrada; en un carrusel resuelto no', () => {
+    const playlist = {
+      _type: 'playlist',
+      extractor_key: 'YoutubePlaylist',
+      entries: [
+        { _type: 'url', id: 'aaa', ie_key: 'Youtube', url: 'https://www.youtube.com/watch?v=aaa' },
+        { _type: 'url', id: 'bbb', ie_key: 'Youtube', url: 'https://www.youtube.com/watch?v=bbb' },
+      ],
+    };
+    assert.equal(firstPlaylistEntryUrl(playlist), 'https://www.youtube.com/watch?v=aaa');
+    assert.equal(firstPlaylistEntryUrl({ _type: 'playlist', extractor_key: 'YoutubeTab', entries: [{ _type: 'url', id: 'ccc', ie_key: 'Youtube', url: 'ccc' }] }), 'https://www.youtube.com/watch?v=ccc');
+    const carousel = { _type: 'playlist', extractor_key: 'Instagram', entries: [{ id: '1', formats: [{ format_id: 'v', ext: 'mp4' }] }, { id: '2', ext: 'jpg', url: 'https://cdn/2.jpg' }] };
+    assert.equal(firstPlaylistEntryUrl(carousel), null);
+    assert.equal(firstPlaylistEntryUrl({ id: 'single', formats: [{ format_id: 'v' }] }), null);
+    assert.equal(firstPlaylistEntryUrl({ _type: 'playlist', entries: [] }), null);
+  });
   it('convierte avisos del -J en errores concretos e ignora ruido', () => {
     assert.equal(errorFromWarnings('WARNING: [youtube] zzzz: Video unavailable\nWARNING: No video formats found!')?.code, 'NOT_FOUND');
     const mixed = errorFromWarnings('WARNING: [youtube] zzzz: Unable to download webpage: HTTP Error 429: Too Many Requests\nWARNING: [youtube] Video unavailable');
@@ -176,6 +216,8 @@ describe('loadConfig', () => {
     assert.equal(def.maxFileBytes, 60 * 1024 * 1024);
     assert.equal(def.maxConcurrent, 2);
     assert.equal(def.queueMax, 20);
+    assert.equal(def.metaConcurrent, 4);
+    assert.equal(def.maxPlaylistItems, 10);
     assert.equal(def.apiKey, null);
     const custom = loadConfig({ PORT: '4000', PUBLIC_URL: 'http://downloader:4000/', MAX_FILE_MB: '10', DOWNLOADER_API_KEY: 'k', LOG_LEVEL: 'DEBUG' });
     assert.equal(custom.publicUrl, 'http://downloader:4000');

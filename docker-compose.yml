@@ -9,6 +9,8 @@ services:
     env_file: .env
     environment:
       DOWNLOADER_API_URL: http://downloader:3002
+      # Algo mayor que DOWNLOAD_TIMEOUT_MS del downloader: el bot no debe abortar antes que el servicio.
+      DOWNLOADER_API_TIMEOUT_MS: "130000"
     volumes:
       - ./data:/app/data
     depends_on:
@@ -26,7 +28,8 @@ services:
       DOWNLOAD_TIMEOUT_MS: "120000"
       MAX_CONCURRENT: "2"
       LOG_LEVEL: info
-      # Opcional: DOWNLOADER_API_KEY (ponla tambien en el bot), YTDLP_COOKIES=/cookies/cookies.txt
+      # Opcional: DOWNLOADER_API_KEY (el bot debe enviarla en la cabecera x-api-key; ver downloader/README.md),
+      # YTDLP_COOKIES=/cookies/cookies.txt, META_CONCURRENT, MAX_PLAYLIST_ITEMS
     volumes:
       - downloads:/downloads
       # Para cookies: descomenta y coloca el archivo en ./downloader/cookies/cookies.txt

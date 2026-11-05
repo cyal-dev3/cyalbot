@@ -4,7 +4,7 @@ import { getDatabase } from '../lib/database.js';
 import { mentionTag } from '../lib/utils.js';
 import { GameSessionManager, activeGameOf } from '../lib/games/session.js';
 import { creditWin, formatCoins } from '../lib/games/bets.js';
-import { enter, requireRegistered, requireGroup, say, declareContext, attachContexts, type GameInfo } from '../lib/games/common.js';
+import { enter, requireRegistered, requireGroup, say, isRegistered, declareContext, attachContexts, type GameInfo } from '../lib/games/common.js';
 import { nextWord, normalizeWord } from '../lib/ai-games.js';
 import { PALABRAS_CATEGORIAS } from '../constants/palabras.js';
 
@@ -92,7 +92,7 @@ export const ahorcadoPlugin: PluginHandler = {
 async function finishWin(groupId: string, jid: string, st: HangmanState, how: string): Promise<void> {
   games.close(groupId);
   const db = getDatabase();
-  if (db.getUser(jid).registered) creditWin(db, jid, WORD_PRIZE, GAME);
+  if (isRegistered(jid, db)) creditWin(db, jid, WORD_PRIZE, GAME);
   await say(groupId, `🎉 ${mentionTag(jid)} ${how}: *${st.word.toUpperCase()}*. Gana ${formatCoins(WORD_PRIZE)}.`, [jid]);
 }
 
@@ -134,7 +134,7 @@ export const letraPlugin: PluginHandler = {
       await finishWin(groupId, ctx.m.sender, st, 'completó la palabra');
       return;
     }
-    if (db.getUser(ctx.m.sender).registered) creditWin(db, ctx.m.sender, LETTER_PRIZE, GAME);
+    if (isRegistered(ctx.m.sender, db)) creditWin(db, ctx.m.sender, LETTER_PRIZE, GAME);
     await ctx.m.reply(`✅ "${letter.toUpperCase()}" sí está (+${LETTER_PRIZE} 💰).\n${boardText(st)}`);
   },
 };

@@ -65,6 +65,29 @@ describe('Queue', () => {
     assert.equal(await queue.run(async () => 'ok'), 'ok');
   });
 
+  it('saca de la espera y rechaza con CLIENT_CLOSED si el cliente aborta', async () => {
+    const queue = new Queue(1, 5);
+    const gate = deferred();
+    const first = queue.run(() => gate.promise);
+    const aborter = new AbortController();
+    let ran = false;
+    const second = queue.run(async () => {
+      ran = true;
+    }, aborter.signal);
+    assert.equal(queue.waitingCount, 1);
+    aborter.abort();
+    await assert.rejects(second, (err: unknown) => err instanceof DownloadError && err.code === 'CLIENT_CLOSED');
+    assert.equal(queue.waitingCount, 0);
+    gate.resolve();
+    await first;
+    await new Promise((r) => setImmediate(r));
+    assert.equal(ran, false);
+    assert.equal(queue.activeCount, 0);
+    // Una senal ya abortada no llega ni a entrar.
+    await assert.rejects(queue.run(async () => 1, aborter.signal), (err: unknown) => err instanceof DownloadError && err.code === 'CLIENT_CLOSED');
+    assert.equal(await queue.run(async () => 'ok'), 'ok');
+  });
+
   it('valida parametros', () => {
     assert.throws(() => new Queue(0, 1));
     assert.throws(() => new Queue(1, -1));

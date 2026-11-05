@@ -85,9 +85,14 @@ export function enter(ctx: MessageContext): void {
   attachContexts(ctx.handler);
 }
 
+/** Registrado en el RPG sin crear la ficha de quien no lo está. */
+export function isRegistered(jid: string, db: Database = getDatabase()): boolean {
+  return db.hasUser(jid) && db.getUser(jid).registered;
+}
+
 /** Verifica registro en el RPG; responde y devuelve false si no lo está. */
 export async function requireRegistered(ctx: MessageContext): Promise<boolean> {
-  if (getDatabase().getUser(ctx.m.sender).registered) return true;
+  if (isRegistered(ctx.m.sender)) return true;
   await ctx.m.reply(CONFIG.messages.notRegistered);
   return false;
 }

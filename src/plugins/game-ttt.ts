@@ -6,7 +6,7 @@ import { GameSessionManager } from '../lib/games/session.js';
 import { parseBet, holdBet, releaseEscrow, formatCoins } from '../lib/games/bets.js';
 import { CASINO_LIMITS } from '../lib/games/state.js';
 import {
-  enter, requireRegistered, requireGroup, say, declareContext, attachContexts, type GameInfo,
+  enter, requireRegistered, requireGroup, say, isRegistered, declareContext, attachContexts, type GameInfo,
 } from '../lib/games/common.js';
 
 const GAME = 'ttt';
@@ -91,7 +91,7 @@ async function challenge(ctx: MessageContext, target: string, betText: string | 
     return;
   }
   const db = getDatabase();
-  if (!db.getUser(target).registered) {
+  if (!isRegistered(target, db)) {
     await ctx.m.reply('Esa persona no está registrada en el RPG.');
     return;
   }

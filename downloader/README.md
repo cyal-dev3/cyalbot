@@ -64,8 +64,10 @@ En el `.env` del bot:
 
 ```
 DOWNLOADER_API_URL=http://localhost:3002     # o http://downloader:3002 en compose
-DOWNLOADER_API_TIMEOUT_MS=120000             # las descargas pueden tardar mas de 30 s
+DOWNLOADER_API_TIMEOUT_MS=130000             # algo mayor que DOWNLOAD_TIMEOUT_MS: las descargas pueden tardar mas de 30 s
 ```
+
+Si defines `DOWNLOADER_API_KEY` en el downloader, el bot tiene que enviar esa misma clave en la cabecera `x-api-key` en cada llamada a `/v1/*`; si no lo hace recibira 401 y caera a los scrapers publicos.
 
 `PUBLIC_URL` del downloader debe ser una direccion que el bot pueda abrir: si corren en la misma maquina, `http://localhost:3002`; en compose, el nombre del servicio; en maquinas distintas, la IP o dominio del downloader.
 
@@ -86,8 +88,10 @@ Todas son opcionales. Ver tambien [`.env.example`](.env.example).
 | `YTDLP_EXTRACTOR_ARGS` | vacio | Se pasa como `--extractor-args`, p. ej. `youtube:player_client=default,web` |
 | `MAX_FILE_MB` | `60` | Tamano maximo por archivo. Se pasa a yt-dlp como `--max-filesize` y se verifica tras descargar (413 `TOO_LARGE`) |
 | `DOWNLOAD_TIMEOUT_MS` | `120000` | Presupuesto total por peticion. Al vencer se mata el proceso (SIGTERM, luego SIGKILL) y se responde 504 `TIMEOUT` |
-| `MAX_CONCURRENT` | `2` | Descargas simultaneas |
-| `QUEUE_MAX` | `20` | Peticiones en espera antes de responder 429 `RATE_LIMITED` |
+| `MAX_CONCURRENT` | `2` | Descargas simultaneas (`/v1/download`) |
+| `META_CONCURRENT` | `4` | Peticiones de metadata simultaneas (`/v1/info`, `/v1/search`); tambien lanzan yt-dlp |
+| `QUEUE_MAX` | `20` | Peticiones en espera (por cola) antes de responder 429 `RATE_LIMITED` |
+| `MAX_PLAYLIST_ITEMS` | `10` | Entradas maximas que se leen de una lista. Una playlist pura (YouTube, canal, album) descarga solo la primera; un carrusel (Instagram, X) hasta este numero |
 | `CACHE_TTL_MIN` | `30` | Minutos que una misma `url+quality+audioOnly` devuelve el token anterior sin volver a descargar |
 | `DOWNLOAD_DIR` | `<tmpdir>/cyalbot-downloader` | Carpeta de descargas. Al arrancar se vacia por completo |
 | `FILE_TTL_MIN` | `30` | Minutos que vive cada descarga. La limpieza corre cada 5 minutos |
@@ -106,9 +110,9 @@ Todas las respuestas son JSON. Las de error tienen esta forma, con el status HTT
 | `INVALID_URL` | 400 | No es http(s), host privado/localhost/IP literal, URL mal formada |
 | `BAD_REQUEST` | 400 | Body no JSON, campos invalidos, metodo incorrecto |
 | `UNAUTHORIZED` | 401 | Falta o no coincide `x-api-key` |
-| `NOT_FOUND` | 404 | Video eliminado o inexistente; token de `/files` desconocido o expirado |
-| `TOO_LARGE` | 413 | Archivo mayor que `MAX_FILE_MB` (o body mayor que 64 KB) |
-| `UNSUPPORTED` | 422 | yt-dlp no soporta la URL o no hay medios descargables |
+| `NOT_FOUND` | 404 | Video eliminado o inexistente (404/410, dominio que no resuelve); token de `/files` desconocido o expirado |
+| `TOO_LARGE` | 413 | Archivo mayor que `MAX_FILE_MB` (o body mayor que 64 KB; se responde con JSON, sin cortar la conexion) |
+| `UNSUPPORTED` | 422 | yt-dlp no soporta la URL, no hay medios descargables, el sitio devolvio 403, bucle de redirecciones o `audioOnly` sobre un video sin audio |
 | `LOGIN_REQUIRED` | 422 | El sitio exige sesion (Instagram, Facebook, videos privados). Pasa cookies |
 | `RATE_LIMITED` | 429 | Cola llena o el sitio devolvio 429 |
 | `INTERNAL` | 500 | Fallo no clasificado (el mensaje trae la ultima linea de error de yt-dlp) |
@@ -168,7 +172,11 @@ Comportamiento:
 - Audio: `-x --audio-format mp3 --audio-quality 5`.
 - Antes de descargar se consulta la metadata (`-J`) para estimar tamano y responder `TOO_LARGE` sin gastar ancho de banda.
 - Si la URL no tiene formatos de video (post de fotos en Instagram, Pinterest, Threads, X), se descargan las imagenes que yt-dlp expone con `fetch`; si no hay y existe `GALLERYDL_PATH`, se usa gallery-dl. Si nada funciona: `UNSUPPORTED`.
+- Una URL directa a una imagen (`.png`, `.jpg`, `.webp`...) se devuelve como `type: "image"` sin pasar por mp4.
+- Una playlist pura (`youtube.com/playlist?list=...`, canal, album) descarga solo su primera entrada; los carruseles con varias fotos/videos se descargan completos hasta `MAX_PLAYLIST_ITEMS`.
 - La misma peticion (URL + quality + audioOnly) dentro de `CACHE_TTL_MIN` devuelve el token ya descargado (`meta.cached: true`).
+- Si el cliente cierra la conexion antes de la respuesta, la peticion sale de la cola y se mata el yt-dlp/ffmpeg en curso (en el log aparece con status 499).
+- Los errores de yt-dlp se clasifican por el mensaje de su linea `ERROR:`, nunca por la URL ni por el JSON de metadata, asi que un slug como `/timeout` no cambia el codigo.
 
 ### `POST /v1/info`
 
@@ -191,7 +199,7 @@ curl 'http://localhost:3002/v1/search?q=lofi&limit=3'
 
 ### `GET /files/<token>` y `GET /files/<token>/<indice>`
 
-Sirve el archivo con `Content-Type`, `Content-Length`, `Accept-Ranges` (soporta `Range: bytes=a-b`, 206/416) y `Content-Disposition: inline; filename=...`. Devuelve 404 si el token no existe o expiro. Los tokens son 16 bytes aleatorios en hex; no se listan ni se pueden adivinar.
+Sirve el archivo con `Content-Type`, `Content-Length`, `Accept-Ranges` (soporta `Range: bytes=a-b`, 206/416; una unidad distinta de `bytes` se ignora y se sirve completo) y `Content-Disposition: inline; filename=...`. Devuelve 404 si el token no existe o expiro. Los tokens son 16 bytes aleatorios en hex; no se listan ni se pueden adivinar.
 
 ```bash
 curl -o video.mp4 http://localhost:3002/files/362b6d78c9f3aead843cc62fc987c7c3
@@ -220,8 +228,11 @@ En Docker, monta el archivo y apunta la variable (`-v $PWD/cookies.txt:/cookies/
 
 ## Seguridad
 
-- Solo URLs `http(s)` con dominio publico: se rechazan IPs literales, `localhost`, `*.local`, `*.internal`, etc., y hosts que resuelven a rangos privados.
-- yt-dlp, ffmpeg y gallery-dl se ejecutan con `execFile` (sin shell) y la URL va tras `--`.
+- Solo URLs `http(s)` con dominio publico: se rechazan IPs literales, `localhost`, `*.local`, `*.internal`, etc., y hosts que resuelven a rangos privados. Si el DNS no resuelve se rechaza la URL (salvo que haya un proxy configurado por `HTTPS_PROXY`, en cuyo caso resuelve el proxy). Las URLs derivadas de la metadata (imagenes, miniaturas, redirecciones, entradas de playlist) pasan por la misma validacion antes de pedirse; las redirecciones de imagenes se siguen a mano (maximo 3) revalidando cada salto.
+- Limite conocido: yt-dlp vuelve a resolver el nombre al conectar, asi que un DNS malicioso que cambie de respuesta entre la comprobacion y la descarga (rebinding con TTL 0) no se detecta. Si eso preocupa, ejecuta el servicio en una red sin acceso a servicios internos.
+- yt-dlp, ffmpeg y gallery-dl se ejecutan con `spawn` (sin shell), en su propio grupo de procesos (al vencer el timeout, cancelar o apagar se mata el grupo entero, incluidos los ffmpeg que lanza yt-dlp) y la URL va tras `--`.
+- `/v1/info` y `/v1/search` tambien pasan por una cola (`META_CONCURRENT`), asi que el numero de procesos yt-dlp esta acotado por `MAX_CONCURRENT + META_CONCURRENT`.
+- Las imagenes se descargan en streaming a disco con tope `MAX_FILE_MB`; nunca se cargan enteras en memoria.
 - Body limitado a 64 KB; nombres de archivo saneados; `/files` solo acepta tokens hex de 32 caracteres, sin acceso al sistema de archivos por ruta.
 - Las descargas se borran a los `FILE_TTL_MIN` minutos y todo el directorio se vacia al arrancar.
 

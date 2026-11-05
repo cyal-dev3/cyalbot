@@ -1,4 +1,3 @@
-import { askJSON, isAIEnabled } from './ai.js';
 import { createLogger } from './logger.js';
 import { normalizeText } from './utils.js';
 import { TRIVIA_BANK, TRIVIA_TEMAS, type TriviaQuestion } from '../constants/trivia.js';
@@ -9,6 +8,12 @@ const log = createLogger('ai-juegos');
 
 const CACHE_LIMIT = 50;
 const BATCH = 10;
+
+// ai.ts arrastra el registro completo de plugins; se carga solo cuando hace falta,
+// igual que hace el handler.
+async function loadAI(): Promise<typeof import('./ai.js')> {
+  return import('./ai.js');
+}
 
 // ---------------------------------------------------------------------------
 // Trivia
@@ -39,6 +44,7 @@ export function localTriviaQuestion(tema: string | undefined, exclude: Set<strin
 
 async function fillTriviaCache(key: string): Promise<void> {
   const tema = key === 'general' ? 'cultura general variada' : key;
+  const { askJSON } = await loadAI();
   const batch = await askJSON<unknown[]>({
     system: 'Generas preguntas de trivia en español, dificultad media, variadas y verificables. '
       + 'Devuelve un arreglo JSON de objetos {"pregunta": string, "opciones": [4 strings distintas], "correcta": índice 0-3, "explicacion": string corta}. '
@@ -63,7 +69,7 @@ async function fillTriviaCache(key: string): Promise<void> {
 /** Pregunta generada por la IA (con caché por tema) o del banco local si no hay IA. */
 export async function nextTriviaQuestion(tema: string | undefined, exclude: Set<string> = new Set()): Promise<TriviaQuestion> {
   const key = cacheKey(tema);
-  if (isAIEnabled()) {
+  if ((await loadAI()).isAIEnabled()) {
     try {
       if ((triviaCache.get(key)?.length ?? 0) === 0) await fillTriviaCache(key);
       const cached = triviaCache.get(key) ?? [];
@@ -103,6 +109,7 @@ export function localWord(categoria: string | undefined): Palabra {
 
 async function fillWordCache(key: string): Promise<void> {
   const categoria = key === 'general' ? 'temas variados' : key;
+  const { askJSON } = await loadAI();
   const batch = await askJSON<unknown[]>({
     system: 'Generas palabras para el juego del ahorcado en español. '
       + 'Devuelve un arreglo JSON de objetos {"palabra": string (una sola palabra, sin espacios, 4-12 letras), "pista": string corta que no contenga la palabra}.',
@@ -122,7 +129,7 @@ async function fillWordCache(key: string): Promise<void> {
 
 export async function nextWord(categoria: string | undefined): Promise<Palabra> {
   const key = cacheKey(categoria);
-  if (isAIEnabled()) {
+  if ((await loadAI()).isAIEnabled()) {
     try {
       if ((wordCache.get(key)?.length ?? 0) === 0) await fillWordCache(key);
       const cached = wordCache.get(key);

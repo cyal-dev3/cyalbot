@@ -5,7 +5,7 @@ import { mentionTag } from '../lib/utils.js';
 import { GameSessionManager } from '../lib/games/session.js';
 import { creditWin, formatCoins } from '../lib/games/bets.js';
 import {
-  enter, requireRegistered, requireGroup, say, edit, rollInt, shuffle, declareContext, attachContexts, type GameInfo,
+  enter, requireRegistered, requireGroup, say, edit, rollInt, shuffle, isRegistered, declareContext, attachContexts, type GameInfo,
 } from '../lib/games/common.js';
 
 const GAME = 'memoria';
@@ -104,7 +104,7 @@ export const respuestaMemoriaPlugin: PluginHandler = {
     const prize = PRIZE_PER_LEVEL * s.state.level;
     games.close(groupId);
     levels.set(groupId, s.state.level + 1);
-    if (db.getUser(ctx.m.sender).registered) creditWin(db, ctx.m.sender, prize, GAME);
+    if (isRegistered(ctx.m.sender, db)) creditWin(db, ctx.m.sender, prize, GAME);
     await ctx.conn.sendMessage(groupId, {
       text: `✅ ${mentionTag(ctx.m.sender)} acertó: ${s.state.sequence[s.state.position - 1]}. Gana ${formatCoins(prize)}. Siguiente ronda: nivel ${s.state.level + 1} con *${ctx.usedPrefix || '/'}memoria*.`,
       mentions: [ctx.m.sender],

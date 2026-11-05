@@ -21,6 +21,20 @@ describe('mapYtdlpError', () => {
     ['ERROR: [twitter] 1: Tweet not found', 'NOT_FOUND', 404],
     ['ERROR: algo raro paso', 'INTERNAL', 500],
     ['', 'INTERNAL', 500],
+    // El id del extractor generico es el slug de la URL y no debe influir en el codigo.
+    ['ERROR: [generic] timeout: Unable to download webpage: HTTP Error 404: Not Found', 'NOT_FOUND', 404],
+    ['ERROR: [generic] rate-limit: Unable to download webpage: HTTP Error 404: Not Found', 'NOT_FOUND', 404],
+    ['ERROR: [generic] login: Unable to download webpage: HTTP Error 404: Not Found', 'NOT_FOUND', 404],
+    ['ERROR: [generic] private-video.mp4: Unable to download webpage: HTTP Error 404: Not Found', 'NOT_FOUND', 404],
+    ['ERROR: Unsupported URL: https://example.com/timeout/login-required', 'UNSUPPORTED', 422],
+    // El codigo HTTP manda sobre palabras sueltas del mensaje.
+    ['ERROR: [generic] x: Unable to download webpage: HTTP Error 429: Too Many Requests (timeout)', 'RATE_LIMITED', 429],
+    // Errores de recurso que antes caian en INTERNAL.
+    ['ERROR: Postprocessing: WARNING: unable to obtain file audio codec with ffprobe', 'UNSUPPORTED', 422],
+    ['ERROR: [generic] abc123xyz: Unable to download webpage: HTTP Error 302: Found (redirect loop detected)', 'UNSUPPORTED', 422],
+    ['ERROR: [generic] video: Unable to download webpage: <urlopen error [Errno -2] Name or service not known>', 'NOT_FOUND', 404],
+    ['ERROR: [generic] video: Unable to download webpage: HTTP Error 403: Forbidden', 'UNSUPPORTED', 422],
+    ['ERROR: [generic] video: Unable to download webpage: <urlopen error Tunnel connection failed: 403 Forbidden>', 'UNSUPPORTED', 422],
   ];
 
   for (const [output, code, status] of cases) {
@@ -36,6 +50,20 @@ describe('mapYtdlpError', () => {
   it('usa la ultima linea ERROR como mensaje y recorta el prefijo del extractor', () => {
     const err = mapYtdlpError('WARNING: algo\nERROR: [youtube] abc: Video unavailable\n');
     assert.equal(err.message, 'Video unavailable');
+  });
+
+  it('ignora el JSON de stdout aunque contenga palabras clave', () => {
+    const json = JSON.stringify({ title: 'private video timeout', description: 'rate-limit login required' });
+    const err = mapYtdlpError(`${json}\nERROR: [youtube] abc: Video unavailable`);
+    assert.equal(err.code, 'NOT_FOUND');
+    assert.equal(err.message, 'Video unavailable');
+    // Solo JSON y nada mas: INTERNAL con el fallback, nunca un codigo inventado.
+    assert.equal(mapYtdlpError(json).code, 'INTERNAL');
+  });
+
+  it('CLIENT_CLOSED es interno (499) y no se mapea desde yt-dlp', () => {
+    assert.equal(STATUS_BY_CODE.CLIENT_CLOSED, 499);
+    assert.notEqual(mapYtdlpError('ERROR: client closed').code, 'CLIENT_CLOSED');
   });
 
   it('usa el fallback si no hay salida', () => {
