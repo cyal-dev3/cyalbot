@@ -3,6 +3,7 @@
  * en un grupo con la opción activa, lo reenvía.
  */
 
+import { getContentType } from 'baileys';
 import type { WASocket, proto, WAMessageUpdate } from 'baileys';
 import { LRUCache } from './lru-cache.js';
 import { getDatabase } from './database.js';
@@ -17,14 +18,26 @@ const MAX_MEDIA_BYTES = 15 * 1024 * 1024;
 const cache = new LRUCache<string, proto.IWebMessageInfo>(MAX_CACHED_MESSAGES);
 const keyOf = (chatId: string, msgId: string): string => `${chatId}|${msgId}`;
 
+/** Contenidos sin nada que reenviar: ocuparían sitio en la caché desplazando mensajes reales. */
+const NOT_RESENDABLE = new Set<keyof proto.IMessage>([
+  'protocolMessage', 'reactionMessage', 'senderKeyDistributionMessage', 'pollUpdateMessage', 'keepInChatMessage',
+]);
+
 /** Guarda un mensaje de grupo para poder reenviarlo si lo borran. */
 export function rememberMessage(msg: proto.IWebMessageInfo): void {
   const chatId = msg.key.remoteJid;
   if (!chatId || !msg.key.id || msg.key.fromMe) return;
   if (!chatId.endsWith('@g.us')) return;
-  // Los mensajes de protocolo (borrados, reacciones, llaves) no tienen nada que reenviar.
-  if (!unwrapMessage(msg)) return;
+  const content = unwrapMessage(msg);
+  if (!content) return;
+  const type = getContentType(content);
+  if (!type || NOT_RESENDABLE.has(type)) return;
   cache.set(keyOf(chatId, msg.key.id), msg);
+}
+
+/** Solo para tests: true si el mensaje está en la caché de reenvío. */
+export function isRemembered(chatId: string, msgId: string): boolean {
+  return cache.has(keyOf(chatId, msgId));
 }
 
 function isRevoke(update: WAMessageUpdate): boolean {

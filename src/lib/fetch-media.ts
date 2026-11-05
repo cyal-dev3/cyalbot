@@ -13,6 +13,8 @@ const log = createLogger('fetch-media');
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
+/** Saltos de redirección que se siguen; cada destino pasa por rejectReason. */
+export const MAX_REDIRECTS = 5;
 
 export interface FetchMediaOptions {
   timeoutMs?: number;
@@ -44,11 +46,25 @@ export function isPrivateAddress(ip: string): boolean {
     const lower = ip.toLowerCase();
     if (lower === '::' || lower === '::1') return true;
     if (lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) return true;
-    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isPrivateAddress(mapped[1]);
+    const mapped = mappedV4(lower);
+    if (mapped) return isPrivateAddress(mapped);
     return false;
   }
   return false;
+}
+
+/**
+ * IPv4 embebida en una dirección v4-mapped (::ffff:a.b.c.d). El parser de URL
+ * la normaliza a hexadecimal (::ffff:7f00:1), así que se aceptan ambas formas.
+ */
+function mappedV4(ipv6: string): string | null {
+  const decimal = ipv6.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (decimal) return decimal[1];
+  const hex = ipv6.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!hex) return null;
+  const high = parseInt(hex[1], 16);
+  const low = parseInt(hex[2], 16);
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
 }
 
 /** Hosts que nunca se descargan: localhost y literales IP privadas. */
@@ -119,6 +135,39 @@ async function readLimited(res: Response, maxBytes: number, controller: AbortCon
   return Buffer.concat(chunks, total);
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * fetch con redirecciones manuales: cada Location se valida con rejectReason
+ * antes de pedirlo, porque un host público puede redirigir a uno interno.
+ * Devuelve null si una redirección es inválida o se superan los saltos.
+ */
+async function fetchFollowing(url: string, init: { signal: AbortSignal; headers?: Record<string, string> }): Promise<Response | null> {
+  let current = url;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const res = await fetch(current, { ...init, redirect: 'manual' });
+    if (!REDIRECT_STATUSES.has(res.status)) return res;
+    const location = res.headers.get('location');
+    await res.body?.cancel();
+    if (!location) return res;
+    let next: string;
+    try {
+      next = new URL(location, current).toString();
+    } catch {
+      log.debug(`redirección inválida (${location}) desde ${current}`);
+      return null;
+    }
+    const reason = await rejectReason(next);
+    if (reason) {
+      log.warn(`redirección rechazada (${reason}): ${current} -> ${next}`);
+      return null;
+    }
+    current = next;
+  }
+  log.debug(`más de ${MAX_REDIRECTS} redirecciones: ${url}`);
+  return null;
+}
+
 /**
  * Descarga `url` y devuelve el contenido con su mimetype, o null si la
  * respuesta no es válida, excede `maxBytes`, tarda más de `timeoutMs` o el
@@ -138,7 +187,8 @@ export async function fetchMedia(url: string, options: FetchMediaOptions = {}): 
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref();
   try {
-    const res = await fetch(url, { signal: controller.signal, headers: options.headers, redirect: 'follow' });
+    const res = await fetchFollowing(url, { signal: controller.signal, headers: options.headers });
+    if (!res) return null;
     if (!res.ok) {
       log.debug(`HTTP ${res.status} al descargar ${url}`);
       return null;

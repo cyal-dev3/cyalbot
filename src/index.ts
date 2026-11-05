@@ -37,7 +37,7 @@ let reconnectTimeout: NodeJS.Timeout | null = null;
 let lastError: string | null = null;
 let lastErrorAt: number | null = null;
 const RECONNECT_BACKOFF_MS = [3000, 6000, 12000, 24000, 30000];
-/** Fallos seguidos de connectBot antes de rendirse y dejar que pm2 reinicie el proceso. */
+/** Cierres seguidos sin llegar a 'open' antes de rendirse y dejar que pm2 reinicie el proceso. */
 const MAX_CONSECUTIVE_FAILURES = 10;
 
 export interface ReconnectStats {
@@ -92,7 +92,8 @@ function scheduleReconnect(): void {
   isReconnecting = true;
   if (reconnectAttempts >= MAX_CONSECUTIVE_FAILURES) {
     log.error(`${reconnectAttempts} intentos de reconexión seguidos sin éxito; saliendo para que el supervisor reinicie el proceso`);
-    process.exit(1);
+    void gracefulShutdown('reconexión fallida', 1);
+    return;
   }
   const delay = RECONNECT_BACKOFF_MS[Math.min(reconnectAttempts, RECONNECT_BACKOFF_MS.length - 1)];
   reconnectAttempts++;
@@ -108,7 +109,13 @@ function scheduleReconnect(): void {
       log.error('error al reconectar:', error);
       isReconnecting = false;
       scheduleReconnect();
+      return;
     }
+    // connectBot resuelve en cuanto existe el socket, antes del handshake. A partir
+    // de aquí el ciclo lo gobierna connection.update: si el socket nuevo se cierra
+    // sin llegar a 'open', ese cierre debe poder programar el siguiente intento
+    // (reconnectAttempts solo se resetea en 'open').
+    isReconnecting = false;
   }, delay);
 }
 
@@ -155,7 +162,7 @@ async function connectBot(): Promise<WASocket> {
         scheduleReconnect();
       } else {
         log.error(`sesión cerrada de forma permanente. Borra la carpeta ${CONFIG.authFolder} y vuelve a vincular.`);
-        process.exit(1);
+        void gracefulShutdown('sesión cerrada', 1);
       }
       return;
     }
@@ -173,6 +180,9 @@ async function connectBot(): Promise<WASocket> {
         reconnectCount++;
         updateQueueSocket(conn);
         resumeMessageQueue();
+        // auto-events guarda el socket con el que anuncia; el anterior ya está cerrado.
+        stopAutoEvents();
+        startAutoEvents(conn);
       }
     }
   });
@@ -202,8 +212,13 @@ async function main(): Promise<void> {
 process.on('uncaughtException', (error) => log.error('excepción no capturada:', error));
 process.on('unhandledRejection', (reason) => log.error('promesa rechazada:', reason));
 
-async function gracefulShutdown(signal: string): Promise<void> {
-  log.info(`cerrando (${signal})`);
+let shuttingDown = false;
+
+/** Detiene timers, puente de Telegram y BD (con su guardado final) antes de salir. */
+async function gracefulShutdown(reason: string, exitCode = 0): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log.info(`cerrando (${reason})`);
   try {
     if (reconnectTimeout) clearTimeout(reconnectTimeout);
     handler?.stop();
@@ -216,7 +231,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   } catch (error) {
     log.error('error durante el apagado:', error);
   }
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 process.on('SIGINT', () => void gracefulShutdown('SIGINT'));

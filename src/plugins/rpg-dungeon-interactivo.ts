@@ -1,7 +1,7 @@
 import type { PluginHandler, MessageContext, SerializedMessage, CommandContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, msToTime } from '../lib/utils.js';
-import { ITEMS, CLASSES, SKILLS, type Dungeon, type Skill } from '../types/rpg.js';
+import { CLASSES, SKILLS, type Dungeon, type Skill } from '../types/rpg.js';
 import type { UserRPG } from '../types/user.js';
 import { PVE, PVP } from '../constants/rpg.js';
 import { calculateDamage, type TotalStats } from '../lib/rpg-utils.js';

@@ -1,180 +1,88 @@
-/**
- * Plugin de Owner RPG
- * Control total del sistema RPG para el owner del bot
- *
- * Comandos disponibles:
- * - Dar/quitar recursos (dinero, xp, mana, diamantes, items)
- * - Modos especiales (bonus, robo libre, evento)
- * - Modificar stats de usuarios
- * - Reset de cooldowns
- * - Y mucho más...
- */
-
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { getDatabase } from '../lib/database.js';
-import { EMOJI, formatNumber, msToTime } from '../lib/utils.js';
-import { getRoleByLevel, calculateTotalStats } from '../types/user.js';
-import { ITEMS, CLASSES, type PlayerClass } from '../types/rpg.js';
+import { getDatabase, type Database } from '../lib/database.js';
+import { EMOJI, formatNumber, msToTime, getTargetUserOrSelf } from '../lib/utils.js';
+import { getRoleByLevel, type UserRPG } from '../types/user.js';
+import { ITEMS, CLASSES, FORGE_MATERIALS, type PlayerClass } from '../types/rpg.js';
+import { COOLDOWNS, PVP } from '../constants/rpg.js';
+import { calculateTotalStats } from '../lib/rpg-utils.js';
+import { grantExp, loseExp, setLevel } from '../lib/levelling.js';
+import { globalModes, checkExpiredModes, getActiveModes, type GlobalModeKey } from '../lib/global-modes.js';
+import { addItem, addMaterial, countItem, removeItem } from '../lib/rpg-inventory.js';
+import { listBusy } from '../lib/rpg-combat.js';
 import {
-  autoEventConfig,
-  toggleAutoEvents,
-  addAnnouncementGroup,
-  removeAnnouncementGroup,
-  setEventIntervals,
-  forceRandomEvent,
-  getAutoEventStatus
+  autoEventConfig, toggleAutoEvents, addAnnouncementGroup, removeAnnouncementGroup, setEventIntervals,
+  forceRandomEvent, getAutoEventStatus
 } from '../lib/auto-events.js';
+import { activeDuels, cancelDuel } from './rpg-duelo.js';
+import { activeDungeons, cancelDungeon } from './rpg-dungeon-interactivo.js';
 
-// ==================== ESTADO GLOBAL DE MODOS ====================
-
-interface GlobalModes {
-  // Modo Bonus - Multiplicadores activos
-  bonusMode: {
-    active: boolean;
-    expMultiplier: number;
-    moneyMultiplier: number;
-    manaMultiplier: number;
-    expiresAt: number;
-    activatedBy: string;
-  };
-  // Modo Robo Libre - Sin cooldown de robo
-  freeRobMode: {
-    active: boolean;
-    expiresAt: number;
-    activatedBy: string;
-  };
-  // Modo Evento - Drops aumentados
-  eventMode: {
-    active: boolean;
-    dropMultiplier: number;
-    eventName: string;
-    expiresAt: number;
-    activatedBy: string;
-  };
-  // Modo PvP - Daño aumentado en duelos
-  pvpMode: {
-    active: boolean;
-    damageMultiplier: number;
-    expiresAt: number;
-    activatedBy: string;
-  };
-  // Modo Caos - Todo multiplicado (robo, pvp, xp, dinero)
-  chaosMode: {
-    active: boolean;
-    multiplier: number;
-    expiresAt: number;
-    activatedBy: string;
-  };
-}
-
-// Estado global de modos (en memoria - se puede persistir en DB)
-export const globalModes: GlobalModes = {
-  bonusMode: {
-    active: false,
-    expMultiplier: 1,
-    moneyMultiplier: 1,
-    manaMultiplier: 1,
-    expiresAt: 0,
-    activatedBy: ''
-  },
-  freeRobMode: {
-    active: false,
-    expiresAt: 0,
-    activatedBy: ''
-  },
-  eventMode: {
-    active: false,
-    dropMultiplier: 1,
-    eventName: '',
-    expiresAt: 0,
-    activatedBy: ''
-  },
-  pvpMode: {
-    active: false,
-    damageMultiplier: 1,
-    expiresAt: 0,
-    activatedBy: ''
-  },
-  chaosMode: {
-    active: false,
-    multiplier: 1,
-    expiresAt: 0,
-    activatedBy: ''
-  }
-};
+/** Los demás plugins importaban los modos desde aquí; ahora viven en lib/global-modes.ts */
+export { globalModes, checkExpiredModes } from '../lib/global-modes.js';
 
 // ==================== UTILIDADES ====================
 
-/**
- * Verifica y desactiva modos expirados
- */
-export function checkExpiredModes(): void {
-  const now = Date.now();
-
-  if (globalModes.bonusMode.active && now >= globalModes.bonusMode.expiresAt) {
-    globalModes.bonusMode.active = false;
-  }
-  if (globalModes.freeRobMode.active && now >= globalModes.freeRobMode.expiresAt) {
-    globalModes.freeRobMode.active = false;
-  }
-  if (globalModes.eventMode.active && now >= globalModes.eventMode.expiresAt) {
-    globalModes.eventMode.active = false;
-  }
-  if (globalModes.pvpMode.active && now >= globalModes.pvpMode.expiresAt) {
-    globalModes.pvpMode.active = false;
-  }
-  if (globalModes.chaosMode.active && now >= globalModes.chaosMode.expiresAt) {
-    globalModes.chaosMode.active = false;
-  }
-}
-
-/**
- * Obtiene el JID del usuario objetivo
- * Si no hay mención ni mensaje citado, retorna null
- */
-function getTargetUser(ctx: MessageContext): string | null {
-  if (ctx.m.mentionedJid.length > 0) {
-    return ctx.m.mentionedJid[0];
-  }
-  if (ctx.m.quoted?.sender) {
-    return ctx.m.quoted.sender;
-  }
-  return null;
-}
-
-/**
- * Obtiene el JID del usuario objetivo o el propio sender si no hay mención
- * Útil para comandos que pueden auto-aplicarse
- */
-function getTargetUserOrSelf(ctx: MessageContext): string {
-  const target = getTargetUser(ctx);
-  return target || ctx.m.sender;
-}
-
-/**
- * Parsea tiempo en formato humano (1h, 30m, 2d, etc.)
- */
-function parseTime(timeStr: string): number {
-  const match = timeStr.match(/^(\d+)(s|m|h|d)$/i);
+function parseTime(timeStr: string | undefined): number {
+  const match = (timeStr ?? '').match(/^(\d+)(s|m|h|d)$/i);
   if (!match) return 0;
-
-  const value = parseInt(match[1]);
-  const unit = match[2].toLowerCase();
-
-  switch (unit) {
-    case 's': return value * 1000;
-    case 'm': return value * 60 * 1000;
-    case 'h': return value * 60 * 60 * 1000;
-    case 'd': return value * 24 * 60 * 60 * 1000;
-    default: return 0;
-  }
+  const value = parseInt(match[1], 10);
+  const units: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return value * units[match[2].toLowerCase()];
 }
 
-// ==================== COMANDOS ====================
+/** Entero >= 1 o null */
+function parseCount(raw: string | undefined): number | null {
+  if (!raw || !/^\d+$/.test(raw)) return null;
+  const value = parseInt(raw, 10);
+  return Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
 
-/**
- * Menú de ayuda del Owner RPG
- */
+/** Objetivo mencionado o citado; sin mención, el propio owner */
+function targetOf(ctx: MessageContext): string {
+  return getTargetUserOrSelf({ mentionedJid: ctx.m.mentionedJid, quoted: ctx.m.quoted, chat: ctx.m.chat, sender: ctx.m.sender });
+}
+
+function notRegistered(ctx: MessageContext, jid: string): string {
+  return `${EMOJI.error} ${jid === ctx.m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`;
+}
+
+type CooldownField = 'lastWork' | 'lastMine' | 'lastRob' | 'lastDuel' | 'lastAttack' | 'lastDungeon' | 'lastClaim' | 'lastBomb' | 'lastFumar';
+
+const COOLDOWN_TYPES: Record<string, CooldownField> = {
+  work: 'lastWork', trabajo: 'lastWork',
+  mine: 'lastMine', minar: 'lastMine',
+  rob: 'lastRob', robar: 'lastRob',
+  duel: 'lastDuel', duelo: 'lastDuel',
+  attack: 'lastAttack', atacar: 'lastAttack',
+  dungeon: 'lastDungeon',
+  daily: 'lastClaim', diario: 'lastClaim',
+  bomb: 'lastBomb', bomba: 'lastBomb',
+  fumar: 'lastFumar'
+};
+
+/** Campos de cooldown que corresponden a un tipo; 'all' devuelve todos */
+export function cooldownFieldsFor(type: string): CooldownField[] {
+  if (type === 'all' || type === 'todos') return [...new Set(Object.values(COOLDOWN_TYPES))];
+  const field = COOLDOWN_TYPES[type];
+  return field ? [field] : [];
+}
+
+const COOLDOWN_TYPE_LIST = 'work, mine, rob, duel, attack, dungeon, daily, bomb, fumar, all';
+
+function modeLines(now: number): string {
+  const active = getActiveModes(now);
+  if (active.length === 0) return '_Ningún modo especial activo_\n';
+  const describe: Record<GlobalModeKey, () => string> = {
+    bonusMode: () => `Bonus (x${globalModes.bonusMode.expMultiplier} XP, x${globalModes.bonusMode.moneyMultiplier} 💰)`,
+    freeRobMode: () => 'Robo Libre (sin cooldown)',
+    eventMode: () => `Evento "${globalModes.eventMode.eventName}" (x${globalModes.eventMode.dropMultiplier})`,
+    pvpMode: () => `PvP Intenso (x${globalModes.pvpMode.damageMultiplier} daño)`,
+    chaosMode: () => `MODO CAOS (x${globalModes.chaosMode.multiplier} TODO)`
+  };
+  return active.map(a => `✅ ${describe[a.key]()} - ${msToTime(a.remainingMs)} (${a.activatedBy === 'SISTEMA_AUTO' ? 'automático' : 'owner'})\n`).join('');
+}
+
+// ==================== MENÚ ====================
+
 export const ownerRpgMenuPlugin: PluginHandler = {
   command: ['rpgowner', 'ownerrpg', 'rpgadmin', 'rpgmenu'],
   tags: ['owner'],
@@ -182,125 +90,126 @@ export const ownerRpgMenuPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-
-    // Verificar modos activos
-    checkExpiredModes();
-
-    let modesStatus = '\n📊 *MODOS ACTIVOS:*\n';
-    const now = Date.now();
-
-    if (globalModes.bonusMode.active) {
-      const remaining = msToTime(globalModes.bonusMode.expiresAt - now);
-      modesStatus += `✅ Bonus (x${globalModes.bonusMode.expMultiplier} XP, x${globalModes.bonusMode.moneyMultiplier} 💰) - ${remaining}\n`;
-    }
-    if (globalModes.freeRobMode.active) {
-      const remaining = msToTime(globalModes.freeRobMode.expiresAt - now);
-      modesStatus += `✅ Robo Libre (sin cooldown) - ${remaining}\n`;
-    }
-    if (globalModes.eventMode.active) {
-      const remaining = msToTime(globalModes.eventMode.expiresAt - now);
-      modesStatus += `✅ Evento "${globalModes.eventMode.eventName}" (x${globalModes.eventMode.dropMultiplier} drops) - ${remaining}\n`;
-    }
-    if (globalModes.pvpMode.active) {
-      const remaining = msToTime(globalModes.pvpMode.expiresAt - now);
-      modesStatus += `✅ PvP Intenso (x${globalModes.pvpMode.damageMultiplier} daño) - ${remaining}\n`;
-    }
-    if (globalModes.chaosMode.active) {
-      const remaining = msToTime(globalModes.chaosMode.expiresAt - now);
-      modesStatus += `✅ MODO CAOS (x${globalModes.chaosMode.multiplier} TODO) - ${remaining}\n`;
-    }
-
-    if (!globalModes.bonusMode.active && !globalModes.freeRobMode.active &&
-        !globalModes.eventMode.active && !globalModes.pvpMode.active && !globalModes.chaosMode.active) {
-      modesStatus += '_Ningún modo especial activo_\n';
-    }
-
+    const { m, usedPrefix: p } = ctx;
     const menu = `
 👑 *PANEL DE CONTROL RPG - OWNER*
 ━━━━━━━━━━━━━━━━━━━━━━━━
-${modesStatus}
-━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *MODOS ACTIVOS:*
+${modeLines(Date.now())}━━━━━━━━━━━━━━━━━━━━━━━━
 
 💰 *RECURSOS:*
-• \`.rpgdar\` @user [tipo] [cantidad]
+• \`${p}rpgdar\` @user [tipo] [cantidad]
   _Tipos: dinero, xp, mana, diamantes, vida, stamina_
-• \`.rpgquitar\` @user [tipo] [cantidad]
-• \`.rpgset\` @user [stat] [valor]
-  _Stats: level, attack, defense, crit, maxhealth, maxmana_
-• \`.rpgdaritem\` @user [itemId] [cantidad]
-• \`.rpgquitaritem\` @user [itemId] [cantidad]
+• \`${p}rpgquitar\` @user [tipo] [cantidad]
+• \`${p}rpgset\` @user [stat] [valor]
+  _Stats: level, attack, defense, crit, maxhealth, maxmana, maxstamina_
+• \`${p}rpgdaritem\` @user [itemId|materialId] [cantidad]
+• \`${p}rpgquitaritem\` @user [itemId] [cantidad]
 
 🎭 *MODOS ESPECIALES:*
-• \`.rpgbonus\` [xp] [dinero] [mana] [tiempo]
-  _Ej: .rpgbonus 2 3 2 1h (x2 xp, x3 dinero, x2 mana por 1h)_
-• \`.rpgrobolibre\` [tiempo]
-  _Ej: .rpgrobolibre 30m (robo sin cooldown por 30 min)_
-• \`.rpgevento\` [nombre] [dropMultiplier] [tiempo]
-  _Ej: .rpgevento "Lluvia de Oro" 5 2h_
-• \`.rpgpvp\` [multiplicador] [tiempo]
-  _Ej: .rpgpvp 2 1h (x2 daño en duelos)_
-• \`.rpgcaos\` [multiplicador] [tiempo]
-  _Ej: .rpgcaos 3 30m (TODO x3 por 30 min)_
-• \`.rpgdesactivar\` [modo]
-  _Modos: bonus, robo, evento, pvp, caos, todos_
+• \`${p}rpgbonus\` [xp] [dinero] [mana] [tiempo]
+• \`${p}rpgrobolibre\` [tiempo]
+• \`${p}rpgevento\` "nombre" [multiplicador] [tiempo]
+• \`${p}rpgpvp\` [multiplicador] [tiempo]
+• \`${p}rpgcaos\` [multiplicador] [tiempo]
+• \`${p}rpgdesactivar\` [bonus|robo|evento|pvp|caos|todos]
 
 ⏰ *COOLDOWNS:*
-• \`.rpgresetcd\` @user [tipo]
-  _Tipos: work, mine, rob, duel, attack, dungeon, daily, all_
-• \`.rpgresetcdall\` [tipo]
-  _Resetea cooldown para TODOS los usuarios_
+• \`${p}rpgresetcd\` @user [tipo]
+• \`${p}rpgresetcdall\` [tipo]
+  _Tipos: ${COOLDOWN_TYPE_LIST}_
 
-🔧 *MODIFICACIONES AVANZADAS:*
-• \`.rpgsetclase\` @user [clase]
-  _Clases: guerrero, mago, ladron, arquero_
-• \`.rpgresetstats\` @user
-  _Resetea stats a valores por defecto (mantiene nivel)_
-• \`.rpgfullstats\` @user
-  _Da stats máximos al usuario_
-• \`.rpgmaxlevel\` @user [nivel]
-  _Establece nivel instantáneamente_
-• \`.rpgborrar\` @user
-  _ELIMINA el progreso RPG del usuario_
+🔧 *MODIFICACIONES:*
+• \`${p}rpgsetclase\` @user [guerrero|mago|ladron|arquero]
+• \`${p}rpgfullstats\` @user
+• \`${p}rpgsetnivel\` @user [nivel]
+• \`${p}rpgborrar\` @user confirmar
 
 📊 *INFORMACIÓN:*
-• \`.rpginfo\` @user
-  _Ver toda la info RPG de un usuario_
-• \`.rpglistitems\`
-  _Lista todos los items disponibles_
-• \`.rpgtop\` [tipo]
-  _Ver ranking: level, money, diamonds, pvp_
+• \`${p}rpginfo\` @user
+• \`${p}rpglistitems\` [tipo]
+• \`${p}rpgtop\` [level|money|diamonds|pvp|kills]
+• \`${p}rpgsesiones\` - Duelos y dungeons en curso
+• \`${p}rpgcancelar\` [@user|duelo] - Desatasca una sesión
 
 🎁 *RECOMPENSAS MASIVAS:*
-• \`.rpgdaratodos\` [tipo] [cantidad]
-  _Da recursos a TODOS los registrados_
-• \`.rpglluviamoney\` [cantidad]
-  _Lluvia de dinero aleatorio en el grupo_
+• \`${p}rpgdaratodos\` [tipo] [cantidad]
+• \`${p}rpglluviamoney\` [cantidad]
 
 🎲 *EVENTOS AUTOMÁTICOS:*
-• \`.rpgautoevents\` [on/off]
-  _Activa/desactiva eventos aleatorios_
-• \`.rpgaddgrupo\`
-  _Agrega este grupo a los anuncios_
-• \`.rpgremovegrupo\`
-  _Remueve este grupo de los anuncios_
-• \`.rpgeventinterval\` [min] [max]
-  _Intervalo entre eventos (minutos)_
-• \`.rpgforceevent\`
-  _Fuerza un evento aleatorio ahora_
-• \`.rpgeventstatus\`
-  _Ver estado del sistema de eventos_
+• \`${p}rpgautoevents\` [on|off]
+• \`${p}rpgaddgrupo\` / \`${p}rpgremovegrupo\`
+• \`${p}rpgeventinterval\` [min] [max]
+• \`${p}rpgforceevent\` / \`${p}rpgeventstatus\`
 
-⚠️ *Tiempos válidos: 1s, 30m, 1h, 2h, 1d, etc.*
+👹 *JEFE MUNDIAL:* \`${p}bossinvocar\` [nombre] / \`${p}bossdespedir\`
+
+⚠️ *Tiempos válidos: 30s, 5m, 1h, 2h, 1d*
 `;
-
     await m.reply(menu);
   }
 };
 
-/**
- * Dar recursos a un usuario
- */
+// ==================== RECURSOS ====================
+
+type ResourceKey = 'money' | 'exp' | 'mana' | 'limit' | 'health' | 'stamina';
+
+const RESOURCE_ALIASES: Record<string, ResourceKey> = {
+  dinero: 'money', money: 'money', monedas: 'money',
+  xp: 'exp', exp: 'exp', experiencia: 'exp',
+  mana: 'mana',
+  diamantes: 'limit', diamonds: 'limit', limit: 'limit',
+  vida: 'health', health: 'health', hp: 'health',
+  stamina: 'stamina', energia: 'stamina', energy: 'stamina'
+};
+
+const RESOURCE_LABEL: Record<ResourceKey, { name: string; emoji: string }> = {
+  money: { name: 'monedas', emoji: '💰' },
+  exp: { name: 'XP', emoji: '✨' },
+  mana: { name: 'maná', emoji: '💠' },
+  limit: { name: 'diamantes', emoji: '💎' },
+  health: { name: 'vida', emoji: '❤️' },
+  stamina: { name: 'energía', emoji: '⚡' }
+};
+
+/** Suma (o resta con amount negativo) un recurso respetando los máximos reales; devuelve el nuevo total */
+function applyResource(db: Database, jid: string, user: UserRPG, key: ResourceKey, amount: number): number {
+  const stats = calculateTotalStats(user);
+  switch (key) {
+    case 'exp': {
+      if (amount >= 0) grantExp(user, amount);
+      else loseExp(user, -amount);
+      db.updateUser(jid, { exp: user.exp, level: user.level, maxHealth: user.maxHealth, maxStamina: user.maxStamina, maxMana: user.maxMana, health: user.health, stamina: user.stamina, mana: user.mana, money: user.money });
+      return user.exp;
+    }
+    case 'money': {
+      const value = Math.max(0, user.money + amount);
+      db.updateUser(jid, { money: value });
+      return value;
+    }
+    case 'limit': {
+      const value = Math.max(0, user.limit + amount);
+      db.updateUser(jid, { limit: value });
+      return value;
+    }
+    case 'mana': {
+      const value = Math.max(0, Math.min(stats.maxMana, user.mana + amount));
+      db.updateUser(jid, { mana: value });
+      return value;
+    }
+    case 'health': {
+      const value = Math.max(1, Math.min(stats.maxHealth, user.health + amount));
+      db.updateUser(jid, { health: value });
+      return value;
+    }
+    case 'stamina': {
+      const value = Math.max(0, Math.min(stats.maxStamina, user.stamina + amount));
+      db.updateUser(jid, { stamina: value });
+      return value;
+    }
+  }
+}
+
 export const rpgDarPlugin: PluginHandler = {
   command: ['rpgdar', 'rpggive', 'rpgadd'],
   tags: ['owner'],
@@ -308,100 +217,29 @@ export const rpgDarPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
-    // Si no hay mención, se aplica a uno mismo
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
-    }
-
-    const type = args[0]?.toLowerCase();
-    const amount = parseInt(args[1]) || 0;
-
-    if (!type || amount <= 0) {
+    const key = RESOURCE_ALIASES[args[0]?.toLowerCase() ?? ''];
+    const amount = parseCount(args[1]);
+    if (!key || amount === null) {
       return m.reply(
-        `${EMOJI.error} Uso: .rpgdar [@user] [tipo] [cantidad]\n\n` +
-        `*Tipos disponibles:*\n` +
-        `• dinero/money - Monedas\n` +
-        `• xp/exp - Experiencia\n` +
-        `• mana - Maná\n` +
-        `• diamantes/diamonds/limit - Diamantes\n` +
-        `• vida/health - Vida actual\n` +
-        `• stamina/energia - Energía\n\n` +
-        `💡 _Sin mención se aplica a ti mismo_`
+        `${EMOJI.error} Uso: ${usedPrefix}rpgdar [@user] [tipo] [cantidad]\n\n` +
+        `*Tipos:* dinero, xp, mana, diamantes, vida, stamina\n` +
+        `La cantidad debe ser un entero mayor que 0.\n💡 _Sin mención se aplica a ti mismo_`
       );
     }
 
-    const updates: Record<string, number> = {};
-    let resourceName = '';
-    let emoji = '';
-
-    // Calcular stats máximos reales (incluyendo clase y equipamiento)
-    const realMaxStats = calculateTotalStats(user, ITEMS, CLASSES);
-
-    switch (type) {
-      case 'dinero':
-      case 'money':
-      case 'monedas':
-        updates.money = user.money + amount;
-        resourceName = 'monedas';
-        emoji = '💰';
-        break;
-      case 'xp':
-      case 'exp':
-      case 'experiencia':
-        updates.exp = user.exp + amount;
-        resourceName = 'XP';
-        emoji = '✨';
-        break;
-      case 'mana':
-        updates.mana = Math.min(realMaxStats.maxMana, user.mana + amount);
-        resourceName = 'maná';
-        emoji = '💠';
-        break;
-      case 'diamantes':
-      case 'diamonds':
-      case 'limit':
-        updates.limit = user.limit + amount;
-        resourceName = 'diamantes';
-        emoji = '💎';
-        break;
-      case 'vida':
-      case 'health':
-      case 'hp':
-        updates.health = Math.min(realMaxStats.maxHealth, user.health + amount);
-        resourceName = 'vida';
-        emoji = '❤️';
-        break;
-      case 'stamina':
-      case 'energia':
-      case 'energy':
-        updates.stamina = Math.min(realMaxStats.maxStamina, user.stamina + amount);
-        resourceName = 'energía';
-        emoji = '⚡';
-        break;
-      default:
-        return m.reply(`${EMOJI.error} Tipo no válido. Usa: dinero, xp, mana, diamantes, vida, stamina`);
-    }
-
-    db.updateUser(targetJid, updates);
-
-    await m.reply(
-      `👑 *OWNER RPG*\n\n` +
-      `${emoji} Has dado *${formatNumber(amount)} ${resourceName}* a *${user.name}*\n\n` +
-      `📊 Nuevo total: *${formatNumber(updates[Object.keys(updates)[0]])}*`
-    );
+    const total = applyResource(db, jid, user, key, amount);
+    const label = RESOURCE_LABEL[key];
+    await m.reply(`👑 *OWNER RPG*\n\n${label.emoji} Has dado *${formatNumber(amount)} ${label.name}* a *${user.name}*\n\n📊 Nuevo total: *${formatNumber(total)}*${key === 'exp' ? ` (nivel ${user.level})` : ''}`);
     await m.react('✅');
   }
 };
 
-/**
- * Quitar recursos a un usuario
- */
 export const rpgQuitarPlugin: PluginHandler = {
   command: ['rpgquitar', 'rpgremove', 'rpgtake'],
   tags: ['owner'],
@@ -409,283 +247,193 @@ export const rpgQuitarPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
+    const key = RESOURCE_ALIASES[args[0]?.toLowerCase() ?? ''];
+    const amount = parseCount(args[1]);
+    if (!key || amount === null) {
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgquitar [@user] [tipo] [cantidad]\n\n*Tipos:* dinero, xp, mana, diamantes, vida, stamina\n💡 _Sin mención se aplica a ti mismo_`);
     }
 
-    const type = args[0]?.toLowerCase();
-    const amount = parseInt(args[1]) || 0;
-
-    if (!type || amount <= 0) {
-      return m.reply(`${EMOJI.error} Uso: .rpgquitar [@user] [tipo] [cantidad]\n💡 _Sin mención se aplica a ti mismo_`);
-    }
-
-    const updates: Record<string, number> = {};
-    let resourceName = '';
-    let emoji = '';
-
-    switch (type) {
-      case 'dinero':
-      case 'money':
-        updates.money = Math.max(0, user.money - amount);
-        resourceName = 'monedas';
-        emoji = '💰';
-        break;
-      case 'xp':
-      case 'exp':
-        updates.exp = Math.max(0, user.exp - amount);
-        resourceName = 'XP';
-        emoji = '✨';
-        break;
-      case 'mana':
-        updates.mana = Math.max(0, user.mana - amount);
-        resourceName = 'maná';
-        emoji = '💠';
-        break;
-      case 'diamantes':
-      case 'diamonds':
-      case 'limit':
-        updates.limit = Math.max(0, user.limit - amount);
-        resourceName = 'diamantes';
-        emoji = '💎';
-        break;
-      case 'vida':
-      case 'health':
-        updates.health = Math.max(1, user.health - amount);
-        resourceName = 'vida';
-        emoji = '❤️';
-        break;
-      case 'stamina':
-      case 'energia':
-        updates.stamina = Math.max(0, user.stamina - amount);
-        resourceName = 'energía';
-        emoji = '⚡';
-        break;
-      default:
-        return m.reply(`${EMOJI.error} Tipo no válido`);
-    }
-
-    db.updateUser(targetJid, updates);
-
-    await m.reply(
-      `👑 *OWNER RPG*\n\n` +
-      `${emoji} Has quitado *${formatNumber(amount)} ${resourceName}* a *${user.name}*\n\n` +
-      `📊 Nuevo total: *${formatNumber(updates[Object.keys(updates)[0]])}*`
-    );
+    const total = applyResource(db, jid, user, key, -amount);
+    const label = RESOURCE_LABEL[key];
+    await m.reply(`👑 *OWNER RPG*\n\n${label.emoji} Has quitado *${formatNumber(amount)} ${label.name}* a *${user.name}*\n\n📊 Nuevo total: *${formatNumber(total)}*`);
     await m.react('✅');
   }
 };
 
-/**
- * Establecer stats específicos
- */
 export const rpgSetPlugin: PluginHandler = {
   command: ['rpgset', 'rpgsetstat'],
   tags: ['owner'],
-  help: ['rpgset @user [stat] [valor] - Establece un stat específico'],
+  help: ['rpgset @user [stat] [valor] - Establece un stat (level, attack, defense, crit, maxhealth, maxmana, maxstamina)'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
-
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
-    }
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
     const stat = args[0]?.toLowerCase();
-    const value = parseInt(args[1]);
-
-    if (!stat || isNaN(value)) {
+    const value = parseInt(args[1] ?? '', 10);
+    if (!stat || !Number.isFinite(value)) {
       return m.reply(
-        `${EMOJI.error} Uso: .rpgset [@user] [stat] [valor]\n\n` +
-        `*Stats disponibles:*\n` +
-        `• level - Nivel\n` +
-        `• attack - Ataque base\n` +
-        `• defense - Defensa base\n` +
-        `• crit - Probabilidad de crítico\n` +
-        `• maxhealth - Vida máxima\n` +
-        `• maxmana - Maná máximo\n` +
-        `• maxstamina - Energía máxima\n\n` +
-        `💡 _Sin mención se aplica a ti mismo_`
+        `${EMOJI.error} Uso: ${usedPrefix}rpgset [@user] [stat] [valor]\n\n` +
+        `*Stats:* level, attack, defense, crit, maxhealth, maxmana, maxstamina\n💡 _Sin mención se aplica a ti mismo_`
       );
     }
 
-    const updates: Record<string, unknown> = {};
-
+    const updates: Partial<UserRPG> = {};
     switch (stat) {
-      case 'level':
-      case 'nivel':
-        updates.level = Math.max(0, value);
-        updates.role = getRoleByLevel(value);
-        break;
-      case 'attack':
-      case 'ataque':
-        updates.attack = Math.max(1, value);
-        break;
-      case 'defense':
-      case 'defensa':
-        updates.defense = Math.max(0, value);
-        break;
-      case 'crit':
-      case 'critico':
-        updates.critChance = Math.max(0, Math.min(100, value));
-        break;
-      case 'maxhealth':
-      case 'maxvida':
+      case 'level': case 'nivel': {
+        const result = setLevel(user, value);
+        db.updateUser(jid, user);
+        await m.reply(`👑 *OWNER RPG*\n\n📈 *${user.name}* pasa del nivel ${result.from} al *${result.to}*\n🏆 Rango: ${getRoleByLevel(user.level)}`);
+        await m.react('✅');
+        return;
+      }
+      case 'attack': case 'ataque': updates.attack = Math.max(1, value); break;
+      case 'defense': case 'defensa': updates.defense = Math.max(0, value); break;
+      case 'crit': case 'critico': updates.critChance = Math.max(0, Math.min(100, value)); break;
+      case 'maxhealth': case 'maxvida':
         updates.maxHealth = Math.max(1, value);
-        updates.health = Math.min(user.health, value);
         break;
       case 'maxmana':
         updates.maxMana = Math.max(0, value);
-        updates.mana = Math.min(user.mana, value);
         break;
-      case 'maxstamina':
-      case 'maxenergia':
+      case 'maxstamina': case 'maxenergia':
         updates.maxStamina = Math.max(0, value);
-        updates.stamina = Math.min(user.stamina, value);
         break;
       default:
-        return m.reply(`${EMOJI.error} Stat no válido`);
+        return m.reply(`${EMOJI.error} Stat no válido. Usa: level, attack, defense, crit, maxhealth, maxmana, maxstamina`);
     }
 
-    db.updateUser(targetJid, updates);
+    // Los stats actuales se acotan al nuevo máximo real (clase y equipo incluidos)
+    const stats = calculateTotalStats({ ...user, ...updates });
+    updates.health = Math.min(user.health, stats.maxHealth);
+    updates.mana = Math.min(user.mana, stats.maxMana);
+    updates.stamina = Math.min(user.stamina, stats.maxStamina);
+    db.updateUser(jid, updates);
 
-    await m.reply(
-      `👑 *OWNER RPG*\n\n` +
-      `⚙️ Has establecido *${stat}* de *${user.name}* a *${formatNumber(value)}*`
-    );
+    await m.reply(`👑 *OWNER RPG*\n\n⚙️ Has establecido *${stat}* de *${user.name}* a *${formatNumber(value)}*`);
     await m.react('✅');
   }
 };
 
-/**
- * Dar items a un usuario
- */
 export const rpgDarItemPlugin: PluginHandler = {
   command: ['rpgdaritem', 'rpggiveitem', 'rpgadditem'],
   tags: ['owner'],
-  help: ['rpgdaritem @user [itemId] [cantidad] - Da items a un usuario'],
+  help: ['rpgdaritem @user [itemId|materialId] [cantidad] - Da items o materiales'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
+    const id = args[0]?.toLowerCase();
+    const quantity = args[1] === undefined ? 1 : parseCount(args[1]);
+    if (!id || quantity === null) {
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgdaritem [@user] [itemId] [cantidad]\n\n💡 Usa \`${usedPrefix}rpglistitems\` para ver los IDs\n💡 _Sin mención se aplica a ti mismo_`);
     }
 
-    const itemId = args[0]?.toLowerCase();
-    const quantity = parseInt(args[1]) || 1;
-
-    if (!itemId) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgdaritem [@user] [itemId] [cantidad]\n\n` +
-        `💡 Usa \`.rpglistitems\` para ver los IDs disponibles\n` +
-        `💡 _Sin mención se aplica a ti mismo_`
-      );
+    if (FORGE_MATERIALS[id]) {
+      addMaterial(user, id, quantity);
+      db.updateUser(jid, { forgeMaterials: user.forgeMaterials });
+      const material = FORGE_MATERIALS[id];
+      await m.reply(`👑 *OWNER RPG*\n\n${material.emoji} Has dado *${quantity}x ${material.name}* (material) a *${user.name}*`);
+      await m.react('✅');
+      return;
     }
 
-    const item = ITEMS[itemId];
-    if (!item) {
-      return m.reply(`${EMOJI.error} Item "${itemId}" no encontrado. Usa \`.rpglistitems\``);
-    }
+    const item = ITEMS[id];
+    if (!item) return m.reply(`${EMOJI.error} Item "${id}" no encontrado. Usa \`${usedPrefix}rpglistitems\``);
 
-    // Agregar al inventario
-    const inventory = [...user.inventory];
-    const existingItem = inventory.find(i => i.itemId === itemId);
-
-    if (existingItem) {
-      existingItem.quantity += quantity;
-    } else {
-      inventory.push({ itemId, quantity });
-    }
-
-    db.updateUser(targetJid, { inventory });
-
-    await m.reply(
-      `👑 *OWNER RPG*\n\n` +
-      `${item.emoji} Has dado *${quantity}x ${item.name}* a *${user.name}*`
-    );
+    const result = addItem(user, id, quantity);
+    db.updateUser(jid, { inventory: user.inventory });
+    let msg = `👑 *OWNER RPG*\n\n${item.emoji} Has dado *${result.added}x ${item.name}* a *${user.name}*`;
+    if (!result.ok) msg += `\n${EMOJI.warning} Inventario lleno: solo cupieron ${result.added} de ${quantity}`;
+    await m.reply(msg);
     await m.react('✅');
   }
 };
 
-/**
- * Lista todos los items disponibles
- */
-export const rpgListItemsPlugin: PluginHandler = {
-  command: ['rpglistitems', 'rpgitems'],
+export const rpgQuitarItemPlugin: PluginHandler = {
+  command: ['rpgquitaritem', 'rpgremoveitem', 'rpgtakeitem'],
   tags: ['owner'],
-  help: ['rpglistitems - Lista todos los items y sus IDs'],
+  help: ['rpgquitaritem @user [itemId] [cantidad] - Quita items del inventario'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
+    const db = getDatabase();
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
-    const category = args[0]?.toLowerCase();
-
-    let items = Object.entries(ITEMS);
-
-    if (category) {
-      items = items.filter(([, item]) => item.type === category);
+    const id = args[0]?.toLowerCase();
+    const quantity = args[1] === undefined ? 1 : parseCount(args[1]);
+    if (!id || quantity === null) {
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgquitaritem [@user] [itemId] [cantidad]`);
     }
+    const item = ITEMS[id];
+    if (!item) return m.reply(`${EMOJI.error} Item "${id}" no encontrado.`);
 
-    const categorized: Record<string, string[]> = {
-      weapon: [],
-      armor: [],
-      accessory: [],
-      consumable: [],
-      material: []
-    };
-
-    for (const [id, item] of items) {
-      const line = `${item.emoji} \`${id}\` - ${item.name}`;
-      if (categorized[item.type]) {
-        categorized[item.type].push(line);
+    const owned = countItem(user, id);
+    if (!removeItem(user, id, quantity)) {
+      return m.reply(`${EMOJI.error} *${user.name}* solo tiene ${owned}x ${item.name}.`);
+    }
+    if (owned - quantity <= 0) {
+      for (const slot of ['weapon', 'armor', 'accessory'] as const) {
+        if (user.equipment[slot] === id) user.equipment[slot] = null;
       }
     }
+    db.updateUser(jid, { inventory: user.inventory, equipment: user.equipment });
+    await m.reply(`👑 *OWNER RPG*\n\n${item.emoji} Has quitado *${quantity}x ${item.name}* a *${user.name}* (le quedan ${owned - quantity})`);
+    await m.react('✅');
+  }
+};
+
+export const rpgListItemsPlugin: PluginHandler = {
+  command: ['rpglistitems', 'rpgitems'],
+  tags: ['owner'],
+  help: ['rpglistitems [weapon|armor|accessory|consumable|material] - Lista los ids'],
+  owner: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m, args, usedPrefix } = ctx;
+    const category = args[0]?.toLowerCase();
+
+    const sections: Record<string, string[]> = { weapon: [], armor: [], accessory: [], consumable: [] };
+    for (const [id, item] of Object.entries(ITEMS)) {
+      if (category && item.type !== category) continue;
+      sections[item.type]?.push(`${item.emoji} \`${id}\` - ${item.name}`);
+    }
+    const materials = !category || category === 'material'
+      ? Object.values(FORGE_MATERIALS).map(mat => `${mat.emoji} \`${mat.id}\` - ${mat.name}`)
+      : [];
 
     let msg = `📦 *LISTA DE ITEMS*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-
-    if (categorized.weapon.length) {
-      msg += `⚔️ *ARMAS:*\n${categorized.weapon.join('\n')}\n\n`;
-    }
-    if (categorized.armor.length) {
-      msg += `🛡️ *ARMADURAS:*\n${categorized.armor.join('\n')}\n\n`;
-    }
-    if (categorized.accessory.length) {
-      msg += `💍 *ACCESORIOS:*\n${categorized.accessory.join('\n')}\n\n`;
-    }
-    if (categorized.consumable.length) {
-      msg += `🧪 *CONSUMIBLES:*\n${categorized.consumable.join('\n')}\n\n`;
-    }
-    if (categorized.material.length) {
-      msg += `🪨 *MATERIALES:*\n${categorized.material.join('\n')}\n\n`;
-    }
-
-    msg += `\n💡 Filtrar por tipo: \`.rpglistitems [weapon|armor|accessory|consumable|material]\``;
+    if (sections.weapon.length) msg += `⚔️ *ARMAS:*\n${sections.weapon.join('\n')}\n\n`;
+    if (sections.armor.length) msg += `🛡️ *ARMADURAS:*\n${sections.armor.join('\n')}\n\n`;
+    if (sections.accessory.length) msg += `💍 *ACCESORIOS:*\n${sections.accessory.join('\n')}\n\n`;
+    if (sections.consumable.length) msg += `🧪 *CONSUMIBLES:*\n${sections.consumable.join('\n')}\n\n`;
+    if (materials.length) msg += `🪨 *MATERIALES (forgeMaterials):*\n${materials.join('\n')}\n\n`;
+    msg += `💡 Filtrar: \`${usedPrefix}rpglistitems [weapon|armor|accessory|consumable|material]\``;
 
     await m.reply(msg);
   }
 };
 
-/**
- * Activar modo Bonus
- */
+// ==================== MODOS GLOBALES ====================
+
 export const rpgBonusPlugin: PluginHandler = {
   command: ['rpgbonus', 'bonusmode', 'modobonus'],
   tags: ['owner'],
@@ -693,54 +441,22 @@ export const rpgBonusPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
-
+    const { m, args, usedPrefix } = ctx;
     if (args.length < 4) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgbonus [xpMult] [moneyMult] [manaMult] [tiempo]\n\n` +
-        `*Ejemplo:*\n` +
-        `\`.rpgbonus 2 3 2 1h\`\n` +
-        `_Activa x2 XP, x3 dinero, x2 maná por 1 hora_\n\n` +
-        `*Tiempos válidos:* 30s, 5m, 1h, 2h, 1d`
-      );
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgbonus [xpMult] [moneyMult] [manaMult] [tiempo]\n\n*Ejemplo:* \`${usedPrefix}rpgbonus 2 3 2 1h\`\n*Tiempos:* 30s, 5m, 1h, 2h, 1d`);
     }
-
     const expMult = parseFloat(args[0]) || 1;
     const moneyMult = parseFloat(args[1]) || 1;
     const manaMult = parseFloat(args[2]) || 1;
     const duration = parseTime(args[3]);
+    if (duration <= 0) return m.reply(`${EMOJI.error} Tiempo inválido. Usa formatos como: 30m, 1h, 2h, 1d`);
 
-    if (duration <= 0) {
-      return m.reply(`${EMOJI.error} Tiempo inválido. Usa formatos como: 30m, 1h, 2h, 1d`);
-    }
-
-    globalModes.bonusMode = {
-      active: true,
-      expMultiplier: expMult,
-      moneyMultiplier: moneyMult,
-      manaMultiplier: manaMult,
-      expiresAt: Date.now() + duration,
-      activatedBy: m.sender
-    };
-
-    const timeStr = msToTime(duration);
-
-    await m.reply(
-      `👑 *MODO BONUS ACTIVADO*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `✨ XP: *x${expMult}*\n` +
-      `💰 Dinero: *x${moneyMult}*\n` +
-      `💠 Maná: *x${manaMult}*\n\n` +
-      `⏰ Duración: *${timeStr}*\n\n` +
-      `_¡Todos los jugadores recibirán estos bonuses!_`
-    );
+    globalModes.bonusMode = { active: true, expMultiplier: expMult, moneyMultiplier: moneyMult, manaMultiplier: manaMult, expiresAt: Date.now() + duration, activatedBy: m.sender };
+    await m.reply(`👑 *MODO BONUS ACTIVADO*\n━━━━━━━━━━━━━━━━━━━━\n\n✨ XP: *x${expMult}*\n💰 Dinero: *x${moneyMult}*\n💠 Maná: *x${manaMult}*\n\n⏰ Duración: *${msToTime(duration)}*`);
     await m.react('🎉');
   }
 };
 
-/**
- * Activar modo Robo Libre
- */
 export const rpgRoboLibrePlugin: PluginHandler = {
   command: ['rpgrobolibre', 'freerobo', 'robofree', 'modorobo'],
   tags: ['owner'],
@@ -748,274 +464,111 @@ export const rpgRoboLibrePlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
-
-    if (!args[0]) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgrobolibre [tiempo]\n\n` +
-        `*Ejemplo:*\n` +
-        `\`.rpgrobolibre 30m\`\n` +
-        `_Robo sin cooldown por 30 minutos_`
-      );
-    }
-
+    const { m, args, usedPrefix } = ctx;
     const duration = parseTime(args[0]);
+    if (duration <= 0) return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgrobolibre [tiempo]\n\n*Ejemplo:* \`${usedPrefix}rpgrobolibre 30m\``);
 
-    if (duration <= 0) {
-      return m.reply(`${EMOJI.error} Tiempo inválido`);
-    }
-
-    globalModes.freeRobMode = {
-      active: true,
-      expiresAt: Date.now() + duration,
-      activatedBy: m.sender
-    };
-
-    const timeStr = msToTime(duration);
-
-    await m.reply(
-      `👑 *MODO ROBO LIBRE ACTIVADO*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `🦹 ¡Robo SIN COOLDOWN!\n\n` +
-      `⏰ Duración: *${timeStr}*\n\n` +
-      `_¡A robar se ha dicho!_`
-    );
+    globalModes.freeRobMode = { active: true, expiresAt: Date.now() + duration, activatedBy: m.sender };
+    await m.reply(`👑 *MODO ROBO LIBRE ACTIVADO*\n━━━━━━━━━━━━━━━━━━━━\n\n🦹 ¡Robo SIN COOLDOWN!\n⏰ Duración: *${msToTime(duration)}*`);
     await m.react('🦹');
   }
 };
 
-/**
- * Activar modo Evento
- */
 export const rpgEventoPlugin: PluginHandler = {
   command: ['rpgevento', 'rpgevent', 'modoevento'],
   tags: ['owner'],
-  help: ['rpgevento [nombre] [dropMult] [tiempo] - Activa evento especial'],
+  help: ['rpgevento "nombre" [multiplicador] [tiempo] - Activa un evento especial'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
-
-    // Parsear: "Nombre del Evento" 3 2h
-    const match = text.match(/^"([^"]+)"\s+(\d+(?:\.\d+)?)\s+(\d+[smhd])$/i) ||
-                  text.match(/^(\S+)\s+(\d+(?:\.\d+)?)\s+(\d+[smhd])$/i);
-
+    const { m, text, usedPrefix } = ctx;
+    const match = text.match(/^"([^"]+)"\s+(\d+(?:\.\d+)?)\s+(\d+[smhd])$/i) || text.match(/^(\S+)\s+(\d+(?:\.\d+)?)\s+(\d+[smhd])$/i);
     if (!match) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgevento "Nombre" [dropMult] [tiempo]\n\n` +
-        `*Ejemplo:*\n` +
-        `\`.rpgevento "Lluvia de Oro" 5 2h\`\n` +
-        `_Evento con x5 drops por 2 horas_`
-      );
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgevento "Nombre" [multiplicador] [tiempo]\n\n*Ejemplo:* \`${usedPrefix}rpgevento "Lluvia de Oro" 5 2h\``);
     }
-
     const eventName = match[1];
     const dropMult = parseFloat(match[2]) || 1;
     const duration = parseTime(match[3]);
+    if (duration <= 0) return m.reply(`${EMOJI.error} Tiempo inválido`);
 
-    if (duration <= 0) {
-      return m.reply(`${EMOJI.error} Tiempo inválido`);
-    }
-
-    globalModes.eventMode = {
-      active: true,
-      dropMultiplier: dropMult,
-      eventName: eventName,
-      expiresAt: Date.now() + duration,
-      activatedBy: m.sender
-    };
-
-    const timeStr = msToTime(duration);
-
-    await m.reply(
-      `👑 *EVENTO ACTIVADO*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `🎪 *${eventName}*\n\n` +
-      `📦 Drops: *x${dropMult}*\n` +
-      `⏰ Duración: *${timeStr}*\n\n` +
-      `_¡Aprovecha los drops aumentados!_`
-    );
+    globalModes.eventMode = { active: true, dropMultiplier: dropMult, eventName, expiresAt: Date.now() + duration, activatedBy: m.sender };
+    await m.reply(`👑 *EVENTO ACTIVADO*\n━━━━━━━━━━━━━━━━━━━━\n\n🎪 *${eventName}*\n📦 Multiplicador: *x${dropMult}*\n⏰ Duración: *${msToTime(duration)}*`);
     await m.react('🎪');
   }
 };
 
-/**
- * Activar modo PvP Intenso
- */
 export const rpgPvpModePlugin: PluginHandler = {
   command: ['rpgpvp', 'modopvp', 'pvpmode'],
   tags: ['owner'],
-  help: ['rpgpvp [multiplicador] [tiempo] - Activa daño aumentado en duelos'],
+  help: ['rpgpvp [multiplicador] [tiempo] - Daño aumentado en duelos'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
-
-    if (args.length < 2) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgpvp [multiplicador] [tiempo]\n\n` +
-        `*Ejemplo:*\n` +
-        `\`.rpgpvp 2 1h\`\n` +
-        `_Daño x2 en duelos por 1 hora_`
-      );
-    }
-
-    const damageMult = parseFloat(args[0]) || 1;
+    const { m, args, usedPrefix } = ctx;
+    const damageMult = parseFloat(args[0] ?? '');
     const duration = parseTime(args[1]);
-
-    if (duration <= 0) {
-      return m.reply(`${EMOJI.error} Tiempo inválido`);
+    if (!Number.isFinite(damageMult) || damageMult <= 0 || duration <= 0) {
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgpvp [multiplicador] [tiempo]\n\n*Ejemplo:* \`${usedPrefix}rpgpvp 2 1h\``);
     }
-
-    globalModes.pvpMode = {
-      active: true,
-      damageMultiplier: damageMult,
-      expiresAt: Date.now() + duration,
-      activatedBy: m.sender
-    };
-
-    const timeStr = msToTime(duration);
-
-    await m.reply(
-      `👑 *MODO PVP INTENSO*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `⚔️ Daño en duelos: *x${damageMult}*\n` +
-      `⏰ Duración: *${timeStr}*\n\n` +
-      `_¡Los duelos serán más letales!_`
-    );
+    globalModes.pvpMode = { active: true, damageMultiplier: damageMult, expiresAt: Date.now() + duration, activatedBy: m.sender };
+    await m.reply(`👑 *MODO PVP INTENSO*\n━━━━━━━━━━━━━━━━━━━━\n\n⚔️ Daño en duelos: *x${damageMult}*\n⏰ Duración: *${msToTime(duration)}*`);
     await m.react('⚔️');
   }
 };
 
-/**
- * Activar modo Caos - TODO multiplicado
- */
 export const rpgCaosModePlugin: PluginHandler = {
   command: ['rpgcaos', 'modocaos', 'chaosmode'],
   tags: ['owner'],
-  help: ['rpgcaos [multiplicador] [tiempo] - Modo caos: TODO multiplicado'],
+  help: ['rpgcaos [multiplicador] [tiempo] - Modo caos: todo multiplicado'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
-
-    if (args.length < 2) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgcaos [multiplicador] [tiempo]\n\n` +
-        `*Ejemplo:*\n` +
-        `\`.rpgcaos 3 30m\`\n` +
-        `_TODO x3 por 30 minutos_\n\n` +
-        `⚠️ *ADVERTENCIA:* Este modo afecta XP, dinero, daño, robo, drops... ¡TODO!`
-      );
-    }
-
-    const multiplier = parseFloat(args[0]) || 1;
+    const { m, args, usedPrefix } = ctx;
+    const multiplier = parseFloat(args[0] ?? '');
     const duration = parseTime(args[1]);
-
-    if (duration <= 0) {
-      return m.reply(`${EMOJI.error} Tiempo inválido`);
+    if (!Number.isFinite(multiplier) || multiplier <= 0 || duration <= 0) {
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgcaos [multiplicador] [tiempo]\n\n*Ejemplo:* \`${usedPrefix}rpgcaos 3 30m\``);
     }
-
-    globalModes.chaosMode = {
-      active: true,
-      multiplier: multiplier,
-      expiresAt: Date.now() + duration,
-      activatedBy: m.sender
-    };
-
-    const timeStr = msToTime(duration);
-
-    await m.reply(
-      `👑 *¡¡MODO CAOS ACTIVADO!!*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `🌀 *TODO x${multiplier}*\n\n` +
-      `✨ XP: x${multiplier}\n` +
-      `💰 Dinero: x${multiplier}\n` +
-      `⚔️ Daño: x${multiplier}\n` +
-      `🦹 Robo: x${multiplier}\n` +
-      `📦 Drops: x${multiplier}\n\n` +
-      `⏰ Duración: *${timeStr}*\n\n` +
-      `_¡¡QUE COMIENCE EL CAOS!!_`
-    );
+    globalModes.chaosMode = { active: true, multiplier, expiresAt: Date.now() + duration, activatedBy: m.sender };
+    await m.reply(`👑 *¡¡MODO CAOS ACTIVADO!!*\n━━━━━━━━━━━━━━━━━━━━\n\n🌀 *TODO x${multiplier}*\n⏰ Duración: *${msToTime(duration)}*\n\n_¡¡QUE COMIENCE EL CAOS!!_`);
     await m.react('🌀');
   }
 };
 
-/**
- * Desactivar modos
- */
+const MODE_ALIASES: Record<string, GlobalModeKey> = {
+  bonus: 'bonusMode', robo: 'freeRobMode', evento: 'eventMode', event: 'eventMode', pvp: 'pvpMode', caos: 'chaosMode', chaos: 'chaosMode'
+};
+const MODE_NAMES: Record<GlobalModeKey, string> = {
+  bonusMode: 'Bonus', freeRobMode: 'Robo Libre', eventMode: 'Evento', pvpMode: 'PvP Intenso', chaosMode: 'Caos'
+};
+
 export const rpgDesactivarPlugin: PluginHandler = {
   command: ['rpgdesactivar', 'rpgoff', 'rpgdisable'],
   tags: ['owner'],
-  help: ['rpgdesactivar [modo] - Desactiva un modo especial'],
+  help: ['rpgdesactivar [bonus|robo|evento|pvp|caos|todos] - Desactiva un modo'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
-
+    const { m, args, usedPrefix } = ctx;
     const mode = args[0]?.toLowerCase();
+    if (!mode) return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgdesactivar [modo]\n\n*Modos:* bonus, robo, evento, pvp, caos, todos`);
 
-    if (!mode) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgdesactivar [modo]\n\n` +
-        `*Modos:*\n` +
-        `• bonus - Modo bonus\n` +
-        `• robo - Robo libre\n` +
-        `• evento - Evento especial\n` +
-        `• pvp - PvP intenso\n` +
-        `• caos - Modo caos\n` +
-        `• todos/all - Todos los modos`
-      );
-    }
+    const keys: GlobalModeKey[] = mode === 'todos' || mode === 'all'
+      ? (Object.keys(MODE_NAMES) as GlobalModeKey[])
+      : MODE_ALIASES[mode] ? [MODE_ALIASES[mode]] : [];
+    if (keys.length === 0) return m.reply(`${EMOJI.error} Modo no válido. Usa: bonus, robo, evento, pvp, caos, todos`);
 
-    let deactivated: string[] = [];
+    const deactivated = keys.filter(key => globalModes[key].active);
+    for (const key of deactivated) globalModes[key].active = false;
+    if (deactivated.length === 0) return m.reply(`${EMOJI.warning} No hay modos activos para desactivar`);
 
-    if (mode === 'bonus' || mode === 'todos' || mode === 'all') {
-      if (globalModes.bonusMode.active) {
-        globalModes.bonusMode.active = false;
-        deactivated.push('Bonus');
-      }
-    }
-    if (mode === 'robo' || mode === 'todos' || mode === 'all') {
-      if (globalModes.freeRobMode.active) {
-        globalModes.freeRobMode.active = false;
-        deactivated.push('Robo Libre');
-      }
-    }
-    if (mode === 'evento' || mode === 'event' || mode === 'todos' || mode === 'all') {
-      if (globalModes.eventMode.active) {
-        globalModes.eventMode.active = false;
-        deactivated.push('Evento');
-      }
-    }
-    if (mode === 'pvp' || mode === 'todos' || mode === 'all') {
-      if (globalModes.pvpMode.active) {
-        globalModes.pvpMode.active = false;
-        deactivated.push('PvP Intenso');
-      }
-    }
-    if (mode === 'caos' || mode === 'chaos' || mode === 'todos' || mode === 'all') {
-      if (globalModes.chaosMode.active) {
-        globalModes.chaosMode.active = false;
-        deactivated.push('Caos');
-      }
-    }
-
-    if (deactivated.length === 0) {
-      return m.reply(`${EMOJI.warning} No hay modos activos para desactivar`);
-    }
-
-    await m.reply(
-      `👑 *MODOS DESACTIVADOS*\n\n` +
-      `❌ ${deactivated.join(', ')}`
-    );
+    await m.reply(`👑 *MODOS DESACTIVADOS*\n\n❌ ${deactivated.map(k => MODE_NAMES[k]).join(', ')}`);
     await m.react('✅');
   }
 };
 
-/**
- * Reset de cooldowns
- */
+// ==================== COOLDOWNS ====================
+
 export const rpgResetCdPlugin: PluginHandler = {
   command: ['rpgresetcd', 'resetcooldown', 'resetcd'],
   tags: ['owner'],
@@ -1025,135 +578,50 @@ export const rpgResetCdPlugin: PluginHandler = {
   handler: async (ctx: MessageContext) => {
     const { m, args } = ctx;
     const db = getDatabase();
-
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
-    }
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
     const type = args[0]?.toLowerCase() || 'all';
-    const updates: Record<string, number> = {};
+    const fields = cooldownFieldsFor(type);
+    if (fields.length === 0) return m.reply(`${EMOJI.error} Tipo inválido.\n\n*Tipos:* ${COOLDOWN_TYPE_LIST}`);
 
-    switch (type) {
-      case 'work':
-        updates.lastWork = 0;
-        break;
-      case 'mine':
-      case 'minar':
-        updates.lastMine = 0;
-        break;
-      case 'rob':
-      case 'robar':
-        updates.lastRob = 0;
-        break;
-      case 'duel':
-      case 'duelo':
-        updates.lastDuel = 0;
-        break;
-      case 'attack':
-      case 'atacar':
-        updates.lastAttack = 0;
-        break;
-      case 'dungeon':
-        updates.lastDungeon = 0;
-        break;
-      case 'daily':
-      case 'diario':
-        updates.lastClaim = 0;
-        break;
-      case 'all':
-      case 'todos':
-        updates.lastWork = 0;
-        updates.lastMine = 0;
-        updates.lastRob = 0;
-        updates.lastDuel = 0;
-        updates.lastAttack = 0;
-        updates.lastDungeon = 0;
-        updates.lastClaim = 0;
-        break;
-      default:
-        return m.reply(
-          `${EMOJI.error} Tipo inválido.\n\n` +
-          `*Tipos:* work, mine, rob, duel, attack, dungeon, daily, all`
-        );
-    }
+    const updates: Partial<UserRPG> = {};
+    for (const field of fields) updates[field] = 0;
+    db.updateUser(jid, updates);
 
-    db.updateUser(targetJid, updates);
-
-    await m.reply(
-      `👑 *COOLDOWN RESETEADO*\n\n` +
-      `⏰ Se ha reseteado *${type === 'all' ? 'todos los cooldowns' : type}* de *${user.name}*`
-    );
+    await m.reply(`👑 *COOLDOWN RESETEADO*\n\n⏰ Se ha reseteado *${type === 'all' ? 'todos los cooldowns' : type}* de *${user.name}*`);
     await m.react('✅');
   }
 };
 
-/**
- * Reset de cooldowns para TODOS
- */
 export const rpgResetCdAllPlugin: PluginHandler = {
   command: ['rpgresetcdall', 'resetcdall'],
   tags: ['owner'],
-  help: ['rpgresetcdall [tipo] - Resetea cooldowns de TODOS los usuarios'],
+  help: ['rpgresetcdall [tipo] - Resetea cooldowns de todos los usuarios'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
     const { m, args } = ctx;
     const db = getDatabase();
-
     const type = args[0]?.toLowerCase() || 'all';
-    const data = db.data;
+    const fields = cooldownFieldsFor(type);
+    if (fields.length === 0) return m.reply(`${EMOJI.error} Tipo inválido.\n\n*Tipos:* ${COOLDOWN_TYPE_LIST}`);
+
     let count = 0;
-
-    for (const jid of Object.keys(data.users)) {
-      const user = data.users[jid];
-      if (!user.registered) continue;
-
-      const updates: Record<string, number> = {};
-
-      switch (type) {
-        case 'work':
-          updates.lastWork = 0;
-          break;
-        case 'rob':
-        case 'robar':
-          updates.lastRob = 0;
-          break;
-        case 'all':
-        case 'todos':
-          updates.lastWork = 0;
-          updates.lastMine = 0;
-          updates.lastRob = 0;
-          updates.lastDuel = 0;
-          updates.lastAttack = 0;
-          updates.lastDungeon = 0;
-          updates.lastClaim = 0;
-          break;
-        default:
-          if (type in user) {
-            updates[`last${type}`] = 0;
-          }
-      }
-
-      if (Object.keys(updates).length > 0) {
-        db.updateUser(jid, updates);
-        count++;
-      }
+    for (const [jid] of db.getRegisteredUsers()) {
+      const updates: Partial<UserRPG> = {};
+      for (const field of fields) updates[field] = 0;
+      db.updateUser(jid, updates);
+      count++;
     }
-
-    await m.reply(
-      `👑 *COOLDOWN GLOBAL RESETEADO*\n\n` +
-      `⏰ Se ha reseteado *${type === 'all' ? 'todos los cooldowns' : type}* de *${count}* usuarios`
-    );
+    await m.reply(`👑 *COOLDOWN GLOBAL RESETEADO*\n\n⏰ Se ha reseteado *${type === 'all' ? 'todos los cooldowns' : type}* de *${count}* usuarios`);
     await m.react('✅');
   }
 };
 
-/**
- * Establecer clase de un usuario
- */
+// ==================== MODIFICACIONES ====================
+
 export const rpgSetClasePlugin: PluginHandler = {
   command: ['rpgsetclase', 'rpgsetclass'],
   tags: ['owner'],
@@ -1161,60 +629,37 @@ export const rpgSetClasePlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
-    }
-
-    const className = args[0]?.toLowerCase() as PlayerClass;
-
+    const className = args[0]?.toLowerCase() as PlayerClass | undefined;
     if (!className || !CLASSES[className]) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgsetclase [@user] [clase]\n\n` +
-        `*Clases disponibles:*\n` +
-        `• guerrero ⚔️\n` +
-        `• mago 🔮\n` +
-        `• ladron 🗡️\n` +
-        `• arquero 🏹\n\n` +
-        `💡 _Sin mención se aplica a ti mismo_`
-      );
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgsetclase [@user] [clase]\n\n*Clases:* guerrero ⚔️, mago 🔮, ladron 🗡️, arquero 🏹\n💡 _Sin mención se aplica a ti mismo_`);
     }
 
+    // La clase solo se anota: sus bonus los suma calculateTotalStats
     const classInfo = CLASSES[className];
-
-    // Aplicar bonuses de clase
-    db.updateUser(targetJid, {
+    const stats = calculateTotalStats({ ...user, playerClass: className });
+    db.updateUser(jid, {
       playerClass: className,
-      classSelectedAt: Date.now(),
-      maxHealth: 100 + classInfo.baseStats.healthBonus,
-      maxMana: 20 + classInfo.baseStats.manaBonus,
-      maxStamina: 100 + classInfo.baseStats.staminaBonus,
-      attack: 10 + classInfo.baseStats.attackBonus,
-      defense: 5 + classInfo.baseStats.defenseBonus
+      health: Math.min(user.health, stats.maxHealth),
+      mana: Math.min(user.mana, stats.maxMana),
+      stamina: Math.min(user.stamina, stats.maxStamina)
     });
 
     await m.reply(
-      `👑 *CLASE ESTABLECIDA*\n\n` +
-      `${classInfo.emoji} *${user.name}* ahora es un *${classInfo.name}*!\n\n` +
-      `📊 *Bonuses aplicados:*\n` +
-      `❤️ Vida: +${classInfo.baseStats.healthBonus}\n` +
-      `💠 Maná: +${classInfo.baseStats.manaBonus}\n` +
-      `⚡ Energía: +${classInfo.baseStats.staminaBonus}\n` +
-      `⚔️ Ataque: +${classInfo.baseStats.attackBonus}\n` +
-      `🛡️ Defensa: +${classInfo.baseStats.defenseBonus}`
+      `👑 *CLASE ESTABLECIDA*\n\n${classInfo.emoji} *${user.name}* ahora es *${classInfo.name}*!\n\n` +
+      `📊 *Bonus de clase (aplicado en los stats totales):*\n` +
+      `❤️ Vida: +${classInfo.baseStats.healthBonus} | 💠 Maná: +${classInfo.baseStats.manaBonus} | ⚡ Energía: +${classInfo.baseStats.staminaBonus}\n` +
+      `⚔️ Ataque: +${classInfo.baseStats.attackBonus} | 🛡️ Defensa: +${classInfo.baseStats.defenseBonus}`
     );
     await m.react('✅');
   }
 };
 
-/**
- * Full stats para un usuario
- */
 export const rpgFullStatsPlugin: PluginHandler = {
   command: ['rpgfullstats', 'rpgmaxstats', 'rpggod'],
   tags: ['owner'],
@@ -1224,91 +669,56 @@ export const rpgFullStatsPlugin: PluginHandler = {
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
     const db = getDatabase();
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
-    }
-
-    db.updateUser(targetJid, {
-      level: 1000,
-      exp: 99999999,
-      role: getRoleByLevel(1000),
-      health: 9999,
-      maxHealth: 9999,
-      mana: 9999,
-      maxMana: 9999,
-      stamina: 9999,
-      maxStamina: 9999,
-      attack: 999,
-      defense: 999,
-      critChance: 75,
-      money: 99999999,
-      limit: 99999
-    });
+    setLevel(user, 1000);
+    user.maxHealth = 9999;
+    user.maxMana = 9999;
+    user.maxStamina = 9999;
+    user.health = 9999;
+    user.mana = 9999;
+    user.stamina = 9999;
+    user.attack = 999;
+    user.defense = 999;
+    user.critChance = 75;
+    user.money = 99_999_999;
+    user.limit = 99_999;
+    db.updateUser(jid, user);
 
     await m.reply(
-      `👑 *MODO DIOS ACTIVADO*\n\n` +
-      `⚡ *${user.name}* ahora tiene stats máximos!\n\n` +
-      `🐉 Nivel: 1000\n` +
-      `❤️ Vida: 9,999\n` +
-      `💠 Maná: 9,999\n` +
-      `⚡ Energía: 9,999\n` +
-      `⚔️ Ataque: 999\n` +
-      `🛡️ Defensa: 999\n` +
-      `💥 Crítico: 75%\n` +
-      `💰 Dinero: 99,999,999\n` +
-      `💎 Diamantes: 99,999`
+      `👑 *MODO DIOS ACTIVADO*\n\n⚡ *${user.name}* ahora tiene stats máximos!\n\n` +
+      `🐉 Nivel: 1000 (${getRoleByLevel(1000)})\n❤️ Vida: 9,999 | 💠 Maná: 9,999 | ⚡ Energía: 9,999\n` +
+      `⚔️ Ataque: 999 | 🛡️ Defensa: 999 | 💥 Crítico: 75%\n💰 Dinero: 99,999,999 | 💎 Diamantes: 99,999`
     );
     await m.react('⚡');
   }
 };
 
-/**
- * Establecer nivel instantáneamente
- */
-export const rpgMaxLevelPlugin: PluginHandler = {
-  command: ['rpgmaxlevel', 'rpgsetlevel'],
+export const rpgSetNivelPlugin: PluginHandler = {
+  command: ['rpgsetnivel', 'rpgmaxlevel', 'rpgsetlevel'],
   tags: ['owner'],
-  help: ['rpgmaxlevel @user [nivel] - Establece el nivel de un usuario'],
+  help: ['rpgsetnivel @user [nivel] - Fija el nivel (XP al mínimo del nivel, bonus ajustados)'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
-    const targetJid = getTargetUserOrSelf(ctx);
+    const level = parseInt(args[0] ?? '', 10);
+    if (!Number.isFinite(level) || level < 0) return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgsetnivel [@user] [nivel]`);
 
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
-    }
-
-    const level = parseInt(args[0]) || 100;
-
-    // Calcular XP necesaria para el nivel (aproximado)
-    const expNeeded = level * level * 100;
-
-    db.updateUser(targetJid, {
-      level: level,
-      exp: expNeeded,
-      role: getRoleByLevel(level)
-    });
-
-    await m.reply(
-      `👑 *NIVEL ESTABLECIDO*\n\n` +
-      `📈 *${user.name}* ahora es nivel *${level}*!\n` +
-      `🏆 Rango: *${getRoleByLevel(level)}*`
-    );
+    const result = setLevel(user, level);
+    db.updateUser(jid, user);
+    await m.reply(`👑 *NIVEL ESTABLECIDO*\n\n📈 *${user.name}*: nivel ${result.from} → *${result.to}*\n🏆 Rango: *${getRoleByLevel(user.level)}*\n✨ XP: ${formatNumber(user.exp)}`);
     await m.react('✅');
   }
 };
 
-/**
- * Ver información completa de un usuario
- */
 export const rpgInfoPlugin: PluginHandler = {
   command: ['rpginfo', 'rpgcheck'],
   tags: ['owner'],
@@ -1318,144 +728,102 @@ export const rpgInfoPlugin: PluginHandler = {
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
     const db = getDatabase();
-
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
-    }
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
     const classInfo = user.playerClass ? CLASSES[user.playerClass] : null;
     const now = Date.now();
-
-    // Calcular stats máximos reales (incluyendo clase y equipamiento)
-    const realMaxStats = calculateTotalStats(user, ITEMS, CLASSES);
-
-    // Calcular cooldowns restantes
-    const cooldowns = {
-      work: user.lastWork ? Math.max(0, (user.lastWork + 10 * 60 * 1000) - now) : 0,
-      mine: user.lastMine ? Math.max(0, (user.lastMine + 15 * 60 * 1000) - now) : 0,
-      rob: user.lastRob ? Math.max(0, (user.lastRob + 60 * 60 * 1000) - now) : 0,
-      daily: user.lastClaim ? Math.max(0, (user.lastClaim + 24 * 60 * 60 * 1000) - now) : 0
+    const stats = calculateTotalStats(user);
+    const cd = (last: number, cooldown: number) => {
+      const left = Math.max(0, (last || 0) + cooldown - now);
+      return left > 0 ? msToTime(left) : '✅ Listo';
     };
+    const materials = Object.values(user.forgeMaterials || {}).reduce((sum, n) => sum + (typeof n === 'number' ? n : 0), 0);
 
     const info = `
 👑 *INFO RPG: ${user.name}*
 ━━━━━━━━━━━━━━━━━━━━━━━━
 
 📋 *DATOS BÁSICOS:*
-• JID: ${targetJid}
-• Registrado: ${new Date(user.regTime).toLocaleDateString()}
+• JID: ${jid}
+• Registrado: ${user.regTime > 0 ? new Date(user.regTime).toLocaleDateString('es-MX') : 'desconocido'}
 • Edad: ${user.age}
 
 📊 *NIVEL Y RANGO:*
 • Nivel: ${user.level}
 • XP: ${formatNumber(user.exp)}
-• Rango: ${user.role}
+• Rango: ${getRoleByLevel(user.level)}
 • Clase: ${classInfo ? `${classInfo.emoji} ${classInfo.name}` : 'Sin clase'}
 
-❤️ *STATS:*
-• Vida: ${user.health}/${realMaxStats.maxHealth}
-• Maná: ${user.mana}/${realMaxStats.maxMana}
-• Energía: ${user.stamina}/${realMaxStats.maxStamina}
-• Ataque: ${user.attack}
-• Defensa: ${user.defense}
-• Crítico: ${user.critChance}%
+❤️ *STATS (base → total con clase y equipo):*
+• Vida: ${user.health}/${stats.maxHealth}
+• Maná: ${user.mana}/${stats.maxMana}
+• Energía: ${user.stamina}/${stats.maxStamina}
+• Ataque: ${user.attack} → ${stats.attack}
+• Defensa: ${user.defense} → ${stats.defense}
+• Crítico: ${user.critChance}% → ${stats.critChance}%
 
 💰 *ECONOMÍA:*
-• Dinero: ${formatNumber(user.money)}
+• Dinero: ${formatNumber(user.money)} | Banco: ${formatNumber(user.bank)}
 • Diamantes: ${formatNumber(user.limit)}
-• Pociones: ${user.potion}
-• Items: ${user.inventory.length}
+• Deuda IMSS: ${formatNumber(user.debt)}
+• Items: ${user.inventory.length} entradas | Materiales: ${materials}
 
 ⚔️ *COMBATE:*
-• Kills: ${user.combatStats.totalKills}
+• Kills: ${user.combatStats.totalKills} | Bosses: ${user.combatStats.bossesKilled}
 • Dungeons: ${user.combatStats.dungeonsCompleted}
-• PvP Wins: ${user.combatStats.pvpWins}
-• PvP Losses: ${user.combatStats.pvpLosses}
-• Bosses: ${user.combatStats.bossesKilled}
+• PvP: ${user.combatStats.pvpWins}W - ${user.combatStats.pvpLosses}L
 
-⏰ *COOLDOWNS:*
-• Work: ${cooldowns.work > 0 ? msToTime(cooldowns.work) : '✅ Listo'}
-• Mine: ${cooldowns.mine > 0 ? msToTime(cooldowns.mine) : '✅ Listo'}
-• Rob: ${cooldowns.rob > 0 ? msToTime(cooldowns.rob) : '✅ Listo'}
-• Daily: ${cooldowns.daily > 0 ? msToTime(cooldowns.daily) : '✅ Listo'}
+⏰ *COOLDOWNS (área combate):*
+• Atacar: ${cd(user.lastAttack, PVP.ATTACK_COOLDOWN)}
+• Dungeon: ${cd(user.lastDungeon, PVP.DUNGEON_COOLDOWN)}
+• Duelo: ${cd(user.lastDuel, PVP.DUEL_COOLDOWN)}
+• Bomba: ${cd(user.lastBomb, COOLDOWNS.BOMB)}
+• Fumar: ${cd(user.lastFumar, COOLDOWNS.FUMAR)}
+
+🛡️ *PROTECCIONES:*
+• Anti-robo: ${user.shieldRobo > now ? msToTime(user.shieldRobo - now) : 'no'}
+• Antibombas: ${user.shieldBombas > now ? msToTime(user.shieldBombas - now) : 'no'}
+• Seguro de vida: ${user.seguroVida > now ? msToTime(user.seguroVida - now) : 'no'}
+• Modo pasivo: ${user.passiveMode && user.passiveModeUntil > now ? 'sí' : 'no'}
 
 🎒 *EQUIPAMIENTO:*
 • Arma: ${user.equipment.weapon || 'Ninguna'}
 • Armadura: ${user.equipment.armor || 'Ninguna'}
 • Accesorio: ${user.equipment.accessory || 'Ninguno'}
 `;
-
     await m.reply(info);
   }
 };
 
-/**
- * Dar recursos a todos los usuarios registrados
- */
+// ==================== MASIVOS ====================
+
 export const rpgDarATodosPlugin: PluginHandler = {
   command: ['rpgdaratodos', 'rpggiveall'],
   tags: ['owner'],
-  help: ['rpgdaratodos [tipo] [cantidad] - Da recursos a TODOS los registrados'],
+  help: ['rpgdaratodos [tipo] [cantidad] - Da recursos a todos los registrados'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
-
-    const type = args[0]?.toLowerCase();
-    const amount = parseInt(args[1]) || 0;
-
-    if (!type || amount <= 0) {
-      return m.reply(
-        `${EMOJI.error} Uso: .rpgdaratodos [tipo] [cantidad]\n\n` +
-        `*Tipos:* dinero, xp, mana, diamantes`
-      );
+    const key = RESOURCE_ALIASES[args[0]?.toLowerCase() ?? ''];
+    const amount = parseCount(args[1]);
+    if (!key || amount === null || key === 'health' || key === 'stamina') {
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgdaratodos [tipo] [cantidad]\n\n*Tipos:* dinero, xp, mana, diamantes`);
     }
 
-    const registeredUsers = db.getRegisteredUsers();
     let count = 0;
-
-    for (const [jid, user] of registeredUsers) {
-      const updates: Record<string, number> = {};
-
-      switch (type) {
-        case 'dinero':
-        case 'money':
-          updates.money = user.money + amount;
-          break;
-        case 'xp':
-        case 'exp':
-          updates.exp = user.exp + amount;
-          break;
-        case 'mana':
-          updates.mana = Math.min(user.maxMana, user.mana + amount);
-          break;
-        case 'diamantes':
-        case 'diamonds':
-          updates.limit = user.limit + amount;
-          break;
-      }
-
-      if (Object.keys(updates).length > 0) {
-        db.updateUser(jid, updates);
-        count++;
-      }
+    for (const [jid, user] of db.getRegisteredUsers()) {
+      applyResource(db, jid, user, key, amount);
+      count++;
     }
-
-    await m.reply(
-      `👑 *REGALO MASIVO*\n\n` +
-      `🎁 Se ha dado *${formatNumber(amount)} ${type}* a *${count}* usuarios registrados!`
-    );
+    await m.reply(`👑 *REGALO MASIVO*\n\n🎁 Se ha dado *${formatNumber(amount)} ${RESOURCE_LABEL[key].name}* a *${count}* usuarios registrados!`);
     await m.react('🎁');
   }
 };
 
-/**
- * Lluvia de dinero en el grupo
- */
 export const rpgLluviaMoneyPlugin: PluginHandler = {
   command: ['rpglluviamoney', 'rpgrainmoney', 'lluviadinero'],
   tags: ['owner'],
@@ -1466,237 +834,185 @@ export const rpgLluviaMoneyPlugin: PluginHandler = {
   handler: async (ctx: MessageContext) => {
     const { m, args, participants } = ctx;
     const db = getDatabase();
+    const totalAmount = parseCount(args[0]) ?? 10000;
 
-    const totalAmount = parseInt(args[0]) || 10000;
+    const registered = (participants ?? []).filter(jid => db.getUser(jid).registered);
+    if (registered.length === 0) return m.reply(`${EMOJI.error} No hay usuarios registrados en el grupo`);
 
-    if (!participants || participants.length === 0) {
-      return m.reply(`${EMOJI.error} No hay participantes en el grupo`);
-    }
-
-    // Filtrar solo usuarios registrados
-    const registeredUsers = participants.filter(jid => {
-      const user = db.getUser(jid);
-      return user.registered;
-    });
-
-    if (registeredUsers.length === 0) {
-      return m.reply(`${EMOJI.error} No hay usuarios registrados en el grupo`);
-    }
-
-    // Mezclar usuarios aleatoriamente para distribución justa (Fisher-Yates shuffle)
-    const shuffledUsers = [...registeredUsers];
-    for (let i = shuffledUsers.length - 1; i > 0; i--) {
+    for (let i = registered.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [shuffledUsers[i], shuffledUsers[j]] = [shuffledUsers[j], shuffledUsers[i]];
+      [registered[i], registered[j]] = [registered[j], registered[i]];
     }
 
-    // Distribuir dinero aleatoriamente
-    const distributions: { jid: string; amount: number; name: string }[] = [];
+    const distributions: { amount: number; name: string }[] = [];
     let remaining = totalAmount;
-
-    for (let i = 0; i < shuffledUsers.length; i++) {
-      const jid = shuffledUsers[i];
+    registered.forEach((jid, i) => {
       const user = db.getUser(jid);
-
-      let amount: number;
-      if (i === shuffledUsers.length - 1) {
-        amount = remaining;
-      } else {
-        // Dar cantidad aleatoria entre 5% y 40% del restante para más variabilidad
-        const minShare = Math.floor(remaining * 0.05);
-        const maxShare = Math.floor(remaining * 0.4);
-        amount = Math.floor(Math.random() * (maxShare - minShare + 1)) + minShare;
-        amount = Math.min(amount, remaining);
+      let amount = remaining;
+      if (i < registered.length - 1) {
+        const min = Math.floor(remaining * 0.05);
+        const max = Math.floor(remaining * 0.4);
+        amount = Math.min(remaining, Math.floor(Math.random() * (max - min + 1)) + min);
       }
-
       remaining -= amount;
-
       db.updateUser(jid, { money: user.money + amount });
-      distributions.push({ jid, amount, name: user.name });
-    }
-
-    // Ordenar por cantidad recibida
+      distributions.push({ amount, name: user.name });
+    });
     distributions.sort((a, b) => b.amount - a.amount);
 
-    let msg = `🌧️ *¡¡LLUVIA DE DINERO!!*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `💰 Total: *${formatNumber(totalAmount)}* monedas\n`;
-    msg += `👥 Participantes: *${distributions.length}*\n\n`;
-    msg += `📊 *DISTRIBUCIÓN:*\n`;
-
-    for (const dist of distributions.slice(0, 10)) {
-      msg += `• ${dist.name}: +${formatNumber(dist.amount)} 💰\n`;
-    }
-
-    if (distributions.length > 10) {
-      msg += `_... y ${distributions.length - 10} más_`;
-    }
+    let msg = `🌧️ *¡¡LLUVIA DE DINERO!!*\n━━━━━━━━━━━━━━━━━━━━\n\n💰 Total: *${formatNumber(totalAmount)}* monedas\n👥 Participantes: *${distributions.length}*\n\n📊 *DISTRIBUCIÓN:*\n`;
+    msg += distributions.slice(0, 10).map(d => `• ${d.name}: +${formatNumber(d.amount)} 💰`).join('\n');
+    if (distributions.length > 10) msg += `\n_... y ${distributions.length - 10} más_`;
 
     await m.reply(msg);
     await m.react('🌧️');
   }
 };
 
-/**
- * Borrar progreso RPG de un usuario
- */
 export const rpgBorrarPlugin: PluginHandler = {
   command: ['rpgborrar', 'rpgdelete', 'rpgreset'],
   tags: ['owner'],
-  help: ['rpgborrar @user - ELIMINA el progreso RPG de un usuario'],
+  help: ['rpgborrar @user confirmar - ELIMINA el progreso RPG de un usuario'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, text, usedPrefix } = ctx;
     const db = getDatabase();
+    const jid = targetOf(ctx);
+    const user = db.getUser(jid);
+    if (!user.registered) return m.reply(notRegistered(ctx, jid));
 
-    const targetJid = getTargetUserOrSelf(ctx);
-
-    const user = db.getUser(targetJid);
-    if (!user.registered) {
-      return m.reply(`${EMOJI.error} ${targetJid === m.sender ? 'No estás registrado' : 'Este usuario no está registrado'} en el RPG`);
-    }
-
-    // Confirmación
-    if (!text.includes('confirmar')) {
+    if (!text.toLowerCase().includes('confirmar')) {
       return m.reply(
-        `⚠️ *ADVERTENCIA*\n\n` +
-        `Esto ELIMINARÁ todo el progreso RPG de *${user.name}*:\n` +
-        `• Nivel ${user.level}\n` +
-        `• ${formatNumber(user.money)} monedas\n` +
-        `• ${formatNumber(user.limit)} diamantes\n` +
-        `• ${user.inventory.length} items\n\n` +
-        `Para confirmar, escribe:\n` +
-        `\`.rpgborrar [@user] confirmar\`\n\n` +
-        `💡 _Sin mención se aplica a ti mismo_`
+        `⚠️ *ADVERTENCIA*\n\nEsto ELIMINARÁ todo el progreso RPG de *${user.name}*:\n` +
+        `• Nivel ${user.level}\n• ${formatNumber(user.money)} monedas\n• ${formatNumber(user.limit)} diamantes\n• ${user.inventory.length} items\n\n` +
+        `Para confirmar escribe: \`${usedPrefix}rpgborrar [@user] confirmar\`\n💡 _Sin mención se aplica a ti mismo_`
       );
     }
 
-    // Resetear a valores por defecto
-    const { DEFAULT_USER } = await import('../types/user.js');
-    db.updateUser(targetJid, { ...DEFAULT_USER });
-
-    await m.reply(
-      `👑 *PROGRESO ELIMINADO*\n\n` +
-      `🗑️ Se ha eliminado todo el progreso RPG de *${user.name}*`
-    );
+    const name = user.name;
+    db.resetUser(jid);
+    await m.reply(`👑 *PROGRESO ELIMINADO*\n\n🗑️ Se ha eliminado todo el progreso RPG de *${name}*`);
     await m.react('🗑️');
   }
 };
 
-/**
- * Ver ranking
- */
 export const rpgTopPlugin: PluginHandler = {
   command: ['rpgtop', 'rpgranking'],
   tags: ['owner'],
-  help: ['rpgtop [tipo] - Ver ranking de jugadores'],
+  help: ['rpgtop [level|money|diamonds|pvp|kills] - Ver ranking de jugadores'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
     const { m, args } = ctx;
     const db = getDatabase();
-
     const type = args[0]?.toLowerCase() || 'level';
+    const users = db.getRegisteredUsers().map(([jid, user]) => ({ jid, ...user }));
 
-    const users = db.getRegisteredUsers()
-      .map(([jid, user]) => ({ jid, ...user }));
-
-    let sorted: typeof users;
-    let title: string;
-    let format: (user: typeof users[0]) => string;
-
-    switch (type) {
-      case 'level':
-      case 'nivel':
-        sorted = users.sort((a, b) => b.level - a.level);
-        title = '📊 RANKING POR NIVEL';
-        format = (u) => `Nv.${u.level} - ${formatNumber(u.exp)} XP`;
-        break;
-      case 'money':
-      case 'dinero':
-        sorted = users.sort((a, b) => b.money - a.money);
-        title = '💰 RANKING POR DINERO';
-        format = (u) => `${formatNumber(u.money)} monedas`;
-        break;
-      case 'diamonds':
-      case 'diamantes':
-        sorted = users.sort((a, b) => b.limit - a.limit);
-        title = '💎 RANKING POR DIAMANTES';
-        format = (u) => `${formatNumber(u.limit)} diamantes`;
-        break;
-      case 'pvp':
-        sorted = users.sort((a, b) => b.combatStats.pvpWins - a.combatStats.pvpWins);
-        title = '⚔️ RANKING PVP';
-        format = (u) => `${u.combatStats.pvpWins}W - ${u.combatStats.pvpLosses}L`;
-        break;
-      case 'kills':
-        sorted = users.sort((a, b) => b.combatStats.totalKills - a.combatStats.totalKills);
-        title = '☠️ RANKING POR KILLS';
-        format = (u) => `${formatNumber(u.combatStats.totalKills)} kills`;
-        break;
-      default:
-        return m.reply(
-          `${EMOJI.error} Tipo inválido.\n\n` +
-          `*Tipos:* level, money, diamonds, pvp, kills`
-        );
-    }
-
-    const top10 = sorted.slice(0, 10);
-
-    let msg = `👑 *${title}*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+    const rankings: Record<string, { title: string; sort: (a: UserRPG, b: UserRPG) => number; format: (u: UserRPG) => string }> = {
+      level: { title: '📊 RANKING POR NIVEL', sort: (a, b) => b.level - a.level || b.exp - a.exp, format: u => `Nv.${u.level} - ${formatNumber(u.exp)} XP` },
+      money: { title: '💰 RANKING POR DINERO', sort: (a, b) => b.money - a.money, format: u => `${formatNumber(u.money)} monedas` },
+      diamonds: { title: '💎 RANKING POR DIAMANTES', sort: (a, b) => b.limit - a.limit, format: u => `${formatNumber(u.limit)} diamantes` },
+      pvp: { title: '⚔️ RANKING PVP', sort: (a, b) => b.combatStats.pvpWins - a.combatStats.pvpWins, format: u => `${u.combatStats.pvpWins}W - ${u.combatStats.pvpLosses}L` },
+      kills: { title: '☠️ RANKING POR KILLS', sort: (a, b) => b.combatStats.totalKills - a.combatStats.totalKills, format: u => `${formatNumber(u.combatStats.totalKills)} kills` }
+    };
+    const aliases: Record<string, string> = { nivel: 'level', dinero: 'money', diamantes: 'diamonds' };
+    const ranking = rankings[aliases[type] ?? type];
+    if (!ranking) return m.reply(`${EMOJI.error} Tipo inválido.\n\n*Tipos:* level, money, diamonds, pvp, kills`);
 
     const medals = ['🥇', '🥈', '🥉'];
-    top10.forEach((user, i) => {
-      const medal = medals[i] || `${i + 1}.`;
-      msg += `${medal} *${user.name}*\n   ${format(user)}\n\n`;
+    let msg = `👑 *${ranking.title}*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+    users.sort(ranking.sort).slice(0, 10).forEach((user, i) => {
+      msg += `${medals[i] || `${i + 1}.`} *${user.name}*\n   ${ranking.format(user)}\n\n`;
     });
-
     msg += `\n📊 Total registrados: ${users.length}`;
-
     await m.reply(msg);
+  }
+};
+
+// ==================== SESIONES DE COMBATE ====================
+
+export const rpgSesionesPlugin: PluginHandler = {
+  command: ['rpgsesiones', 'rpgsessions'],
+  tags: ['owner'],
+  help: ['rpgsesiones - Lista duelos y dungeons en curso'],
+  owner: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m, usedPrefix } = ctx;
+    const now = Date.now();
+    let msg = `🎮 *SESIONES DE COMBATE*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+    msg += `⚔️ *Duelos (${activeDuels.size}):*\n`;
+    for (const [groupJid, duel] of activeDuels) {
+      msg += `• ${groupJid.split('@')[0]}: ${duel.players.challenger.name} vs ${duel.players.target.name} (${msToTime(now - duel.startTime)}, ${duel.totalActions} acciones, pot ${formatNumber(duel.pot)})\n`;
+    }
+    if (activeDuels.size === 0) msg += `_Ninguno_\n`;
+
+    msg += `\n🏰 *Dungeons (${activeDungeons.size}):*\n`;
+    for (const [jid, session] of activeDungeons) {
+      msg += `• ${session.playerName} (${jid.split('@')[0]}): ${session.dungeon.name}, turno ${session.turn}, inactivo ${msToTime(now - session.lastActionTime)}\n`;
+    }
+    if (activeDungeons.size === 0) msg += `_Ninguno_\n`;
+
+    const busy = listBusy();
+    msg += `\n🔒 *Ocupados (${busy.length}):* ${busy.map(b => `${b.jid.split('@')[0]} (${b.kind})`).join(', ') || '_ninguno_'}\n`;
+    msg += `\n💡 \`${usedPrefix}rpgcancelar @user\` cierra su dungeon · \`${usedPrefix}rpgcancelar duelo\` cancela el duelo de este grupo`;
+    await m.reply(msg);
+  }
+};
+
+export const rpgCancelarPlugin: PluginHandler = {
+  command: ['rpgcancelar', 'rpgcancel'],
+  tags: ['owner'],
+  help: ['rpgcancelar [@user|duelo] - Cierra un dungeon atascado o cancela el duelo del grupo (devuelve la apuesta)'],
+  owner: true,
+
+  handler: async (ctx: MessageContext) => {
+    const { m, args, usedPrefix } = ctx;
+    const db = getDatabase();
+
+    if (args[0]?.toLowerCase() === 'duelo' || args[0]?.toLowerCase() === 'duel') {
+      const result = cancelDuel(db, m.chat);
+      if (!result) return m.reply(`${EMOJI.info} No hay duelo activo en este grupo.`);
+      await m.reply(`👑 Duelo cancelado por el owner.\n${result.message}`);
+      return;
+    }
+
+    const jid = targetOf(ctx);
+    if (jid === m.sender && !activeDungeons.has(jid)) {
+      return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgcancelar @user (dungeon) o ${usedPrefix}rpgcancelar duelo`);
+    }
+    if (await cancelDungeon(jid)) {
+      await m.reply(`👑 Dungeon de ${jid.split('@')[0]} cerrado.`);
+      return;
+    }
+    await m.reply(`${EMOJI.info} Ese usuario no tiene un dungeon activo.`);
   }
 };
 
 // ==================== EVENTOS AUTOMÁTICOS ====================
 
-/**
- * Activar/Desactivar eventos automáticos
- */
 export const rpgAutoEventsPlugin: PluginHandler = {
   command: ['rpgautoevents', 'autoevents', 'autoeventos'],
   tags: ['owner'],
-  help: ['rpgautoevents [on/off] - Activa/desactiva eventos aleatorios automáticos'],
+  help: ['rpgautoevents [on|off] - Activa/desactiva eventos aleatorios automáticos'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
-
+    const { m, args, usedPrefix } = ctx;
     const action = args[0]?.toLowerCase();
-
     if (!action || !['on', 'off', 'activar', 'desactivar'].includes(action)) {
       const status = getAutoEventStatus();
-      return m.reply(
-        `🎲 *EVENTOS AUTOMÁTICOS*\n\n` +
-        `Estado actual: ${status.enabled ? '✅ ACTIVADO' : '❌ DESACTIVADO'}\n\n` +
-        `Uso: \`.rpgautoevents [on/off]\``
-      );
+      return m.reply(`🎲 *EVENTOS AUTOMÁTICOS*\n\nEstado actual: ${status.enabled ? '✅ ACTIVADO' : '❌ DESACTIVADO'}\n\nUso: \`${usedPrefix}rpgautoevents [on|off]\``);
     }
-
     const enable = action === 'on' || action === 'activar';
     toggleAutoEvents(enable);
-
-    await m.reply(
-      `🎲 *EVENTOS AUTOMÁTICOS*\n\n` +
-      `${enable ? '✅ Sistema ACTIVADO' : '❌ Sistema DESACTIVADO'}\n\n` +
-      `${enable ? '_Los eventos aleatorios comenzarán a aparecer automáticamente._' : '_No habrá más eventos automáticos._'}`
-    );
+    await m.reply(`🎲 *EVENTOS AUTOMÁTICOS*\n\n${enable ? '✅ Sistema ACTIVADO' : '❌ Sistema DESACTIVADO'}`);
     await m.react(enable ? '✅' : '❌');
   }
 };
 
-/**
- * Agregar grupo a anuncios de eventos
- */
 export const rpgAddGrupoPlugin: PluginHandler = {
   command: ['rpgaddgrupo', 'rpgaddgroup', 'eventaddgroup'],
   tags: ['owner'],
@@ -1706,16 +1022,8 @@ export const rpgAddGrupoPlugin: PluginHandler = {
 
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
-    const groupId = m.chat;
-
-    const added = addAnnouncementGroup(groupId);
-
-    if (added) {
-      await m.reply(
-        `🎲 *GRUPO AGREGADO*\n\n` +
-        `✅ Este grupo ahora recibirá anuncios de eventos automáticos.\n\n` +
-        `📊 Total de grupos: *${autoEventConfig.announcementGroups.length}*`
-      );
+    if (addAnnouncementGroup(m.chat)) {
+      await m.reply(`🎲 *GRUPO AGREGADO*\n\n✅ Este grupo recibirá anuncios de eventos automáticos.\n📊 Total de grupos: *${autoEventConfig.announcementGroups.length}*`);
       await m.react('✅');
     } else {
       await m.reply(`${EMOJI.warning} Este grupo ya está en la lista de anuncios.`);
@@ -1723,28 +1031,17 @@ export const rpgAddGrupoPlugin: PluginHandler = {
   }
 };
 
-/**
- * Remover grupo de anuncios de eventos
- */
 export const rpgRemoveGrupoPlugin: PluginHandler = {
   command: ['rpgremovegrupo', 'rpgremovegroup', 'eventremovegroup'],
   tags: ['owner'],
-  help: ['rpgremovegrupo - Remueve este grupo de los anuncios de eventos'],
+  help: ['rpgremovegrupo - Quita este grupo de los anuncios de eventos'],
   owner: true,
   group: true,
 
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
-    const groupId = m.chat;
-
-    const removed = removeAnnouncementGroup(groupId);
-
-    if (removed) {
-      await m.reply(
-        `🎲 *GRUPO REMOVIDO*\n\n` +
-        `❌ Este grupo ya no recibirá anuncios de eventos automáticos.\n\n` +
-        `📊 Total de grupos: *${autoEventConfig.announcementGroups.length}*`
-      );
+    if (removeAnnouncementGroup(m.chat)) {
+      await m.reply(`🎲 *GRUPO REMOVIDO*\n\n❌ Este grupo ya no recibirá anuncios.\n📊 Total de grupos: *${autoEventConfig.announcementGroups.length}*`);
       await m.react('✅');
     } else {
       await m.reply(`${EMOJI.warning} Este grupo no estaba en la lista de anuncios.`);
@@ -1752,46 +1049,26 @@ export const rpgRemoveGrupoPlugin: PluginHandler = {
   }
 };
 
-/**
- * Configurar intervalo de eventos
- */
 export const rpgEventIntervalPlugin: PluginHandler = {
   command: ['rpgeventinterval', 'eventinterval', 'intervaloeventos'],
   tags: ['owner'],
-  help: ['rpgeventinterval [min] [max] - Configura el intervalo entre eventos (en minutos)'],
+  help: ['rpgeventinterval [min] [max] - Intervalo entre eventos (minutos)'],
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
-
-    const minMinutes = parseInt(args[0]);
-    const maxMinutes = parseInt(args[1]);
-
-    if (isNaN(minMinutes) || isNaN(maxMinutes) || minMinutes < 1 || maxMinutes < minMinutes) {
+    const { m, args, usedPrefix } = ctx;
+    const minMinutes = parseInt(args[0] ?? '', 10);
+    const maxMinutes = parseInt(args[1] ?? '', 10);
+    if (!Number.isFinite(minMinutes) || !Number.isFinite(maxMinutes) || minMinutes < 1 || maxMinutes < minMinutes) {
       const status = getAutoEventStatus();
-      return m.reply(
-        `🎲 *INTERVALO DE EVENTOS*\n\n` +
-        `Intervalo actual: *${status.minInterval}* - *${status.maxInterval}*\n\n` +
-        `Uso: \`.rpgeventinterval [min] [max]\`\n` +
-        `Ejemplo: \`.rpgeventinterval 30 120\`\n` +
-        `_(eventos cada 30-120 minutos)_`
-      );
+      return m.reply(`🎲 *INTERVALO DE EVENTOS*\n\nActual: *${status.minInterval}* - *${status.maxInterval}*\n\nUso: \`${usedPrefix}rpgeventinterval [min] [max]\` (minutos)`);
     }
-
     setEventIntervals(minMinutes, maxMinutes);
-
-    await m.reply(
-      `🎲 *INTERVALO ACTUALIZADO*\n\n` +
-      `⏰ Nuevo intervalo: *${minMinutes}* - *${maxMinutes}* minutos\n\n` +
-      `_Los eventos aparecerán aleatoriamente dentro de este rango._`
-    );
+    await m.reply(`🎲 *INTERVALO ACTUALIZADO*\n\n⏰ Nuevo intervalo: *${minMinutes}* - *${maxMinutes}* minutos`);
     await m.react('✅');
   }
 };
 
-/**
- * Forzar evento aleatorio
- */
 export const rpgForceEventPlugin: PluginHandler = {
   command: ['rpgforceevent', 'forceevent', 'forzarevento'],
   tags: ['owner'],
@@ -1800,29 +1077,20 @@ export const rpgForceEventPlugin: PluginHandler = {
 
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
-
-    await m.reply(`🎲 *Generando evento aleatorio...*`);
-
     const event = await forceRandomEvent();
-
-    const rarityText = event.isLegendary ? '🏆 LEGENDARIO' :
-                       event.isEpic ? '💎 ÉPICO' : '📢 Normal';
-
+    if (!event.applied) {
+      await m.reply(`${EMOJI.warning} Todos los modos están ocupados por un owner; no se aplicó ningún evento. Libera uno con rpgdesactivar.`);
+      return;
+    }
+    const rarity = event.isLegendary ? '🏆 LEGENDARIO' : event.isEpic ? '💎 ÉPICO' : '📢 Normal';
     await m.reply(
-      `🎲 *EVENTO FORZADO*\n\n` +
-      `${event.type.emoji} *${event.type.name}*\n` +
-      `⚡ Multiplicador: *x${event.multiplier}*\n` +
-      `⏰ Duración: *${event.durationName}*\n` +
-      `✨ Rareza: *${rarityText}*\n\n` +
-      `_El evento ha sido anunciado en ${autoEventConfig.announcementGroups.length} grupos._`
+      `🎲 *EVENTO FORZADO*\n\n${event.type.emoji} *${event.type.name}*\n⚡ Multiplicador: *x${event.multiplier}*\n⏰ Duración: *${event.durationName}*\n✨ Rareza: *${rarity}*\n\n` +
+      `_Anunciado en ${autoEventConfig.announcementGroups.length} grupos._`
     );
     await m.react('🎲');
   }
 };
 
-/**
- * Ver estado del sistema de eventos
- */
 export const rpgEventStatusPlugin: PluginHandler = {
   command: ['rpgeventstatus', 'eventstatus', 'estadoeventos'],
   tags: ['owner'],
@@ -1831,59 +1099,52 @@ export const rpgEventStatusPlugin: PluginHandler = {
 
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
-
     const status = getAutoEventStatus();
-
     await m.reply(
-      `🎲 *ESTADO DE EVENTOS AUTOMÁTICOS*\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `📊 *Sistema:* ${status.enabled ? '✅ ACTIVADO' : '❌ DESACTIVADO'}\n\n` +
-      `⏰ *Intervalo:*\n` +
-      `   Mínimo: ${status.minInterval}\n` +
-      `   Máximo: ${status.maxInterval}\n\n` +
-      `📢 *Grupos de anuncio:* ${status.groups}\n\n` +
+      `🎲 *ESTADO DE EVENTOS AUTOMÁTICOS*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `📊 *Sistema:* ${status.enabled ? '✅ ACTIVADO' : '❌ DESACTIVADO'}\n` +
+      `⏰ *Intervalo:* ${status.minInterval} - ${status.maxInterval}\n` +
+      `📢 *Grupos de anuncio:* ${status.groups}\n` +
       `🎯 *Próximo evento:* ${status.nextEventIn || 'No programado'}\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `💡 *Multiplicadores posibles:*\n` +
-      `   x2 (30%), x3 (25%), x4 (18%)\n` +
-      `   x5 (12%), x6 (7%), x7 (4%)\n` +
-      `   x8 (2%), x10 (2% - ÉPICO)\n\n` +
-      `⏱️ *Duraciones posibles:*\n` +
-      `   1m (15%), 2m (20%), 5m (30%)\n` +
-      `   10m (25%), 30m (10% - RARO)`
+      `📊 *Modos activos ahora:*\n${modeLines(Date.now())}`
     );
   }
 };
 
-// Exportar todos los plugins
-export default [
-  ownerRpgMenuPlugin,
-  rpgDarPlugin,
-  rpgQuitarPlugin,
-  rpgSetPlugin,
-  rpgDarItemPlugin,
-  rpgListItemsPlugin,
-  rpgBonusPlugin,
-  rpgRoboLibrePlugin,
-  rpgEventoPlugin,
-  rpgPvpModePlugin,
-  rpgCaosModePlugin,
-  rpgDesactivarPlugin,
-  rpgResetCdPlugin,
-  rpgResetCdAllPlugin,
-  rpgSetClasePlugin,
-  rpgFullStatsPlugin,
-  rpgMaxLevelPlugin,
-  rpgInfoPlugin,
-  rpgDarATodosPlugin,
-  rpgLluviaMoneyPlugin,
-  rpgBorrarPlugin,
-  rpgTopPlugin,
-  // Eventos automáticos
-  rpgAutoEventsPlugin,
-  rpgAddGrupoPlugin,
-  rpgRemoveGrupoPlugin,
-  rpgEventIntervalPlugin,
-  rpgForceEventPlugin,
-  rpgEventStatusPlugin
+/** Nombre de registro legible y plugin, para plugins/index.ts */
+export const ownerRpgEntries: [string, PluginHandler][] = [
+  ['owner-rpg-menu', ownerRpgMenuPlugin],
+  ['owner-rpg-dar', rpgDarPlugin],
+  ['owner-rpg-quitar', rpgQuitarPlugin],
+  ['owner-rpg-set', rpgSetPlugin],
+  ['owner-rpg-daritem', rpgDarItemPlugin],
+  ['owner-rpg-quitaritem', rpgQuitarItemPlugin],
+  ['owner-rpg-listitems', rpgListItemsPlugin],
+  ['owner-rpg-bonus', rpgBonusPlugin],
+  ['owner-rpg-robolibre', rpgRoboLibrePlugin],
+  ['owner-rpg-evento', rpgEventoPlugin],
+  ['owner-rpg-pvp', rpgPvpModePlugin],
+  ['owner-rpg-caos', rpgCaosModePlugin],
+  ['owner-rpg-desactivar', rpgDesactivarPlugin],
+  ['owner-rpg-resetcd', rpgResetCdPlugin],
+  ['owner-rpg-resetcdall', rpgResetCdAllPlugin],
+  ['owner-rpg-setclase', rpgSetClasePlugin],
+  ['owner-rpg-fullstats', rpgFullStatsPlugin],
+  ['owner-rpg-setnivel', rpgSetNivelPlugin],
+  ['owner-rpg-info', rpgInfoPlugin],
+  ['owner-rpg-daratodos', rpgDarATodosPlugin],
+  ['owner-rpg-lluviamoney', rpgLluviaMoneyPlugin],
+  ['owner-rpg-borrar', rpgBorrarPlugin],
+  ['owner-rpg-top', rpgTopPlugin],
+  ['owner-rpg-sesiones', rpgSesionesPlugin],
+  ['owner-rpg-cancelar', rpgCancelarPlugin],
+  ['owner-rpg-autoevents', rpgAutoEventsPlugin],
+  ['owner-rpg-addgrupo', rpgAddGrupoPlugin],
+  ['owner-rpg-removegrupo', rpgRemoveGrupoPlugin],
+  ['owner-rpg-eventinterval', rpgEventIntervalPlugin],
+  ['owner-rpg-forceevent', rpgForceEventPlugin],
+  ['owner-rpg-eventstatus', rpgEventStatusPlugin]
 ];
+
+/** @deprecated plugins/index.ts lo recorre como `owner-rpg-N`; usar ownerRpgEntries (o registerCombatContexts). */
+export default ownerRpgEntries.map(([, plugin]) => plugin);

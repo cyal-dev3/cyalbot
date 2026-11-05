@@ -48,14 +48,29 @@ const DEFAULT_ZONES = ['America/Mexico_City', 'Europe/Madrid', 'America/Argentin
 const SUPPORTED = new Set(Intl.supportedValuesOf('timeZone'));
 const SUPPORTED_LOWER = new Map([...SUPPORTED].map((z) => [z.toLowerCase(), z]));
 
+/**
+ * supportedValuesOf solo lista los ids canónicos de ICU (p. ej. America/Buenos_Aires,
+ * no America/Argentina/Buenos_Aires); los enlaces válidos se comprueban construyendo un formateador.
+ */
+function isValidZone(zone: string): boolean {
+  if (SUPPORTED.has(zone)) return true;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Resuelve alias, nombre IANA (sin distinguir mayúsculas) o ciudad final ("mexico_city"). */
 export function resolveZone(input: string): string | null {
   const raw = input.trim();
   if (!raw) return null;
   const alias = ZONE_ALIASES[normalizeText(raw).replace(/_/g, ' ')];
-  if (alias && SUPPORTED.has(alias)) return alias;
+  if (alias && isValidZone(alias)) return alias;
   const exact = SUPPORTED_LOWER.get(raw.toLowerCase().replace(/ /g, '_'));
   if (exact) return exact;
+  if (/^[a-z_]+\/[a-z_/]+$/i.test(raw) && isValidZone(raw)) return raw;
   const city = normalizeText(raw).replace(/ /g, '_');
   for (const [lower, zone] of SUPPORTED_LOWER) {
     if (lower.split('/').pop() === city) return zone;

@@ -112,6 +112,7 @@ function resolveCategory(info: CommandInfo): string {
 function canSee(entry: MenuEntry, viewer: Viewer): boolean {
   if (entry.owner && !viewer.isOwner) return false;
   if (entry.admin && !viewer.isAdmin && !viewer.isOwner) return false;
+  if (entry.group && !viewer.isGroup) return false;
   const category = CATEGORIES.find((c) => c.id === entry.categoryId);
   if (category?.ownerOnly && !viewer.isOwner) return false;
   if (category?.adminOnly && !viewer.isAdmin && !viewer.isOwner) return false;
@@ -140,14 +141,20 @@ function buildEntries(handler: MessageHandlerInterface, viewer: Viewer): MenuEnt
   return entries;
 }
 
+/** Categoría por id, nombre o alias; la coincidencia parcial del nombre exige 3+ letras para no tragarse alias de una letra. */
 function findCategory(query: string): CategoryMeta | undefined {
   const q = query.toLowerCase();
   return (
     CATEGORIES.find((c) => c.id === q) ||
     CATEGORIES.find((c) => c.name.toLowerCase() === q) ||
     CATEGORIES.find((c) => c.id === normalizeCategory(q)) ||
-    CATEGORIES.find((c) => c.name.toLowerCase().includes(q))
+    (q.length >= 3 ? CATEGORIES.find((c) => c.name.toLowerCase().includes(q)) : undefined)
   );
+}
+
+function findEntry(entries: MenuEntry[], query: string): MenuEntry | undefined {
+  const wanted = query.replace(CONFIG.prefix, '');
+  return entries.find((e) => e.visibleCommands.includes(wanted)) ?? entries.find((e) => e.commands.includes(wanted));
 }
 
 /** Comandos más usados según las estadísticas; si no hay, la lista fija. */
@@ -256,20 +263,21 @@ export const menuPlugin: PluginHandler = {
     const entries = buildEntries(handler, { isOwner, isAdmin, isGroup: m.isGroup });
 
     if (query) {
+      // El comando exacto va primero: "s" o "ia" son alias, no una búsqueda de categoría.
+      const entry = findEntry(entries, query);
+      if (entry) {
+        await m.reply(commandDetails(entry, usedPrefix));
+        return;
+      }
+
       const cat = findCategory(query);
       if (cat && entries.some((e) => e.categoryId === cat.id)) {
         await m.reply(categoryMenu(cat, entries, usedPrefix));
         return;
       }
 
-      const wanted = query.replace(CONFIG.prefix, '');
-      const entry = entries.find((e) => e.visibleCommands.includes(wanted)) ?? entries.find((e) => e.commands.includes(wanted));
-      if (entry) {
-        await m.reply(commandDetails(entry, usedPrefix));
-        return;
-      }
-
-      await m.reply(`${EMOJI.error} No encontré "*${query}*".\n\n📋 Usa *${usedPrefix}menu* para ver las categorías.`);
+      const shown = query.length > 30 ? `${query.slice(0, 30)}…` : query;
+      await m.reply(`${EMOJI.error} No encontré "*${shown}*".\n\n📋 Usa *${usedPrefix}menu* para ver las categorías.`);
       return;
     }
 

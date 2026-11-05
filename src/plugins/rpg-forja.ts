@@ -1,7 +1,7 @@
 import type { PluginHandler, MessageContext, SerializedMessage, CommandContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, pickRandom, randomInt } from '../lib/utils.js';
-import { ITEMS, RARITY_COLORS, FORGE_MATERIALS, type Item, type ItemRarity } from '../types/rpg.js';
+import { ITEMS, FORGE_MATERIALS, type Item, type ItemRarity } from '../types/rpg.js';
 import type { InventoryItem, UserRPG } from '../types/user.js';
 import { FORGE, SHOP, SLOT_ALIASES, type EquipmentSlot } from '../constants/rpg.js';
 import {

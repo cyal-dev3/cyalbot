@@ -22,7 +22,6 @@ export interface MessageHandlerInterface {
   muteUser(groupId: string, userId: string): void;
   unmuteUser(groupId: string, userId: string): boolean;
   isUserMuted(groupId: string, userId: string): boolean;
-  getMuteRegistry(): MuteRegistry;
   isAutoClearEnabled(chatId: string): boolean;
   setAutoClear(chatId: string, enabled: boolean): void;
   isCompactMode(chatId: string): boolean;

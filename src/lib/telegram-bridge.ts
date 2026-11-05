@@ -18,7 +18,7 @@ import { mentionTag } from './utils.js';
 
 const log = createLogger('telegram');
 
-interface TelegramBridgeConfig {
+export interface TelegramBridgeConfig {
   apiId: number;
   apiHash: string;
   stringSession: string;

@@ -1,5 +1,5 @@
 import { CONFIG } from '../config.js';
-import { fetchWithTimeout } from './http.js';
+import { fetchTextWithTimeout } from './http.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('downloads');
@@ -115,6 +115,23 @@ function notConfigured(): ClientFailure {
   return { success: false, code: 'INTERNAL', message: NOT_CONFIGURED_MESSAGE };
 }
 
+/** Fallo de red o de tiempo (incluida la lectura del cuerpo): TIMEOUT si lo abortó el timer. */
+function connectionFailure(path: string, error: unknown, timeoutMs: number): ClientFailure {
+  const aborted = isAbortError(error);
+  log.warn(`${path}: ${aborted ? 'timeout' : 'sin conexión'}`, aborted ? '' : (error instanceof Error ? error.message : error));
+  return aborted
+    ? { success: false, code: 'TIMEOUT', message: `El servicio de descargas no respondió en ${Math.round(timeoutMs / 1000)} s` }
+    : { success: false, code: 'INTERNAL', message: 'No se pudo conectar con el servicio de descargas' };
+}
+
+/** undici señala el abort con AbortError o, si corta a mitad del cuerpo, con un TypeError cuya causa es AbortError. */
+function isAbortError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === 'AbortError') return true;
+  const cause = (error as { cause?: unknown }).cause;
+  return cause instanceof Error && cause.name === 'AbortError';
+}
+
 interface Envelope {
   success?: boolean;
   data?: unknown;
@@ -125,22 +142,18 @@ async function request<T>(path: string, init: RequestInit, timeoutMs: number): P
   if (!isDownloaderConfigured()) return notConfigured();
   const url = `${baseUrl()}${path}`;
   let response: Response;
+  let text: string;
   try {
-    response = await fetchWithTimeout(url, {
+    ({ response, text } = await fetchTextWithTimeout(url, {
       ...init,
       timeoutMs,
       headers: { accept: 'application/json', ...authHeaders(), ...(init.headers as Record<string, string> | undefined) },
-    });
+    }));
   } catch (error) {
-    const aborted = error instanceof Error && error.name === 'AbortError';
-    log.warn(`${path}: ${aborted ? 'timeout' : 'sin conexión'}`, aborted ? '' : (error instanceof Error ? error.message : error));
-    return aborted
-      ? { success: false, code: 'TIMEOUT', message: `El servicio de descargas no respondió en ${Math.round(timeoutMs / 1000)} s` }
-      : { success: false, code: 'INTERNAL', message: 'No se pudo conectar con el servicio de descargas' };
+    return connectionFailure(path, error, timeoutMs);
   }
 
   let body: Envelope | null = null;
-  const text = await response.text();
   try {
     body = JSON.parse(text) as Envelope;
   } catch {
@@ -263,10 +276,17 @@ export async function search(query: string, options: SearchOptions = {}): Promis
 /** GET /health. No exige api key; falla rápido (5 s). */
 export async function health(): Promise<ClientResult<HealthData>> {
   if (!isDownloaderConfigured()) return notConfigured();
+  const timeoutMs = 5_000;
+  let response: Response;
+  let text: string;
   try {
-    const response = await fetchWithTimeout(`${baseUrl()}/health`, { timeoutMs: 5_000 });
-    if (!response.ok) return { success: false, code: 'INTERNAL', status: response.status, message: `HTTP ${response.status}` };
-    const raw = (await response.json()) as Record<string, unknown>;
+    ({ response, text } = await fetchTextWithTimeout(`${baseUrl()}/health`, { timeoutMs }));
+  } catch (error) {
+    return connectionFailure('/health', error, timeoutMs);
+  }
+  if (!response.ok) return { success: false, code: 'INTERNAL', status: response.status, message: `HTTP ${response.status}` };
+  try {
+    const raw = JSON.parse(text) as Record<string, unknown>;
     const queue = (raw.queue && typeof raw.queue === 'object' ? raw.queue : {}) as Record<string, unknown>;
     return {
       success: true,
@@ -281,9 +301,8 @@ export async function health(): Promise<ClientResult<HealthData>> {
         },
       },
     };
-  } catch (error) {
-    const aborted = error instanceof Error && error.name === 'AbortError';
-    return { success: false, code: aborted ? 'TIMEOUT' : 'INTERNAL', message: aborted ? 'El servicio no respondió' : 'No se pudo conectar con el servicio' };
+  } catch {
+    return { success: false, code: 'INTERNAL', status: response.status, message: 'El servicio devolvió un /health que no es JSON' };
   }
 }
 
@@ -300,9 +319,11 @@ export function describeDownloadError(code: DownloadErrorCode, extra: DescribeEx
     case 'LOGIN_REQUIRED':
       return 'Ese contenido es privado o requiere inicio de sesión.';
     case 'TOO_LARGE': {
-      const fromMessage = extra.message?.match(/(\d+)\s*MB/i)?.[1];
+      // El servicio solo da el tamaño real con "pesa (unos) N MB"; otros mensajes
+      // ("supera el maximo de 60 MB") traen el tope, no el tamaño del archivo.
+      const fromMessage = extra.message?.match(/pesa\s+(?:unos\s+)?(\d+)\s*MB/i)?.[1];
       const mb = extra.sizeBytes ? Math.ceil(extra.sizeBytes / (1024 * 1024)) : fromMessage ? Number(fromMessage) : null;
-      return mb ? `El archivo pesa ${mb} MB, el máximo es ${MAX_FILE_MB} MB.` : `El archivo supera el máximo de ${MAX_FILE_MB} MB.`;
+      return mb && mb > MAX_FILE_MB ? `El archivo pesa ${mb} MB, el máximo es ${MAX_FILE_MB} MB.` : `El archivo supera el máximo de ${MAX_FILE_MB} MB.`;
     }
     case 'TIMEOUT':
       return 'La descarga tardó demasiado y se canceló. Intenta de nuevo más tarde.';

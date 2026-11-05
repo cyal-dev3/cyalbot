@@ -20,6 +20,7 @@ import { createLogger } from './logger.js';
 import { LRUCache } from './lru-cache.js';
 import { RateLimiter } from './rate-limit.js';
 import type { SerializedMessage } from '../types/message.js';
+import type { AIUsageDay } from '../types/database.js';
 import type { MessageHandler } from '../handler.js';
 import { commandAliases } from '../plugins/index.js';
 import { getWeather } from '../plugins/tools-clima.js';
@@ -69,8 +70,11 @@ export function initAI(handler: MessageHandler): void {
   log.info(`activa con ${CONFIG.ai.model}, ${lines.length} comandos en el catálogo`);
 }
 
-/** Única puerta de salida al API: modelo, betas y fallback se fijan aquí para las tres llamadas. */
-async function createMessage(params: CreateParams): Promise<BetaMessage> {
+/**
+ * Única puerta de salida al API: modelo, betas y fallback se fijan aquí para
+ * las tres llamadas. `chatId` atribuye el consumo a un chat para /iastats.
+ */
+async function createMessage(params: CreateParams, chatId: string | null = null): Promise<BetaMessage> {
   const response = await getClient().beta.messages.create({
     model: CONFIG.ai.model,
     // Si el modelo declina por política, el servidor reintenta con su cadena de respaldo.
@@ -78,7 +82,7 @@ async function createMessage(params: CreateParams): Promise<BetaMessage> {
     fallbacks: 'default',
     ...params,
   });
-  recordUsage(response.usage);
+  recordUsage(response.usage, chatId);
   return response;
 }
 
@@ -157,7 +161,6 @@ const DEFAULT_PRICING = PRICING['claude-opus-5-5'];
 const chatTokens = new Map<string, number>();
 const MAX_TRACKED_CHATS = 1000;
 let chatTokensDay = '';
-let usageChat: string | null = null;
 
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
@@ -179,7 +182,7 @@ function budgetExceeded(): boolean {
   return usage.inputTokens + usage.outputTokens >= CONFIG.ai.dailyTokenBudget;
 }
 
-function recordUsage(usage: Anthropic.Beta.BetaUsage): void {
+function recordUsage(usage: Anthropic.Beta.BetaUsage, chatId: string | null): void {
   const day = todayUsage();
   const input = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
   day.requests += 1;
@@ -188,24 +191,15 @@ function recordUsage(usage: Anthropic.Beta.BetaUsage): void {
   day.cacheReadTokens += usage.cache_read_input_tokens ?? 0;
   getDatabase().markDirty();
 
-  if (usageChat) {
-    if (chatTokensDay !== todayKey()) {
-      chatTokens.clear();
-      chatTokensDay = todayKey();
-    }
-    if (!chatTokens.has(usageChat) && chatTokens.size >= MAX_TRACKED_CHATS) {
-      chatTokens.delete(chatTokens.keys().next().value as string);
-    }
-    chatTokens.set(usageChat, (chatTokens.get(usageChat) ?? 0) + input + usage.output_tokens);
+  if (!chatId) return;
+  if (chatTokensDay !== todayKey()) {
+    chatTokens.clear();
+    chatTokensDay = todayKey();
   }
-}
-
-/** Marca a qué chat se atribuye el consumo de las llamadas que siguen. */
-function attributeUsageTo<T>(chatId: string | null, fn: () => Promise<T>): Promise<T> {
-  usageChat = chatId;
-  return fn().finally(() => {
-    usageChat = null;
-  });
+  if (!chatTokens.has(chatId) && chatTokens.size >= MAX_TRACKED_CHATS) {
+    chatTokens.delete(chatTokens.keys().next().value as string);
+  }
+  chatTokens.set(chatId, (chatTokens.get(chatId) ?? 0) + input + usage.output_tokens);
 }
 
 export function estimateCostUsd(usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }, model = CONFIG.ai.model): number {
@@ -215,7 +209,7 @@ export function estimateCostUsd(usage: { inputTokens: number; outputTokens: numb
 }
 
 export interface UsageSummary {
-  today: ReturnType<typeof todayUsage>;
+  today: AIUsageDay;
   days: number;
   conversations: number;
   estimatedCostUsd: number;
@@ -515,7 +509,7 @@ export async function respondWithAI(req: AIRequest): Promise<boolean> {
   await conn.sendPresenceUpdate('composing', m.chat).catch(() => undefined);
 
   try {
-    const reply = await attributeUsageTo(m.chat, () => complete(conv, base, m, isOwner));
+    const reply = await complete(conv, base, m, isOwner);
     conv.updatedAt = Date.now();
     if (reply) await m.reply(reply + quotaNote);
     return true;
@@ -547,7 +541,7 @@ async function complete(conv: Conversation, base: number, m: SerializedMessage, 
       messages: conv.messages,
       tools,
       output_config: { effort: CONFIG.ai.effort },
-    });
+    }, m.chat);
 
     if (response.stop_reason === 'refusal') {
       conv.messages.length = Math.min(base, conv.messages.length);
@@ -661,12 +655,12 @@ export async function summarizeChat(chatId: string, requestedLines = 100): Promi
     .map((l) => `[${new Date(l.at).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}] ${l.name}: ${l.text}`)
     .join('\n');
 
-  const response = await attributeUsageTo(chatId, () => createMessage({
+  const response = await createMessage({
     max_tokens: CONFIG.ai.maxOutputTokens,
     system: `Resumes conversaciones de grupos de WhatsApp en español. Devuelve de 3 a 6 viñetas cortas (usa "•"), con los temas tratados y quién dijo qué si importa. Sin introducción ni cierre. Usa *negrita* de WhatsApp para resaltar, nada de markdown con #.`,
     messages: [{ role: 'user', content: `Resume esta conversación (${slice.length} mensajes):\n\n${transcript}` }],
     output_config: { effort: 'low' },
-  }));
+  }, chatId);
 
   if (response.stop_reason === 'refusal') return 'No puedo resumir esa conversación.';
   return textOf(response) || 'No encontré nada que resumir.';

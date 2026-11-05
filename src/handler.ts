@@ -37,9 +37,13 @@ interface TrackedMessage {
 interface RegisteredPlugin {
   name: string;
   plugin: PluginHandler;
+  /** Posición de registro: entre dos candidatos gana el menor. */
+  order: number;
 }
 
-interface Dispatch extends RegisteredPlugin {
+interface Dispatch {
+  name: string;
+  plugin: PluginHandler;
   /** Nombre del contexto que capturó el comando, si lo hubo. */
   context?: string;
 }
@@ -59,6 +63,7 @@ const MAX_TRACKED_MESSAGES = 150;
 const MESSAGE_EXPIRY_MS = 60 * 60 * 1000;
 const AUTOCLEAR_DELAY_MS = 2 * 60 * 1000;
 const SUGGEST_COOLDOWN_MS = 10_000;
+const MAX_ECHOED_COMMAND = 30;
 /** Comandos de limpieza cuyo mensaje no debe rastrearse (hasta que group-delete marque `untracked`). */
 const UNTRACKED_COMMANDS = new Set(['clear', 'limpiar', 'clean', 'autoclear', 'autolimpiar', 'autoclean']);
 
@@ -68,7 +73,9 @@ export class MessageHandler {
   /** Plugins con RegExp que no es una alternancia simple; se prueban en orden. */
   private patternPlugins: RegisteredPlugin[] = [];
   private aliasCollisions: AliasCollision[] = [];
+  private registrationOrder = 0;
   private contexts: CommandContext[] = [];
+  private autoClearRunning = false;
   private muteRegistry: MuteRegistry = new Map();
   private spamTracker = new Map<string, number[]>();
   private messageTracker = new Map<string, TrackedMessage[]>();
@@ -132,25 +139,39 @@ export class MessageHandler {
   }
 
   private async processAutoClear(): Promise<void> {
-    for (const [chatId, messages] of this.messageTracker.entries()) {
-      if (!this.isAutoClearEnabled(chatId)) continue;
-      const now = Date.now();
-      const toClear = messages.filter((m) => now - m.timestamp >= AUTOCLEAR_DELAY_MS);
-      if (toClear.length === 0) continue;
+    // Una pasada puede durar más que el intervalo (300 ms por mensaje); si se solapan, se borraría dos veces.
+    if (this.autoClearRunning) return;
+    this.autoClearRunning = true;
+    try {
+      for (const [chatId, messages] of this.messageTracker.entries()) {
+        if (!this.isAutoClearEnabled(chatId)) continue;
+        const now = Date.now();
+        const toClear = messages.filter((m) => now - m.timestamp >= AUTOCLEAR_DELAY_MS);
+        if (toClear.length === 0) continue;
 
-      const processed = new Set<string>();
-      for (const tracked of toClear) {
-        try {
-          await this.conn.sendMessage(chatId, { delete: tracked.key });
-          // Pausa para no disparar el rate limit de WhatsApp.
-          await new Promise((resolve) => setTimeout(resolve, 300));
-        } catch {
-          // Si falla, igual se descarta para no reintentar indefinidamente.
+        for (const tracked of toClear) {
+          // Se quita del rastreo antes de borrar para no reintentar aunque falle.
+          this.untrack(chatId, tracked);
+          try {
+            await this.conn.sendMessage(chatId, { delete: tracked.key });
+            // Pausa para no disparar el rate limit de WhatsApp.
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          } catch {
+            // Mensajes de más de una hora o ya borrados: no hay nada que hacer.
+          }
         }
-        if (tracked.key.id) processed.add(tracked.key.id);
       }
-      this.messageTracker.set(chatId, messages.filter((m) => !m.key.id || !processed.has(m.key.id)));
+    } finally {
+      this.autoClearRunning = false;
     }
+  }
+
+  private untrack(chatId: string, tracked: TrackedMessage): void {
+    const messages = this.messageTracker.get(chatId);
+    if (!messages) return;
+    const index = messages.indexOf(tracked);
+    if (index !== -1) messages.splice(index, 1);
+    if (messages.length === 0) this.messageTracker.delete(chatId);
   }
 
   // ---------------------------------------------------------------------------
@@ -203,10 +224,6 @@ export class MessageHandler {
     this.db.updateChatSettings(groupId, { mutedUsers: config ? Array.from(config.mutedUsers) : [] });
   }
 
-  getMuteRegistry(): MuteRegistry {
-    return this.muteRegistry;
-  }
-
   muteUser(groupId: string, userId: string): void {
     let config = this.muteRegistry.get(groupId);
     if (!config) {
@@ -236,25 +253,34 @@ export class MessageHandler {
   registerPlugin(name: string, plugin: PluginHandler): void {
     if (this.plugins.has(name)) {
       log.warn(`el nombre de plugin ${name} ya estaba registrado; se sobrescribe`);
+      this.unregisterPlugin(name);
     }
     this.plugins.set(name, plugin);
+    const entry: RegisteredPlugin = { name, plugin, order: this.registrationOrder++ };
 
     const aliases = commandAliases(plugin);
     if (aliases.length === 0) {
-      this.patternPlugins.push({ name, plugin });
+      this.patternPlugins.push(entry);
       return;
     }
     for (const alias of aliases) {
       const taken = this.aliasIndex.get(alias);
       if (taken) {
-        if (taken.name !== name) {
-          log.warn(`alias "${alias}" de ${name} ya lo usa ${taken.name}; gana ${taken.name}`);
-          this.aliasCollisions.push({ alias, winner: taken.name, loser: name });
-        }
+        log.warn(`alias "${alias}" de ${name} ya lo usa ${taken.name}; gana ${taken.name}`);
+        this.aliasCollisions.push({ alias, winner: taken.name, loser: name });
         continue;
       }
-      this.aliasIndex.set(alias, { name, plugin });
+      this.aliasIndex.set(alias, entry);
     }
+  }
+
+  /** Quita el plugin del índice y de los patrones para que el nuevo registro con ese nombre lo reemplace. */
+  private unregisterPlugin(name: string): void {
+    for (const [alias, entry] of this.aliasIndex) {
+      if (entry.name === name) this.aliasIndex.delete(alias);
+    }
+    this.patternPlugins = this.patternPlugins.filter((entry) => entry.name !== name);
+    this.aliasCollisions = this.aliasCollisions.filter((c) => c.winner !== name && c.loser !== name);
   }
 
   getPlugins(): PluginRegistry {
@@ -269,12 +295,18 @@ export class MessageHandler {
     return this.aliasIndex.get(alias.toLowerCase()) ?? null;
   }
 
-  /** Plugin con RegExp compleja que acepte el comando o el texto completo. */
-  private findPatternPlugin(command: string, body: string): RegisteredPlugin | null {
+  /**
+   * Candidato del registro global: el índice de alias y los plugins con RegExp
+   * compleja compiten por orden de registro ("el primero registrado gana").
+   */
+  private findGlobal(command: string, body: string): RegisteredPlugin | null {
+    const indexed = this.findPlugin(command);
+    // patternPlugins está en orden de registro: solo cuentan los anteriores al hit del índice.
     for (const entry of this.patternPlugins) {
+      if (indexed && entry.order > indexed.order) break;
       if (MessageHandler.pluginMatches(entry.plugin, command, body)) return entry;
     }
-    return null;
+    return indexed;
   }
 
   /** Registra un contexto de juego con prioridad sobre el registro global. */
@@ -549,7 +581,7 @@ export class MessageHandler {
     }
 
     if (!command) return;
-    const found = this.findPlugin(command) ?? this.findPatternPlugin(command, body);
+    const found = this.findGlobal(command, body);
     if (!found) {
       await this.replyUnknownCommand(incoming);
       return;
@@ -575,9 +607,11 @@ export class MessageHandler {
     return { aliases, primary };
   }
 
-  private async replyUnknownCommand({ m, command, usedPrefix, isOwner, chatSettings, roles }: Incoming): Promise<void> {
+  private async replyUnknownCommand({ m, command: typed, usedPrefix, isOwner, chatSettings, roles }: Incoming): Promise<void> {
     // "..." o "/" solos no son intentos de comando.
-    if (!/[a-z0-9]/i.test(command)) return;
+    if (!/[a-z0-9]/i.test(typed)) return;
+    // Lo que se repite al chat (y se compara con cada alias) se acota: nadie teclea comandos tan largos.
+    const command = typed.length > MAX_ECHOED_COMMAND ? `${typed.slice(0, MAX_ECHOED_COMMAND)}…` : typed;
     const now = Date.now();
     const last = this.suggestionCooldown.get(m.chat);
     if (last !== undefined && now - last < SUGGEST_COOLDOWN_MS) return;
@@ -620,7 +654,8 @@ export class MessageHandler {
     let roles: GroupRoles | null = null;
     if (m.isGroup && (plugin.admin || plugin.botAdmin || plugin.group)) {
       roles = await incoming.roles();
-      if (!roles.metadata && (plugin.admin || plugin.botAdmin)) {
+      // El owner no necesita la metadata para pasar la comprobación de admin.
+      if (!roles.metadata && (plugin.botAdmin || (plugin.admin && !isOwner))) {
         await m.reply('⚠️ No pude leer los datos del grupo, inténtalo en unos segundos.');
         return;
       }

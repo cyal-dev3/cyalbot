@@ -292,7 +292,7 @@ export class MessageQueue {
 
     if (media) {
       log.info(`enviado con ${item.mediaType} (${this.queue.length - 1} pendientes)`);
-      unlink(item.mediaPath!).catch(() => undefined);
+      await unlink(item.mediaPath!).catch(() => undefined);
     } else if (item.mediaOmitted || item.mediaType) {
       log.warn(`enviado solo texto, media omitida (${this.queue.length - 1} pendientes)`);
     } else {

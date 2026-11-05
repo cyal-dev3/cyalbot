@@ -28,13 +28,13 @@ export interface ReminderDb {
   markDirty(): void;
 }
 
-type Sender = Pick<WASocket, 'sendMessage'> & { groupMetadata?: WASocket['groupMetadata'] };
+export type Sender = Pick<WASocket, 'sendMessage'> & { groupMetadata?: WASocket['groupMetadata'] };
 
 // ---------------------------------------------------------------------------
 // Fechas en zona horaria
 // ---------------------------------------------------------------------------
 
-interface ZonedParts {
+export interface ZonedParts {
   year: number;
   month: number;
   day: number;
@@ -118,11 +118,12 @@ export function parseDuration(input: string, now = Date.now(), zone = REMINDER_T
 
   let delay: number | null = null;
 
-  const relative = text.match(/^(\d+(?:[.,]\d+)?) ?([a-záí]+)$/);
-  if (relative) {
-    const ms = unitMs(relative[2]);
-    if (ms === null) return null;
-    delay = Math.round(parseFloat(relative[1].replace(',', '.')) * ms);
+  const relativeMatch = text.match(/^(\d+(?:[.,]\d+)?) ?([a-záí]+)$/);
+  const relativeUnit = relativeMatch ? unitMs(relativeMatch[2]) : null;
+  // "7pm" también encaja en este patrón; si la unidad no es de tiempo se prueba como hora del reloj.
+  const relative = relativeUnit === null ? null : relativeMatch;
+  if (relative && relativeUnit !== null) {
+    delay = Math.round(parseFloat(relative[1].replace(',', '.')) * relativeUnit);
   }
 
   const dayWord = text.match(/^(hoy|mañana|manana|pasado mañana|pasado manana)(?: (?:a las? )?(\d{1,2})(?::(\d{2}))? ?(am|pm|h)?)?$/);
@@ -233,6 +234,7 @@ export function cancelReminder(user: string, id: string, db: ReminderDb = getDat
 // ---------------------------------------------------------------------------
 
 let connection: Sender | null = null;
+let activeDb: ReminderDb | null = null;
 let timer: NodeJS.Timeout | null = null;
 let lastBirthdayRun = '';
 
@@ -310,8 +312,9 @@ export async function dailyBirthdayCheck(conn: Sender, db: ReminderDb = getDatab
 
 async function tick(): Promise<void> {
   const now = Date.now();
+  const db = activeDb ?? getDatabase();
   try {
-    await runRemindersTick(now);
+    await runRemindersTick(now, db);
   } catch (error) {
     log.error('tick de recordatorios:', error);
   }
@@ -321,19 +324,20 @@ async function tick(): Promise<void> {
   if (connection && local.hour === BIRTHDAY_HOUR && local.minute < 5 && lastBirthdayRun !== dayKey) {
     lastBirthdayRun = dayKey;
     try {
-      await dailyBirthdayCheck(connection);
+      await dailyBirthdayCheck(connection, db);
     } catch (error) {
       log.error('aviso de cumpleaños:', error);
     }
   }
 }
 
-/** Arranca el tick de 30 s. Idempotente; actualiza el socket si ya corría. */
-export function startReminders(conn: Sender): void {
+/** Arranca el tick de 30 s. Idempotente; actualiza el socket si ya corría. `db` solo se pasa en tests. */
+export function startReminders(conn: Sender, db?: ReminderDb): void {
   connection = conn;
+  if (db) activeDb = db;
   if (timer) return;
   timer = setInterval(() => void tick(), TICK_MS);
-  timer.unref();
+  if (typeof timer.unref === 'function') timer.unref();
   void tick();
 }
 
@@ -341,6 +345,7 @@ export function stopReminders(): void {
   if (timer) clearInterval(timer);
   timer = null;
   connection = null;
+  activeDb = null;
 }
 
 export function remindersRunning(): boolean {

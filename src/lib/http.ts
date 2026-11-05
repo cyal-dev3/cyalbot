@@ -27,3 +27,28 @@ export async function fetchWithTimeout(url: string, options: FetchWithTimeoutOpt
     clearTimeout(timer);
   }
 }
+
+export interface FetchedText {
+  response: Response;
+  text: string;
+}
+
+/**
+ * Como fetchWithTimeout, pero el tope cubre también la lectura del cuerpo:
+ * un servidor que manda las cabeceras y se cuelga a mitad del JSON dejaría
+ * la petición pendiente para siempre con response.text() fuera del timer.
+ */
+export async function fetchTextWithTimeout(url: string, options: FetchWithTimeoutOptions = {}): Promise<FetchedText> {
+  const { timeoutMs = 15_000, signal, ...init } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref();
+  signal?.addEventListener('abort', () => controller.abort(), { once: true });
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    const text = await response.text();
+    return { response, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}

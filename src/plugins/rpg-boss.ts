@@ -89,7 +89,7 @@ function bossStatus(boss: WorldBossState, usedPrefix: string): string {
   return msg;
 }
 
-async function distributeLoot(db: Database, boss: WorldBossState, ctx: MessageContext): Promise<string> {
+async function distributeLoot(db: Database, boss: WorldBossState): Promise<string> {
   const top = topAttackers(boss);
   let msg = `\n💥 *¡${boss.name.toUpperCase()} HA CAÍDO!*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
   const medals = ['🥇', '🥈', '🥉'];
@@ -113,13 +113,11 @@ async function distributeLoot(db: Database, boss: WorldBossState, ctx: MessageCo
   const others = Object.keys(boss.damage).length - top.length;
   if (others > 0) msg += `\n_Y ${others} aventurero(s) más recibieron XP por su daño._\n`;
 
-  const user = db.getUser(ctx.m.sender);
   for (const jid of Object.keys(boss.damage)) {
     const u = db.getUser(jid);
     u.combatStats.bossesKilled++;
     db.updateUser(jid, { combatStats: u.combatStats });
   }
-  void user;
   saveBoss(db, null);
   return msg;
 }
@@ -191,7 +189,7 @@ export const bossPlugin: PluginHandler = {
     if (newHealth <= 0) msg += handlePlayerDeath(db, m.sender, user.name, now).message + '\n';
 
     if (boss.health <= 0) {
-      msg += await distributeLoot(db, boss, ctx);
+      msg += await distributeLoot(db, boss);
     } else {
       saveBoss(db, boss);
       msg += `\n❤️ Jefe: ${formatNumber(boss.health)}/${formatNumber(boss.maxHealth)}`;

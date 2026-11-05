@@ -12,15 +12,22 @@ import { sameUser } from '../config.js';
 const log = createLogger('grupos');
 
 const metadataCache = new LRUCache<string, GroupMetadata>(1000);
+/** Grupos cuya consulta falló hace poco: no se repite en cada mensaje mientras dure el fallo. */
+const failedUntil = new LRUCache<string, number>(1000);
+export const METADATA_FAILURE_TTL_MS = 15_000;
 
 export async function getGroupMetadataCached(conn: WASocket, groupId: string): Promise<GroupMetadata | null> {
   const cached = metadataCache.get(groupId);
   if (cached) return cached;
+  const retryAt = failedUntil.get(groupId);
+  if (retryAt !== undefined && Date.now() < retryAt) return null;
   try {
     const metadata = await conn.groupMetadata(groupId);
     metadataCache.set(groupId, metadata);
+    failedUntil.delete(groupId);
     return metadata;
   } catch (error) {
+    failedUntil.set(groupId, Date.now() + METADATA_FAILURE_TTL_MS);
     log.debug(`sin metadata de ${groupId}:`, error instanceof Error ? error.message : error);
     return null;
   }
@@ -32,15 +39,20 @@ export async function getGroupName(conn: WASocket, groupId: string): Promise<str
 
 export function invalidateGroupMetadata(groupId: string): void {
   metadataCache.delete(groupId);
+  failedUntil.delete(groupId);
 }
 
 function isAdminParticipant(p: GroupParticipant): boolean {
   return p.admin === 'admin' || p.admin === 'superadmin' || p.isAdmin === true || p.isSuperAdmin === true;
 }
 
-/** Un participante puede venir con JID de teléfono o con LID; se compara con ambos. */
+/**
+ * En grupos con direccionamiento LID el participante llega como
+ * { id: '<lid>@lid', jid: '<número>@s.whatsapp.net', lid }, y en los demás con
+ * id = número; se compara con los tres campos.
+ */
 function participantMatches(p: GroupParticipant, ids: readonly string[]): boolean {
-  return ids.some((id) => sameUser(p.id, id) || sameUser(p.lid, id));
+  return ids.some((id) => sameUser(p.id, id) || sameUser(p.lid, id) || sameUser(p.jid, id));
 }
 
 /** Identificadores del bot (número y LID) tal y como los expone el socket. */
@@ -55,10 +67,18 @@ export function isGroupAdmin(metadata: GroupMetadata | null | undefined, jid: st
   return metadata.participants.some((p) => isAdminParticipant(p) && participantMatches(p, [jid]));
 }
 
+/** true si `jid` (número o LID) está en el grupo; sirve para validar menciones contra `ctx.participants`. */
+export function isGroupMember(metadata: GroupMetadata | null | undefined, jid: string): boolean {
+  if (!metadata) return false;
+  return metadata.participants.some((p) => participantMatches(p, [jid]));
+}
+
 export interface GroupRoles {
   isAdmin: boolean;
   isBotAdmin: boolean;
+  /** `p.id` de cada admin (número o LID según el grupo); comparar con sameUser o isGroupAdmin, no con ===. */
   admins: string[];
+  /** `p.id` de cada miembro; para saber si una mención pertenece al grupo usar isGroupMember. */
   participants: string[];
   /** null cuando WhatsApp no devolvió la metadata (el caller decide qué hacer). */
   metadata: GroupMetadata | null;

@@ -6,7 +6,7 @@ const log = createLogger('tools');
 const TIMEOUT_MS = 10_000;
 const MAX_CHARS = 2000;
 
-interface Language {
+export interface Language {
   code: string;
   /** Nombre en español para mostrar */
   label: string;

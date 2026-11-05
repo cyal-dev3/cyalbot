@@ -1,6 +1,21 @@
 # Handoff: área núcleo (handler, arranque, registro de plugins, menú, libs base)
 
-Estado al cierre: `npx tsc --noEmit` pasa en todo el árbol y `npm test` pasa (166 tests, 50 de mi área en `tests/nucleo-*.test.ts`, `tests/utils.test.ts` y `tests/config.test.ts`); la suite termina sola en ~6 s. Durante el trabajo `tests/datos-auto-regen.test.ts` falló un rato mientras el agente de datos editaba; al cierre pasa.
+Estado al cierre de la ronda de corrección: `npx tsc --noEmit` pasa en todo el árbol y `npm test` pasa (305 tests, 48 en `tests/nucleo-*.test.ts` más `tests/utils.test.ts` y `tests/config.test.ts`); la suite termina sola en ~11 s. Durante la ronda fallaron un rato 2 tests ajenos en edición simultánea (`tests/herr-telegram-queue.test.ts`, `tests/rpgcombate-combat.test.ts`); al cierre pasan.
+
+### Ronda de corrección (hallazgos de los revisores)
+- **index.ts, reconexión bloqueada (alta)**: `connectBot` resuelve en cuanto existe el socket, antes del handshake, así que `isReconnecting` se quedaba en true si el socket nuevo se cerraba sin llegar a `open` y ningún cierre posterior volvía a programar nada. Ahora `isReconnecting` vuelve a false justo después de `await connectBot()` (el ciclo pasa a gobernarlo `connection.update`); `reconnectAttempts` solo se resetea en `open`, así que el límite de 10 cierres seguidos sí se alcanza. Las dos salidas duras (`process.exit(1)` tras 10 fallos y por sesión cerrada) pasan por `gracefulShutdown(reason, 1)`, que detiene timers y hace `db.stop()` (guardado final) antes de salir; `gracefulShutdown` es idempotente. En la rama de reconexión se hace `stopAutoEvents(); startAutoEvents(conn)` para que los anuncios no usen el socket cerrado (ver "Agente datos" para una alternativa sin reprogramar el timer). No hay test: `index.ts` ejecuta `main()` al importarse (ver Pendiente).
+- **fetch-media.ts, SSRF por redirección (alta)**: `fetch` con `redirect: 'manual'` y `fetchFollowing` sigue hasta `MAX_REDIRECTS = 5` saltos pasando cada `Location` (resuelto contra la URL actual) por `rejectReason`. **IPv6 mapeada (media)**: el parser de URL normaliza `[::ffff:127.0.0.1]` a `[::ffff:7f00:1]`; `mappedV4` acepta ambas formas y la IPv4 embebida pasa por `isPrivateAddress`. Tests nuevos: redirección a `localhost`, a `[::ffff:127.0.0.1]`, bucle de redirecciones y redirección relativa válida; formas hexadecimales.
+- **handler.ts, orden de registro (baja)**: `RegisteredPlugin.order`; `findGlobal` compara el hit del índice con los `patternPlugins` registrados antes que él, así "el primero registrado gana" vale también entre RegExp complejas y arrays. Consecuencia que se mantiene a propósito: una RegExp amplia en el registro global (`/^[abcd]$/`, `/^\d{1,3}$/`, `/^[a-z]{3,20}$/`) se traga todo comando desconocido registrado después de ella; esas regex de respuesta de juegos SOLO pueden ir en contextos (ver "Agente juegos").
+- **handler.ts, re-registro (baja)**: `registerPlugin` con un nombre existente llama a `unregisterPlugin(name)` (quita sus alias del índice, sus patrones y sus colisiones) antes de registrar el nuevo.
+- **handler.ts, owner sin metadata (baja)**: el aviso "No pude leer los datos del grupo" solo se da si `plugin.botAdmin` o (`plugin.admin` y no es owner).
+- **handler.ts, eco del comando desconocido (baja)**: se recorta a 30 caracteres (+ "…") antes de responder y de calcular la sugerencia.
+- **handler.ts, autoclear solapado (baja)**: `processAutoClear` sale si ya hay una pasada en curso (`autoClearRunning`) y quita cada mensaje del rastreo antes de pedir su borrado.
+- **handler.ts / types/message.ts, `getMuteRegistry`**: eliminado de la clase y de `MessageHandlerInterface` (grep: ningún plugin lo usaba; la frase anterior del handoff sobre group-mute.ts era falsa).
+- **group-events.ts, grupos en modo LID (baja)**: `participantMatches` compara también `p.jid` (en grupos LID el participante llega como `{ id: '<lid>@lid', jid: '<número>@s.whatsapp.net', lid }`). Nuevo `isGroupMember(metadata, jid)`. `GroupRoles.admins/participants` siguen llevando `p.id` (documentado): comparar con `sameUser`/`isGroupAdmin`/`isGroupMember`, nunca con `===` ni `includes`.
+- **group-events.ts, ráfaga de consultas (baja)**: caché negativa `failedUntil` con `METADATA_FAILURE_TTL_MS = 15 s`; `invalidateGroupMetadata` también la limpia. Test: con antiLink activo y metadata fallando, N mensajes = 1 consulta.
+- **menu.ts (baja)**: se busca primero el comando exacto y después la categoría; la coincidencia parcial del nombre de categoría exige 3+ letras (`/menu s` muestra la ayuda de `s`). `canSee` filtra `group: true` fuera de grupos, coherente con `handler.visibleAliases`. La query de "No encontré" se recorta a 30 caracteres.
+- **anti-delete.ts (baja)**: `rememberMessage` descarta `protocolMessage`, `reactionMessage`, `senderKeyDistributionMessage`, `pollUpdateMessage` y `keepInChatMessage` (`getContentType`); antes entraban en la LRU y desplazaban mensajes reales. `isRemembered(chatId, msgId)` solo para tests. Test nuevo `tests/nucleo-anti-delete.test.ts`.
+- Hallazgos duplicados (la reconexión y el SSRF por redirección aparecían tres y cuatro veces): corregidos una vez.
 
 ## Hecho
 
@@ -33,10 +48,10 @@ Estado al cierre: `npx tsc --noEmit` pasa en todo el árbol y `npm test` pasa (1
 - `trackMessage` solo para `@g.us`; `isAutoClearEnabled/isCompactMode/isAutoMuteEnabled` leen `db.data.chats[id]?.campo` y no crean entradas (antes autoclear creaba ChatSettings de cada chat privado cada 30 s).
 - Automatismos: antilink usa `search()` (el regex tiene flag g); autosticker usa `downloadMedia` y mira `m.message.imageMessage` (ya desenvuelto); autodownload delega en `lib/autodownload.ts` del agente de descargas (dedupe, límite de YouTube, `sendMedias`), que a su vez usa `fetchMedia`.
 - IA: `./lib/ai.js` se carga con `import()` perezoso solo si `CONFIG.ai.enabled`. Motivo: `ai.ts` importa `plugins/index.ts`, que importa todos los plugins, y `admin-stats.ts` importa `src/index.ts` (que arranca el bot al evaluarse); con import estático cualquier test del handler intentaría conectar a WhatsApp y además `rpg-dungeon-interactivo.ts` deja un `setInterval` de módulo vivo. Ver "Para otros agentes" (agente IA) para volver al import estático.
-- Eliminados: `makeMessageInvisible`/`INVISIBLE_CHAR` (sin usos), `isAdmin(participants, jid)`, `PLATFORM_NAMES`, la tabla de duelo sin prefijo. `getMuteRegistry` se conserva (lo usa group-mute.ts). Timers via `scheduler` con prefijo único por instancia (`handler:xxxx:*`).
+- Eliminados: `makeMessageInvisible`/`INVISIBLE_CHAR` (sin usos), `isAdmin(participants, jid)`, `PLATFORM_NAMES`, la tabla de duelo sin prefijo, `getMuteRegistry` (sin usos). Timers via `scheduler` con prefijo único por instancia (`handler:xxxx:*`).
 
 ### src/types/message.ts
-- `MessageHandlerInterface`: quitado `makeMessageInvisible`; añadidos `getContexts`, `getPlugins`, `getAliasCollisions`, `findPlugin`. Conserva todo lo demás.
+- `MessageHandlerInterface`: quitados `makeMessageInvisible` y `getMuteRegistry`; añadidos `getContexts`, `getPlugins`, `getAliasCollisions`, `findPlugin`. Conserva todo lo demás.
 - `MessageContext`: `chatSettings`, `user` (readonly, perezoso), `send`, `target`; `groupMetadata/participants/groupAdmins` documentados como perezosos. `SerializedMessage.message` (contenido desenvuelto). Nuevos tipos `AliasCollision`, `TargetOptions`. `CommandContext` documenta que sus plugins no entran al registro global salvo que el autor los registre.
 
 ### src/config.ts
@@ -57,7 +72,7 @@ Estado al cierre: `npx tsc --noEmit` pasa en todo el árbol y `npm test` pasa (1
 - `handleParticipantsUpdate` invalida la caché en cualquier acción (add/remove también cambian `participants`), no solo promote/demote.
 
 ### src/lib/anti-delete.ts
-- `rememberMessage` y `resend` usan `unwrapMessage`/`getText`/`getMediaSize`/`downloadMedia`: los mensajes efímeros ahora se reenvían; los de protocolo (sin contenido) no se cachean. Lee `antiDelete` con `db.data.chats[chatId]?.antiDelete` (no crea entradas). El documento conserva su caption.
+- `rememberMessage` y `resend` usan `unwrapMessage`/`getText`/`getMediaSize`/`downloadMedia`: los mensajes efímeros ahora se reenvían; los de protocolo, reacciones y llaves se descartan por `getContentType` (no entran en la LRU). Lee `antiDelete` con `db.data.chats[chatId]?.antiDelete` (no crea entradas). El documento conserva su caption.
 
 ### src/lib/reaction-handler.ts
 - `createLogger('betting')`; usa `db.betting.*`. Los picks `TELEGRAM_BRIDGE` solo los resuelve un admin del grupo (`isGroupAdmin` con `getGroupMetadataCached`) o un owner; el creador sigue pudiendo resolver los suyos (`sameUser`).
@@ -111,6 +126,7 @@ handler.registerContext({
 
 ### Agente juegos (game-blackjack.ts, game-roulette.ts, game-*.ts nuevos)
 - Igual que arriba: contextos `blackjack` (plugins pedir/plantarse/doblar/jugar/bjsalir, `isActive` = hay mesa en el chat y el sender está sentado), `ruleta` (apostar/girar/ruletasalir), `trivia`/`adivina`/`ppt`/`ttt` (la respuesta sin prefijo solo mientras la partida está activa). Decidir por plugin si además sigue en el registro global (ver opciones a/b).
+- **Las RegExp de respuesta (`/^[abcd]$/` de trivia, `/^\d{1,3}$/` de adivina, `/^[1-9]$/` de ttt, `/^[a-zñáéíóúü]{3,20}$/i` de ahorcado) NUNCA van en el registro global** (ni en `SECTIONS` de plugins/index.ts): el handler las prueba contra cualquier comando con prefijo y, por orden de registro, se tragarían los comandos desconocidos (`/atakar` iría al ahorcado en vez de sugerir `/atacar`). Solo dentro de un `registerContext` con `isActive` acotado a la partida.
 - Aliases que hoy colisionan con otros plugins y conviene mover al contexto: `hit` (pedir vs golpe), `bet` (apostar vs pick), `vermesa`, `mesa`, `salir`.
 
 ### Agente grupos (group-delete.ts)
@@ -119,6 +135,7 @@ handler.registerContext({
 - Para forzar una relectura de la metadata (p. ej. tras promover a alguien desde un plugin) usar `invalidateGroupMetadata(chatId)` de `lib/group-events.ts`.
 
 ### Agente datos (database.ts, auto-regen.ts, auto-events.ts)
+- `auto-events.ts`: exportar `updateAutoEventsSocket(conn: WASocket): void { connInstance = conn; }`. Cuando exista, en `src/index.ts` (rama de reconexión de `connection.update`, junto a `updateQueueSocket(conn)`) sustituir `stopAutoEvents(); startAutoEvents(conn);` por `updateAutoEventsSocket(conn)` para no reprogramar el próximo evento en cada reconexión.
 - `Database.init` línea ~135: `this.saveInterval = setInterval(...)` -> `scheduler.every('db:autosave', AUTOSAVE_INTERVAL_MS, () => { if (this.dirty) void this.save(); })` y en `stop()` `scheduler.stop('db:autosave')`. Idem `auto-regen.ts:175` (`scheduler.every('rpg:regen', ...)`, `stopAutoRegen` -> `scheduler.stop`) y `auto-events.ts` (timer de próximo evento con `scheduler.after('rpg:auto-event', ms, fn)`).
 
 ### Agente Telegram (telegram-bridge.ts)
@@ -127,6 +144,9 @@ handler.registerContext({
 ### Agente descargas (download-*.ts, downloaders.ts)
 - `platformLabel`, `extractUrl` y `lib/autodownload.ts` ya existen y el handler los usa; `media-send.ts` ya re-exporta `fetchMedia`. Los 7 plugins `download-*` deben pasar por `fetchMedia`/`sendMedias` (no `fetch(url).arrayBuffer()` directo).
 - Si hace falta descargar de un host interno distinto a `DOWNLOADER_API_URL`, `fetch-media.ts` no lo permite a propósito; ampliar `allowedByConfig` en vez de saltarse la comprobación.
+
+### Agente grupos / cualquier plugin que compare participantes
+- `ctx.participants` y `ctx.groupAdmins` llevan `p.id`, que en grupos con direccionamiento LID es `<lid>@lid` y no el número. Para saber si una mención es admin o miembro usar `isGroupAdmin(ctx.groupMetadata, jid)` / `isGroupMember(ctx.groupMetadata, jid)` de `lib/group-events.ts` (comparan id, lid y jid con `sameUser`), nunca `ctx.participants.includes(jid)`.
 
 ### Agente admin (admin-stats.ts)
 - `getReconnectStats()` ahora devuelve también `lastError` y `lastErrorAt`; mostrarlos en el dashboard. Importar desde `../index.js` crea un ciclo con el punto de entrada (que ejecuta `main()` al evaluarse); si se crea un `src/lib/runtime-stats.ts` neutro, mover ahí el estado de reconexión y que `index.ts` lo actualice.
@@ -159,9 +179,15 @@ handler.registerContext({
 - **Menú sin categoría "nuevos"**: no hay forma de saber qué es nuevo desde el registro; la lista hardcodeada envejecía. Los "más usados" salen de `db.data.stats`, que el handler ahora alimenta.
 - **Scheduler por nombre con reemplazo**: evita duplicar timers en reconexiones; el handler usa un prefijo aleatorio por instancia para no pisar al handler anterior antes de su `stop()`.
 - **cleanup-scheduler conserva `runSessionSweep`** acotado a session-/sender-key- > 90 días: son ficheros de chats muertos y Baileys los regenera si hace falta; las pre-keys no se tocan nunca.
-- **`fetchMedia` consulta DNS** además de los literales: un dominio que resuelve a 10.x es el vector SSRF real; si el lookup falla se deja que `fetch` falle por su cuenta.
+- **`fetchMedia` consulta DNS** además de los literales: un dominio que resuelve a 10.x es el vector SSRF real; si el lookup falla se deja que `fetch` falle por su cuenta. Queda un TOCTOU teórico (el lookup de `rejectReason` y el de `fetch` son resoluciones distintas); cerrarlo exige un `Agent` de undici con `lookup` fijado a la IP validada y se descartó por complejidad frente al riesgo (DNS rebinding en la ventana de milisegundos entre ambas).
+- **Redirecciones manuales en vez de `redirect: 'error'`**: los CDN de descargas (YouTube, TikTok, Instagram) redirigen casi siempre; rechazarlas rompería el autodownload. Se siguen hasta 5 saltos validando cada destino.
+- **`stopAutoEvents(); startAutoEvents(conn)` en la reconexión** en vez de tocar `auto-events.ts` (ajeno): reprograma el próximo evento con un intervalo nuevo, aceptable frente a anunciar con un socket cerrado. Pedido `updateAutoEventsSocket` al agente de datos.
+- **Caché negativa de metadata de 15 s** y no más: durante una incidencia de red el bot ya va mal; 15 s cortan la ráfaga sin que un admin recién ascendido espere medio minuto a que le funcione un comando.
+- **`GroupRoles.participants/admins` siguen siendo `p.id`** (no se añadieron los `jid`): meter ambos duplicaría personas y rompería a quien cuente miembros; la comparación correcta pasa por `isGroupMember`/`isGroupAdmin`.
 
 ## Pendiente
+
+- **Sin test de la máquina de reconexión de `index.ts`**: el módulo ejecuta `main()` al importarse y conecta a WhatsApp. Un test exigiría extraer el estado de reconexión a un módulo neutro (p. ej. `src/lib/runtime-stats.ts`, que no está en mi lista de archivos permitidos); encaja con lo que ya pide el agente admin para `getReconnectStats`. La corrección se verificó por lectura: cierre -> `scheduleReconnect` -> timer -> `connectBot` resuelve -> `isReconnecting = false` -> cierre sin `open` -> `scheduleReconnect` vuelve a programar (attempts++) -> al décimo, `gracefulShutdown(..., 1)`.
 
 - **Colisiones de alias**: siguen existiendo hasta que RPG combate y juegos muevan sus comandos cortos a contextos (lista exacta en el log de arranque: "alias X de A ya lo usa B"). El handler no lanza; el test de integración debe exigir cero.
 - **Comandos de duelo/dungeon sin prefijo no funcionan** hasta que se registren los contextos (punto RPG combate). Con prefijo siguen funcionando igual que antes.

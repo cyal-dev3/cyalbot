@@ -376,3 +376,74 @@ test('el modo del bot filtra chats y el remitente muteado se ignora', async () =
     assert.deepEqual(db.data.chats[GROUP]?.mutedUsers, [USER]);
   });
 });
+
+test('"el primero registrado gana" también entre RegExp complejas y arrays', async () => {
+  await withHandler(async (h, fake) => {
+    h.registerPlugin('trivia', { command: /^[abcd]$/, handler: async (ctx) => { await ctx.m.reply('trivia'); } });
+    h.registerPlugin('atacar-corto', echo('a'));
+    h.registerPlugin('ahorcado', { command: /^[a-z]{3,20}$/i, handler: async (ctx) => { await ctx.m.reply('ahorcado'); } });
+    h.registerPlugin('ping', echo('ping'));
+    await h.handle([message({ text: '/a' }), message({ text: '/ping' }), message({ text: '/zzz' })]);
+    assert.deepEqual(texts(fake), ['trivia', 'ahorcado', 'ahorcado']);
+  });
+});
+
+test('re-registrar un nombre reemplaza el handler también en el despacho', async () => {
+  await withHandler(async (h, fake) => {
+    h.registerPlugin('x', { command: ['x'], handler: async (ctx) => { await ctx.m.reply('viejo'); } });
+    h.registerPlugin('x', { command: ['x', 'y'], handler: async (ctx) => { await ctx.m.reply('nuevo'); } });
+    h.registerPlugin('p', { command: /^z+$/, handler: async (ctx) => { await ctx.m.reply('patron viejo'); } });
+    h.registerPlugin('p', { command: /^w+$/, handler: async (ctx) => { await ctx.m.reply('patron nuevo'); } });
+    await h.handle([message({ text: '/x' }), message({ text: '/y' }), message({ text: '/www' }), message({ text: '/zzz' })]);
+    assert.deepEqual(texts(fake), ['nuevo', 'nuevo', 'patron nuevo', 'No existe /zzz. Escribe /menu para ver todo.']);
+    assert.equal(h.getAliasCollisions().length, 0);
+  });
+});
+
+test('el owner pasa un comando admin aunque no haya metadata del grupo', async () => {
+  await withHandler(async (h, fake) => {
+    h.registerPlugin('admin', echo('admin', { group: true, admin: true }));
+    h.registerPlugin('botadmin', echo('botadmin', { group: true, botAdmin: true }));
+    await h.handle([message({ text: '/admin', sender: OWNER }), message({ text: '/botadmin', sender: OWNER })]);
+    const replies = texts(fake);
+    assert.equal(replies[0], 'admin:');
+    assert.match(replies[1], /No pude leer los datos del grupo/);
+  }, { metadataFails: true });
+});
+
+test('un grupo en modo LID reconoce al admin por su jid de teléfono', async () => {
+  await withHandler(async (h, fake) => {
+    fake.metadata!.participants = [
+      { id: '999000111222@lid', jid: ADMIN, lid: '999000111222@lid', admin: 'admin' } as never,
+      { id: '999000111333@lid', jid: USER, lid: '999000111333@lid', admin: null } as never,
+    ];
+    const plugin = echo('admin', { group: true, admin: true });
+    h.registerPlugin('admin', plugin);
+    await h.handle([message({ text: '/admin', sender: ADMIN }), message({ text: '/admin' })]);
+    const replies = texts(fake);
+    assert.equal(replies[0], 'admin:');
+    assert.match(replies[1], /administradores del grupo/);
+    assert.equal(plugin.calls[0].isAdmin, true);
+  });
+});
+
+test('un comando desconocido muy largo se recorta antes de repetirlo', async () => {
+  await withHandler(async (h, fake) => {
+    h.registerPlugin('ping', echo('ping'));
+    await h.handle([message({ text: `/${'a'.repeat(5000)}` })]);
+    const reply = texts(fake)[0];
+    assert.ok(reply.length < 120, reply.length.toString());
+    assert.match(reply, /^No existe \/a{30}…\./);
+  });
+});
+
+test('si la metadata falla no se vuelve a pedir en cada mensaje', async () => {
+  await withHandler(async (h, fake, db) => {
+    db.updateChatSettings(GROUP, { antiLink: true });
+    await h.handle([message({ text: 'hola' }), message({ text: 'otra' }), message({ text: 'más' })]);
+    assert.equal(fake.metadataCalls, 1, 'el fallo se recuerda unos segundos');
+    invalidateGroupMetadata(GROUP);
+    await h.handle([message({ text: 'hola' })]);
+    assert.equal(fake.metadataCalls, 2, 'invalidar fuerza una nueva consulta');
+  }, { metadataFails: true });
+});

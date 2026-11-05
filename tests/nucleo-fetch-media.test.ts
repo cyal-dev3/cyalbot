@@ -28,6 +28,18 @@ before(async () => {
       res.write(Buffer.alloc(600));
       res.write(Buffer.alloc(600));
       res.end();
+    } else if (req.url === '/to-localhost') {
+      res.writeHead(302, { location: `http://localhost:${(server.address() as AddressInfo).port}/ok.jpg` });
+      res.end();
+    } else if (req.url === '/to-ok') {
+      res.writeHead(302, { location: '/ok.jpg' });
+      res.end();
+    } else if (req.url?.startsWith('/loop')) {
+      res.writeHead(302, { location: `/loop${(req.url.length % 7)}` });
+      res.end();
+    } else if (req.url === '/to-mapped') {
+      res.writeHead(301, { location: 'http://[::ffff:127.0.0.1]:1/x.jpg' });
+      res.end();
     } else if (req.url === '/slow') {
       setTimeout(() => { res.writeHead(200); res.end('tarde'); }, 500).unref();
     } else {
@@ -87,4 +99,26 @@ test('fetchMedia rechaza HTML, 404, content-length excesivo y streams que excede
 
 test('fetchMedia corta por timeout', async () => {
   assert.equal(await fetchMedia(`${base}/slow`, { timeoutMs: 50 }), null);
+});
+
+test('isPrivateAddress reconoce la forma hexadecimal de las IPv4 mapeadas', () => {
+  assert.equal(new URL('http://[::ffff:127.0.0.1]/').hostname, '[::ffff:7f00:1]');
+  for (const ip of ['::ffff:7f00:1', '::ffff:a9fe:a9fe', '::ffff:a00:1', '::ffff:c0a8:101']) {
+    assert.equal(isPrivateAddress(ip), true, ip);
+  }
+  assert.equal(isPrivateAddress('::ffff:808:808'), false);
+  assert.equal(isPrivateHost('[::ffff:7f00:1]'), true);
+});
+
+test('rejectReason bloquea URLs con IPv6 mapeadas a rangos privados', async () => {
+  assert.equal(await rejectReason('http://[::ffff:127.0.0.1]:3000/x'), 'host privado');
+  assert.equal(await rejectReason('http://[::ffff:a9fe:a9fe]/'), 'host privado');
+});
+
+test('las redirecciones se validan salto a salto', async () => {
+  assert.equal(await fetchMedia(`${base}/to-localhost`), null, 'redirección a un host privado distinto');
+  assert.equal(await fetchMedia(`${base}/to-mapped`), null, 'redirección a IPv6 mapeada a loopback');
+  assert.equal(await fetchMedia(`${base}/loop`), null, 'bucle de redirecciones');
+  const followed = await fetchMedia(`${base}/to-ok`);
+  assert.equal(followed?.buffer.toString(), '12345', 'redirección relativa al mismo host permitido');
 });

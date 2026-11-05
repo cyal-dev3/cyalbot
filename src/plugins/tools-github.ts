@@ -71,7 +71,7 @@ export function reporterLabel(pushName: string, sender: string): string {
   return `${pushName.trim() || 'Usuario'} (${suffix})`;
 }
 
-interface IssueCommand {
+export interface IssueCommand {
   kind: 'bug' | 'feat';
   minChars: number;
   labels: string[];
