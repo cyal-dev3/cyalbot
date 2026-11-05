@@ -32,13 +32,52 @@ export const PVP = {
 
   /** Multiplicadores de combate PvP */
   HEALTH_MULTIPLIER: 2.5,
-  DAMAGE_MULTIPLIER: 0.4,
+  DAMAGE_MULTIPLIER: 0.4
+} as const;
 
-  /** Recompensas por kill en PvP */
-  KILL_REWARDS: {
-    EXP: { MIN: 50, MAX: 150 },
-    MONEY: { MIN: 100, MAX: 300 }
-  }
+/**
+ * Cooldowns de acciones que no son de combate (ms)
+ */
+export const COOLDOWNS = {
+  /** Fumar piedra */
+  FUMAR: 5 * 60 * 1000,
+
+  /** Bombardear (mismo valor que PVP.BOMB_COOLDOWN) */
+  BOMB: PVP.BOMB_COOLDOWN,
+
+  /** Alimentar a la mascota */
+  FEED: 4 * 60 * 60 * 1000,
+
+  /** Entrenar a la mascota */
+  TRAIN: 60 * 60 * 1000,
+
+  /** Cambiar el modo pasivo */
+  PASSIVE_MODE: 6 * 60 * 60 * 1000
+} as const;
+
+/**
+ * Gremios
+ */
+export const GUILD = {
+  /** Costo de crear un gremio */
+  CREATE_COST: 10000,
+
+  /** Maximo de miembros por gremio */
+  MAX_MEMBERS: 50,
+
+  /** XP necesaria por nivel: guild.level * XP_PER_LEVEL */
+  XP_PER_LEVEL: 5000
+} as const;
+
+/**
+ * Forja
+ */
+export const FORGE = {
+  /** Nivel maximo de mejora de un item */
+  MAX_ENHANCE_LEVEL: 10,
+
+  /** Bonus a los stats del item por cada nivel de mejora (%) */
+  ENHANCE_BONUS_PER_LEVEL: 5
 } as const;
 
 /**
@@ -101,10 +140,7 @@ export const REGEN = {
   STAMINA_PER_HOUR: 10,
 
   /** Intervalo de verificacion (1 minuto) */
-  CHECK_INTERVAL_MS: 60 * 1000,
-
-  /** Tiempo minimo entre regeneraciones (~36 segundos) */
-  MIN_TIME_HOURS: 0.01
+  CHECK_INTERVAL_MS: 60 * 1000
 } as const;
 
 /**
@@ -140,10 +176,7 @@ export const LIMITS = {
   MAX_INVENTORY_SIZE: 500,
 
   /** Maximo de registros en kissHistory */
-  MAX_KISS_HISTORY: 100,
-
-  /** Maximo de cache de grupos (LRU) */
-  MAX_GROUP_CACHE: 1000
+  MAX_KISS_HISTORY: 100
 } as const;
 
 /**
@@ -155,14 +188,6 @@ export const CLASS = {
 
   /** Costo de cambio de clase */
   CHANGE_COST: 10000
-} as const;
-
-/**
- * Configuracion de buffs
- */
-export const BUFFS = {
-  /** Multiplicador de boost de experiencia */
-  EXP_BOOST: 0.1
 } as const;
 
 /**

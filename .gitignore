@@ -41,3 +41,7 @@ lidsresolve.json
 
 # Datos en Docker
 data/
+
+# Servicio de descargas (proyecto Node independiente)
+downloader/node_modules/
+downloader/dist/

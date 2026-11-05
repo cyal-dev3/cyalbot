@@ -11,19 +11,23 @@
 export function msToTime(duration: number): string {
   if (duration < 0) duration = 0;
 
+  const days = Math.floor(duration / (1000 * 60 * 60 * 24));
   const hours = Math.floor((duration / (1000 * 60 * 60)) % 24);
   const minutes = Math.floor((duration / (1000 * 60)) % 60);
   const seconds = Math.floor((duration / 1000) % 60);
 
   const parts: string[] = [];
 
+  if (days > 0) {
+    parts.push(`${days} día${days > 1 ? 's' : ''}`);
+  }
   if (hours > 0) {
     parts.push(`${hours} hora${hours > 1 ? 's' : ''}`);
   }
   if (minutes > 0) {
     parts.push(`${minutes} minuto${minutes > 1 ? 's' : ''}`);
   }
-  if (seconds > 0 && hours === 0) {
+  if (seconds > 0 && hours === 0 && days === 0) {
     parts.push(`${seconds} segundo${seconds > 1 ? 's' : ''}`);
   }
 
@@ -218,24 +222,76 @@ export function checkCooldown(
 export interface TargetContext {
   mentionedJid: string[];
   quoted?: { sender?: string };
+  /** JID del chat; se usa para descartar citas sin participante (que apuntan al grupo). */
+  chat?: string;
+  sender?: string;
+}
+
+export interface TargetOptions {
+  /** Aceptar un número de teléfono escrito en los argumentos (ej. 5213312345678). */
+  args?: string[];
+  /** Permitir que el objetivo sea el propio remitente. */
+  allowSelf?: boolean;
 }
 
 /**
- * Obtiene el JID del usuario objetivo de una acción
- * Busca en menciones primero, luego en mensaje citado
- * @param ctx - Contexto del mensaje con mentionedJid y quoted
- * @returns JID del usuario objetivo o null si no se encuentra
+ * Obtiene el JID del usuario objetivo de una acción: mención, luego mensaje
+ * citado, luego (si se pasan args) un número de teléfono en los argumentos.
+ * Nunca devuelve el JID de un grupo.
  */
-export function getTargetUser(ctx: TargetContext): string | null {
-  // Primero menciones
-  if (ctx.mentionedJid.length > 0) {
-    return ctx.mentionedJid[0];
+export function getTargetUser(ctx: TargetContext, options: TargetOptions = {}): string | null {
+  const candidates: string[] = [];
+  if (ctx.mentionedJid.length > 0) candidates.push(ctx.mentionedJid[0]);
+  if (ctx.quoted?.sender) candidates.push(ctx.quoted.sender);
+  if (options.args) {
+    const number = options.args.find((a) => /^\+?\d{7,16}$/.test(a.replace(/[\s-]/g, '')));
+    if (number) candidates.push(`${number.replace(/\D/g, '')}@s.whatsapp.net`);
   }
-
-  // Luego mensaje citado
-  if (ctx.quoted?.sender) {
-    return ctx.quoted.sender;
+  for (const jid of candidates) {
+    if (!jid || jid.endsWith('@g.us') || jid === ctx.chat) continue;
+    if (!options.allowSelf && ctx.sender && jid === ctx.sender) continue;
+    return jid;
   }
-
   return null;
+}
+
+/** Como getTargetUser, pero si no hay objetivo devuelve al propio remitente. */
+export function getTargetUserOrSelf(ctx: TargetContext & { sender: string }, options: TargetOptions = {}): string {
+  return getTargetUser(ctx, { ...options, allowSelf: true }) ?? ctx.sender;
+}
+
+/** Texto "@numero" que WhatsApp convierte en mención si el JID va en `mentions`. */
+export function mentionTag(jid: string): string {
+  return `@${jid.split('@')[0].split(':')[0]}`;
+}
+
+/** Nombre legible: nombre registrado, luego pushName, luego el número. */
+export function displayName(jid: string, registeredName?: string | null, pushName?: string | null): string {
+  return (registeredName && registeredName.trim()) || (pushName && pushName.trim()) || jid.split('@')[0].split(':')[0];
+}
+
+/**
+ * Interpreta una cantidad escrita por el usuario: "1000", "1k", "2.5m",
+ * "todo"/"all"/"max", "mitad", "50%". Devuelve null si no es válida.
+ * @param max - saldo disponible, para "todo", "mitad" y porcentajes
+ */
+export function parseAmount(raw: string | undefined, max?: number): number | null {
+  if (!raw) return null;
+  const text = raw.trim().toLowerCase().replace(/[,_]/g, '');
+  if (!text) return null;
+  if (['todo', 'all', 'max', 'maximo', 'máximo'].includes(text)) return max !== undefined ? Math.floor(max) : null;
+  if (['mitad', 'half'].includes(text)) return max !== undefined ? Math.floor(max / 2) : null;
+  const percent = text.match(/^(\d{1,3})%$/);
+  if (percent) {
+    if (max === undefined) return null;
+    const pct = Math.min(100, parseInt(percent[1], 10));
+    return Math.floor((max * pct) / 100);
+  }
+  const match = text.match(/^(\d+(?:\.\d+)?)([km])?$/);
+  if (!match) return null;
+  let value = parseFloat(match[1]);
+  if (match[2] === 'k') value *= 1_000;
+  if (match[2] === 'm') value *= 1_000_000;
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.floor(value);
 }

@@ -1,71 +1,55 @@
-/**
- * Sistema de Eventos Automáticos Aleatorios
- *
- * Genera eventos aleatorios de bonificación (x2 a x10) con duraciones
- * variables (1m, 2m, 5m, 10m, 30m) de manera automática y aleatoria.
- */
-
 import type { WASocket } from 'baileys';
-import { globalModes } from '../plugins/owner-rpg.js';
+import { globalModes, AUTO_ACTIVATOR, type GlobalModeKey, type GlobalModes } from './global-modes.js';
 import { msToTime, pickRandom, randomInt, weightedRandom } from './utils.js';
 import { getDatabase } from './database.js';
+import { createLogger } from './logger.js';
 
-// ==================== CONFIGURACIÓN ====================
+const log = createLogger('events');
 
 interface AutoEventConfig {
   enabled: boolean;
-  minInterval: number;      // Mínimo tiempo entre eventos (ms)
-  maxInterval: number;      // Máximo tiempo entre eventos (ms)
-  announcementGroups: string[]; // Grupos donde anunciar eventos
+  minInterval: number;
+  maxInterval: number;
+  announcementGroups: string[];
 }
 
-// Configuración por defecto
 export const autoEventConfig: AutoEventConfig = {
   enabled: false,
-  minInterval: 30 * 60 * 1000,   // Mínimo 30 minutos
-  maxInterval: 120 * 60 * 1000,  // Máximo 2 horas
-  announcementGroups: []         // Grupos donde se anunciarán los eventos
+  minInterval: 30 * 60 * 1000,
+  maxInterval: 120 * 60 * 1000,
+  announcementGroups: []
 };
 
-/**
- * Guarda la configuración de eventos en la base de datos
- */
 function saveConfig(): void {
   try {
     const db = getDatabase();
-    const settings = db.getSettings();
-    settings.autoEvents = {
-      enabled: autoEventConfig.enabled,
-      minInterval: autoEventConfig.minInterval,
-      maxInterval: autoEventConfig.maxInterval,
-      announcementGroups: [...autoEventConfig.announcementGroups]
-    };
-    db.updateSettings(settings);
-    console.log('[AutoEvents] ✅ Configuración guardada en base de datos');
+    db.updateSettings({
+      autoEvents: {
+        enabled: autoEventConfig.enabled,
+        minInterval: autoEventConfig.minInterval,
+        maxInterval: autoEventConfig.maxInterval,
+        announcementGroups: [...autoEventConfig.announcementGroups]
+      }
+    });
   } catch (error) {
-    console.error('[AutoEvents] ❌ Error al guardar configuración:', error);
+    log.error('error al guardar configuración:', error);
   }
 }
 
-/**
- * Carga la configuración de eventos desde la base de datos
- */
 export function loadConfig(): void {
   try {
-    const db = getDatabase();
-    const settings = db.getSettings();
-
-    if (settings.autoEvents) {
-      autoEventConfig.enabled = settings.autoEvents.enabled;
-      autoEventConfig.minInterval = settings.autoEvents.minInterval;
-      autoEventConfig.maxInterval = settings.autoEvents.maxInterval;
-      autoEventConfig.announcementGroups = [...settings.autoEvents.announcementGroups];
-      console.log(`[AutoEvents] ✅ Configuración cargada: enabled=${autoEventConfig.enabled}, grupos=${autoEventConfig.announcementGroups.length}`);
-    } else {
-      console.log('[AutoEvents] ℹ️ No hay configuración guardada, usando valores por defecto');
+    const saved = getDatabase().getSettings().autoEvents;
+    if (!saved) {
+      log.debug('sin configuración guardada, usando valores por defecto');
+      return;
     }
+    autoEventConfig.enabled = saved.enabled;
+    autoEventConfig.minInterval = saved.minInterval;
+    autoEventConfig.maxInterval = saved.maxInterval;
+    autoEventConfig.announcementGroups = [...saved.announcementGroups];
+    log.info(`configuración cargada: enabled=${autoEventConfig.enabled}, grupos=${autoEventConfig.announcementGroups.length}`);
   } catch (error) {
-    console.error('[AutoEvents] ❌ Error al cargar configuración:', error);
+    log.error('error al cargar configuración:', error);
   }
 }
 
@@ -77,43 +61,43 @@ interface EventType {
   emoji: string;
   description: string;
   color: string;
+  /** Modo global que ocupa el evento */
+  mode: GlobalModeKey;
 }
 
 const EVENT_TYPES: EventType[] = [
-  { id: 'xp', name: 'Lluvia de Experiencia', emoji: '✨', description: 'XP aumentada', color: '🟣' },
-  { id: 'money', name: 'Fiebre del Oro', emoji: '💰', description: 'Dinero aumentado', color: '🟡' },
-  { id: 'drops', name: 'Cazador de Tesoros', emoji: '📦', description: 'Drops aumentados', color: '🟤' },
-  { id: 'pvp', name: 'Arena Sangrienta', emoji: '⚔️', description: 'Daño PvP aumentado', color: '🔴' },
-  { id: 'all', name: 'Bendición Divina', emoji: '🌟', description: 'TODO aumentado', color: '⚪' },
-  { id: 'rob', name: 'Noche de Ladrones', emoji: '🦹', description: 'Robo sin límites', color: '🟢' },
-  { id: 'mana', name: 'Tormenta Arcana', emoji: '💠', description: 'Maná aumentado', color: '🔵' },
-  { id: 'combo', name: 'Caos Total', emoji: '🌀', description: 'XP + Dinero combo', color: '🟠' }
+  { id: 'xp', name: 'Lluvia de Experiencia', emoji: '✨', description: 'XP aumentada', color: '🟣', mode: 'bonusMode' },
+  { id: 'money', name: 'Fiebre del Oro', emoji: '💰', description: 'Dinero aumentado', color: '🟡', mode: 'bonusMode' },
+  { id: 'drops', name: 'Cazador de Tesoros', emoji: '📦', description: 'Drops aumentados', color: '🟤', mode: 'eventMode' },
+  { id: 'pvp', name: 'Arena Sangrienta', emoji: '⚔️', description: 'Daño PvP aumentado', color: '🔴', mode: 'pvpMode' },
+  { id: 'all', name: 'Bendición Divina', emoji: '🌟', description: 'TODO aumentado', color: '⚪', mode: 'chaosMode' },
+  { id: 'rob', name: 'Noche de Ladrones', emoji: '🦹', description: 'Robo sin límites', color: '🟢', mode: 'freeRobMode' },
+  { id: 'mana', name: 'Tormenta Arcana', emoji: '💠', description: 'Maná aumentado', color: '🔵', mode: 'bonusMode' },
+  { id: 'combo', name: 'Caos Total', emoji: '🌀', description: 'XP + Dinero combo', color: '🟠', mode: 'bonusMode' }
 ];
 
-// Multiplicadores posibles (más probabilidad a los bajos)
 const MULTIPLIERS = [
-  { value: 2, weight: 30 },   // x2 - 30% probabilidad
-  { value: 3, weight: 25 },   // x3 - 25% probabilidad
-  { value: 4, weight: 18 },   // x4 - 18% probabilidad
-  { value: 5, weight: 12 },   // x5 - 12% probabilidad
-  { value: 6, weight: 7 },    // x6 - 7% probabilidad
-  { value: 7, weight: 4 },    // x7 - 4% probabilidad
-  { value: 8, weight: 2 },    // x8 - 2% probabilidad
-  { value: 10, weight: 2 }    // x10 - 2% probabilidad (ÉPICO)
+  { value: 2, weight: 30 },
+  { value: 3, weight: 25 },
+  { value: 4, weight: 18 },
+  { value: 5, weight: 12 },
+  { value: 6, weight: 7 },
+  { value: 7, weight: 4 },
+  { value: 8, weight: 2 },
+  { value: 10, weight: 2 }
 ];
 
-// Duraciones posibles (en milisegundos)
 const DURATIONS = [
-  { ms: 1 * 60 * 1000, name: '1 minuto', weight: 15 },      // 1m - 15%
-  { ms: 2 * 60 * 1000, name: '2 minutos', weight: 20 },     // 2m - 20%
-  { ms: 5 * 60 * 1000, name: '5 minutos', weight: 30 },     // 5m - 30%
-  { ms: 10 * 60 * 1000, name: '10 minutos', weight: 25 },   // 10m - 25%
-  { ms: 30 * 60 * 1000, name: '30 minutos', weight: 10 }    // 30m - 10% (RARO)
+  { ms: 1 * 60 * 1000, name: '1 minuto', weight: 15 },
+  { ms: 2 * 60 * 1000, name: '2 minutos', weight: 20 },
+  { ms: 5 * 60 * 1000, name: '5 minutos', weight: 30 },
+  { ms: 10 * 60 * 1000, name: '10 minutos', weight: 25 },
+  { ms: 30 * 60 * 1000, name: '30 minutos', weight: 10 }
 ];
 
 // ==================== GENERADOR DE EVENTOS ====================
 
-interface GeneratedEvent {
+export interface GeneratedEvent {
   type: EventType;
   multiplier: number;
   duration: number;
@@ -122,15 +106,25 @@ interface GeneratedEvent {
   isLegendary: boolean;
 }
 
-/**
- * Genera un evento aleatorio
- */
-function generateRandomEvent(): GeneratedEvent {
-  const type = pickRandom(EVENT_TYPES);
+/** Un modo puede ser pisado por un evento automático solo si está libre o lo activó el propio sistema */
+export function canAutoOverride(mode: GlobalModeKey, now: number = Date.now()): boolean {
+  const current = globalModes[mode];
+  if (!current.active || now >= current.expiresAt) return true;
+  return current.activatedBy === AUTO_ACTIVATOR;
+}
+
+function availableEventTypes(now: number = Date.now()): EventType[] {
+  return EVENT_TYPES.filter(t => canAutoOverride(t.mode, now));
+}
+
+/** Genera un evento aleatorio entre los tipos dados (por defecto, los que no ocupa un owner) */
+function generateRandomEvent(candidates: EventType[] = availableEventTypes()): GeneratedEvent | null {
+  if (candidates.length === 0) return null;
+
+  const type = pickRandom(candidates);
   const multiplierData = weightedRandom(MULTIPLIERS);
   const durationData = weightedRandom(DURATIONS);
 
-  // Determinar rareza
   const isEpic = multiplierData.value >= 7 || durationData.ms >= 30 * 60 * 1000;
   const isLegendary = multiplierData.value >= 10 && durationData.ms >= 10 * 60 * 1000;
 
@@ -144,107 +138,70 @@ function generateRandomEvent(): GeneratedEvent {
   };
 }
 
-/**
- * Aplica el evento al sistema de modos globales
- */
-function applyEvent(event: GeneratedEvent): void {
-  const expiresAt = Date.now() + event.duration;
-
+function buildModeState(event: GeneratedEvent, expiresAt: number): GlobalModes[GlobalModeKey] {
+  const common = { active: true, expiresAt, activatedBy: AUTO_ACTIVATOR };
   switch (event.type.id) {
     case 'xp':
-      globalModes.bonusMode = {
-        active: true,
-        expMultiplier: event.multiplier,
-        moneyMultiplier: 1,
-        manaMultiplier: 1,
-        expiresAt,
-        activatedBy: 'SISTEMA_AUTO'
-      };
-      break;
-
+      return { ...common, expMultiplier: event.multiplier, moneyMultiplier: 1, manaMultiplier: 1 };
     case 'money':
-      globalModes.bonusMode = {
-        active: true,
-        expMultiplier: 1,
-        moneyMultiplier: event.multiplier,
-        manaMultiplier: 1,
-        expiresAt,
-        activatedBy: 'SISTEMA_AUTO'
-      };
-      break;
-
+      return { ...common, expMultiplier: 1, moneyMultiplier: event.multiplier, manaMultiplier: 1 };
     case 'mana':
-      globalModes.bonusMode = {
-        active: true,
-        expMultiplier: 1,
-        moneyMultiplier: 1,
-        manaMultiplier: event.multiplier,
-        expiresAt,
-        activatedBy: 'SISTEMA_AUTO'
-      };
-      break;
-
+      return { ...common, expMultiplier: 1, moneyMultiplier: 1, manaMultiplier: event.multiplier };
     case 'combo':
-      globalModes.bonusMode = {
-        active: true,
-        expMultiplier: event.multiplier,
-        moneyMultiplier: event.multiplier,
-        manaMultiplier: 1,
-        expiresAt,
-        activatedBy: 'SISTEMA_AUTO'
-      };
-      break;
-
+      return { ...common, expMultiplier: event.multiplier, moneyMultiplier: event.multiplier, manaMultiplier: 1 };
     case 'drops':
-      globalModes.eventMode = {
-        active: true,
-        dropMultiplier: event.multiplier,
-        eventName: event.type.name,
-        expiresAt,
-        activatedBy: 'SISTEMA_AUTO'
-      };
-      break;
-
+      return { ...common, dropMultiplier: event.multiplier, eventName: event.type.name };
     case 'pvp':
-      globalModes.pvpMode = {
-        active: true,
-        damageMultiplier: event.multiplier,
-        expiresAt,
-        activatedBy: 'SISTEMA_AUTO'
-      };
-      break;
-
+      return { ...common, damageMultiplier: event.multiplier };
     case 'rob':
-      globalModes.freeRobMode = {
-        active: true,
-        expiresAt,
-        activatedBy: 'SISTEMA_AUTO'
-      };
-      break;
-
+      return common;
     case 'all':
-      globalModes.chaosMode = {
-        active: true,
-        multiplier: event.multiplier,
-        expiresAt,
-        activatedBy: 'SISTEMA_AUTO'
-      };
-      break;
+      return { ...common, multiplier: event.multiplier };
+    default:
+      return common;
   }
 }
 
-/**
- * Genera el mensaje de anuncio del evento
- */
-function generateEventAnnouncement(event: GeneratedEvent): string {
-  let rarity = '📢';
-  let rarityText = '';
+const restoreTimers = new Set<NodeJS.Timeout>();
 
+/**
+ * Aplica el evento al modo global que le corresponde y programa la restauración
+ * del estado previo al expirar (otro evento automático que seguía vigente).
+ * Devuelve false si el modo está ocupado por un owner.
+ */
+export function applyEvent(event: GeneratedEvent, now: number = Date.now()): boolean {
+  const key = event.type.mode;
+  if (!canAutoOverride(key, now)) return false;
+
+  const previous = structuredClone(globalModes[key]);
+  const expiresAt = now + event.duration;
+  (globalModes as unknown as Record<GlobalModeKey, GlobalModes[GlobalModeKey]>)[key] = buildModeState(event, expiresAt);
+
+  const timer = setTimeout(() => {
+    restoreTimers.delete(timer);
+    const current = globalModes[key];
+    // Si un owner tomó el modo mientras tanto, no se toca
+    if (current.activatedBy !== AUTO_ACTIVATOR || current.expiresAt !== expiresAt) return;
+
+    const restoreNow = Date.now();
+    if (previous.active && previous.expiresAt > restoreNow) {
+      (globalModes as unknown as Record<GlobalModeKey, GlobalModes[GlobalModeKey]>)[key] = previous;
+      log.debug(`modo ${key} restaurado al estado previo`);
+    } else {
+      current.active = false;
+    }
+  }, event.duration);
+  timer.unref();
+  restoreTimers.add(timer);
+
+  return true;
+}
+
+function generateEventAnnouncement(event: GeneratedEvent): string {
+  let rarityText = '';
   if (event.isLegendary) {
-    rarity = '🏆';
     rarityText = '\n\n*¡¡¡EVENTO LEGENDARIO!!!*';
   } else if (event.isEpic) {
-    rarity = '💎';
     rarityText = '\n\n*¡EVENTO ÉPICO!*';
   }
 
@@ -277,176 +234,155 @@ ${bonusInfo}
 ${rarityText}
 
 _¡Aprovecha el evento antes de que termine!_
-_Usa .rpgowner para ver los modos activos_
+_Usa /eventos para ver los modos activos y su tiempo restante_
 `.trim();
 }
 
 // ==================== SISTEMA PRINCIPAL ====================
 
 let eventTimer: NodeJS.Timeout | null = null;
+let nextEventAt: number | null = null;
 let connInstance: WASocket | null = null;
 
-/**
- * Programa el próximo evento aleatorio
- */
-function scheduleNextEvent(): void {
-  if (!autoEventConfig.enabled) return;
-
-  // Calcular tiempo aleatorio hasta el próximo evento
-  const nextEventIn = randomInt(
-    autoEventConfig.minInterval,
-    autoEventConfig.maxInterval
-  );
-
-  console.log(`[AutoEvents] Próximo evento en ${msToTime(nextEventIn)}`);
-
-  eventTimer = setTimeout(async () => {
-    await triggerRandomEvent();
-    scheduleNextEvent(); // Programar siguiente evento
-  }, nextEventIn);
-}
-
-/**
- * Dispara un evento aleatorio
- */
-async function triggerRandomEvent(): Promise<void> {
-  if (!connInstance) return;
-
-  const event = generateRandomEvent();
-  applyEvent(event);
-
-  const announcement = generateEventAnnouncement(event);
-
-  console.log(`[AutoEvents] 🎲 Evento activado: ${event.type.name} x${event.multiplier} por ${event.durationName}`);
-
-  // Anunciar en todos los grupos configurados
-  for (const groupId of autoEventConfig.announcementGroups) {
-    try {
-      await connInstance.sendMessage(groupId, { text: announcement });
-    } catch (error) {
-      console.error(`[AutoEvents] Error al anunciar en ${groupId}:`, error);
-    }
-  }
-}
-
-/**
- * Inicia el sistema de eventos automáticos
- */
-export function startAutoEvents(conn: WASocket): void {
-  connInstance = conn;
-
-  // Cargar configuración desde la base de datos
-  loadConfig();
-
-  if (autoEventConfig.enabled) {
-    console.log('[AutoEvents] 🎲 Sistema de eventos automáticos ACTIVADO');
-    scheduleNextEvent();
-  } else {
-    console.log('[AutoEvents] ⏸️ Sistema de eventos automáticos DESACTIVADO');
-  }
-}
-
-/**
- * Detiene el sistema de eventos automáticos
- */
-export function stopAutoEvents(): void {
+function clearEventTimer(): void {
   if (eventTimer) {
     clearTimeout(eventTimer);
     eventTimer = null;
   }
-  console.log('[AutoEvents] ⏹️ Sistema de eventos automáticos DETENIDO');
+  nextEventAt = null;
 }
 
-/**
- * Activa/desactiva el sistema
- */
+function scheduleNextEvent(): void {
+  clearEventTimer();
+  if (!autoEventConfig.enabled) return;
+
+  const nextEventIn = randomInt(autoEventConfig.minInterval, autoEventConfig.maxInterval);
+  nextEventAt = Date.now() + nextEventIn;
+  log.info(`próximo evento en ${msToTime(nextEventIn)}`);
+
+  eventTimer = setTimeout(async () => {
+    eventTimer = null;
+    nextEventAt = null;
+    try {
+      await triggerRandomEvent();
+    } catch (error) {
+      log.error('error al disparar evento:', error);
+    }
+    scheduleNextEvent();
+  }, nextEventIn);
+}
+
+async function announce(event: GeneratedEvent): Promise<void> {
+  if (!connInstance) return;
+  const announcement = generateEventAnnouncement(event);
+  for (const groupId of autoEventConfig.announcementGroups) {
+    try {
+      await connInstance.sendMessage(groupId, { text: announcement });
+    } catch (error) {
+      log.error(`error al anunciar en ${groupId}:`, error);
+    }
+  }
+}
+
+async function triggerRandomEvent(): Promise<void> {
+  if (!connInstance) return;
+
+  const event = generateRandomEvent();
+  if (!event || !applyEvent(event)) {
+    log.info('evento omitido: todos los modos están ocupados por un owner');
+    return;
+  }
+
+  log.info(`evento activado: ${event.type.name} x${event.multiplier} por ${event.durationName}`);
+  await announce(event);
+}
+
+export function startAutoEvents(conn: WASocket): void {
+  connInstance = conn;
+  loadConfig();
+
+  if (autoEventConfig.enabled) {
+    log.info('eventos automáticos activados');
+    scheduleNextEvent();
+  } else {
+    log.info('eventos automáticos desactivados');
+  }
+}
+
+export function stopAutoEvents(): void {
+  clearEventTimer();
+  log.info('eventos automáticos detenidos');
+}
+
+/** Idempotente: activar dos veces no reprograma el evento pendiente */
 export function toggleAutoEvents(enabled: boolean): void {
+  const changed = autoEventConfig.enabled !== enabled;
   autoEventConfig.enabled = enabled;
-  saveConfig(); // Persistir cambio
+  if (changed) saveConfig();
 
   if (enabled) {
-    scheduleNextEvent();
+    if (!eventTimer) scheduleNextEvent();
   } else {
     stopAutoEvents();
   }
 }
 
-/**
- * Agrega un grupo a la lista de anuncios
- */
 export function addAnnouncementGroup(groupId: string): boolean {
-  if (!autoEventConfig.announcementGroups.includes(groupId)) {
-    autoEventConfig.announcementGroups.push(groupId);
-    saveConfig(); // Persistir cambio
-    return true;
-  }
-  return false;
+  if (autoEventConfig.announcementGroups.includes(groupId)) return false;
+  autoEventConfig.announcementGroups.push(groupId);
+  saveConfig();
+  return true;
 }
 
-/**
- * Remueve un grupo de la lista de anuncios
- */
 export function removeAnnouncementGroup(groupId: string): boolean {
   const index = autoEventConfig.announcementGroups.indexOf(groupId);
-  if (index > -1) {
-    autoEventConfig.announcementGroups.splice(index, 1);
-    saveConfig(); // Persistir cambio
-    return true;
-  }
-  return false;
+  if (index === -1) return false;
+  autoEventConfig.announcementGroups.splice(index, 1);
+  saveConfig();
+  return true;
 }
 
-/**
- * Configura los intervalos de tiempo
- */
 export function setEventIntervals(minMinutes: number, maxMinutes: number): void {
   autoEventConfig.minInterval = minMinutes * 60 * 1000;
   autoEventConfig.maxInterval = maxMinutes * 60 * 1000;
-  saveConfig(); // Persistir cambio
+  saveConfig();
 
-  // Reiniciar el timer si está activo
-  if (autoEventConfig.enabled && eventTimer) {
-    stopAutoEvents();
+  if (autoEventConfig.enabled) {
     scheduleNextEvent();
   }
 }
 
-/**
- * Fuerza un evento aleatorio inmediato
- */
-export async function forceRandomEvent(): Promise<GeneratedEvent> {
-  const event = generateRandomEvent();
-  applyEvent(event);
+export type ForcedEventResult = GeneratedEvent & {
+  /** false cuando todos los modos están ocupados por un owner y no se activó nada */
+  applied: boolean;
+};
 
-  if (connInstance) {
-    const announcement = generateEventAnnouncement(event);
-    for (const groupId of autoEventConfig.announcementGroups) {
-      try {
-        await connInstance.sendMessage(groupId, { text: announcement });
-      } catch (error) {
-        console.error(`[AutoEvents] Error al anunciar en ${groupId}:`, error);
-      }
-    }
-  }
-
-  return event;
+/** Fuerza un evento inmediato; si ningún modo está libre lo devuelve con applied=false y no anuncia */
+export async function forceRandomEvent(): Promise<ForcedEventResult> {
+  const available = availableEventTypes();
+  const event = generateRandomEvent(available.length > 0 ? available : EVENT_TYPES) as GeneratedEvent;
+  const applied = available.length > 0 && applyEvent(event);
+  if (applied) await announce(event);
+  return { ...event, applied };
 }
 
-/**
- * Obtiene el estado actual del sistema
- */
 export function getAutoEventStatus(): {
   enabled: boolean;
   minInterval: string;
   maxInterval: string;
   groups: number;
+  /** Texto legible del tiempo restante, o null si no hay evento programado */
   nextEventIn: string | null;
+  /** Milisegundos hasta el próximo evento, o null si no hay evento programado */
+  nextEventInMs: number | null;
 } {
+  const remaining = nextEventAt === null ? null : Math.max(0, nextEventAt - Date.now());
   return {
     enabled: autoEventConfig.enabled,
     minInterval: msToTime(autoEventConfig.minInterval),
     maxInterval: msToTime(autoEventConfig.maxInterval),
     groups: autoEventConfig.announcementGroups.length,
-    nextEventIn: eventTimer ? 'Programado' : null
+    nextEventIn: remaining === null ? null : msToTime(remaining),
+    nextEventInMs: remaining
   };
 }

@@ -1,0 +1,37 @@
+# Bot de WhatsApp + servicio de descargas propio.
+# Arrancar: docker compose up -d --build
+# Logs:     docker compose logs -f bot
+# El bot llega al downloader por la red interna (http://downloader:3002); no hace falta exponerlo al host.
+
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      DOWNLOADER_API_URL: http://downloader:3002
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      downloader:
+        condition: service_healthy
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+
+  downloader:
+    build: ./downloader
+    environment:
+      PUBLIC_URL: http://downloader:3002
+      MAX_FILE_MB: "60"
+      DOWNLOAD_TIMEOUT_MS: "120000"
+      MAX_CONCURRENT: "2"
+      LOG_LEVEL: info
+      # Opcional: DOWNLOADER_API_KEY (ponla tambien en el bot), YTDLP_COOKIES=/cookies/cookies.txt
+    volumes:
+      - downloads:/downloads
+      # Para cookies: descomenta y coloca el archivo en ./downloader/cookies/cookies.txt
+      # - ./downloader/cookies:/cookies:ro
+    restart: unless-stopped
+
+volumes:
+  downloads:

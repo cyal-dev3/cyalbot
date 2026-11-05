@@ -4,6 +4,7 @@
  */
 
 import type { PlayerClass, ClassInfo } from './rpg.js';
+import { calculateTotalStats as calculateTotalStatsImpl, type TotalStats } from '../lib/rpg-utils.js';
 
 /**
  * Item en el inventario del jugador
@@ -50,7 +51,7 @@ export interface CombatStats {
  * Buff activo en el jugador
  */
 export interface ActiveBuff {
-  type: 'expBoost' | 'attackBoost' | 'defenseBoost';
+  type: 'expBoost' | 'attackBoost' | 'defenseBoost' | 'forgeBoost';
   value: number;
   expiresAt: number;
 }
@@ -65,11 +66,13 @@ export interface UserRPG {
   // 📊 Sistema de niveles
   level: number;
   exp: number;
-  role: string;
+  /** @deprecated El rango se deriva del nivel con getRoleByLevel(level); no escribir. */
+  role?: string;
 
   // 🎭 Clase del jugador
   playerClass: PlayerClass | null;
-  classSelectedAt: number;
+  /** @deprecated Nadie lo lee; dejará de existir cuando los plugins dejen de escribirlo. */
+  classSelectedAt?: number;
 
   // ⚔️ Estadísticas base
   health: number;
@@ -245,11 +248,9 @@ export const DEFAULT_USER: UserRPG = {
   // Niveles
   level: 0,
   exp: 0,
-  role: 'Guerrero V',
 
   // Clase
   playerClass: null,
-  classSelectedAt: 0,
 
   // Stats base
   health: 100,
@@ -360,12 +361,6 @@ export const DEFAULT_USER: UserRPG = {
 
   // Forja - Materiales
   forgeMaterials: {},
-
-  // Betting
-  betting: undefined,
-
-  // Pet
-  pet: undefined,
 
   // Gremio
   guildId: null
@@ -750,58 +745,14 @@ export function formatRankBenefits(level: number): string {
 }
 
 /**
- * Calcula los stats totales del jugador incluyendo clase y equipamiento
+ * @deprecated Usa calculateTotalStats(user) de lib/rpg-utils.ts. Los parámetros
+ * items/classes se ignoran: la clase y el equipo (con su nivel de forja) se
+ * aplican siempre desde la única tabla de ITEMS/CLASSES.
  */
 export function calculateTotalStats(
   user: UserRPG,
-  items: Record<string, { stats?: { attack?: number; defense?: number; health?: number; mana?: number; stamina?: number; critChance?: number } }>,
-  classes?: Record<string, ClassInfo>
-): {
-  attack: number;
-  defense: number;
-  maxHealth: number;
-  maxMana: number;
-  maxStamina: number;
-  critChance: number;
-} {
-  let totalAttack = user.attack;
-  let totalDefense = user.defense;
-  let totalHealth = user.maxHealth;
-  let totalMana = user.maxMana;
-  let totalStamina = user.maxStamina;
-  let totalCrit = user.critChance;
-
-  // Sumar bonus de clase si existe
-  if (classes && user.playerClass && classes[user.playerClass]) {
-    const classInfo = classes[user.playerClass];
-    totalHealth += classInfo.baseStats.healthBonus;
-    totalMana += classInfo.baseStats.manaBonus;
-    totalStamina += classInfo.baseStats.staminaBonus;
-    totalAttack += classInfo.baseStats.attackBonus;
-    totalDefense += classInfo.baseStats.defenseBonus;
-  }
-
-  // Sumar stats del equipamiento
-  const equipmentSlots = [user.equipment.weapon, user.equipment.armor, user.equipment.accessory];
-
-  for (const itemId of equipmentSlots) {
-    if (itemId && items[itemId]?.stats) {
-      const stats = items[itemId].stats;
-      if (stats.attack) totalAttack += stats.attack;
-      if (stats.defense) totalDefense += stats.defense;
-      if (stats.health) totalHealth += stats.health;
-      if (stats.mana) totalMana += stats.mana;
-      if (stats.stamina) totalStamina += stats.stamina;
-      if (stats.critChance) totalCrit += stats.critChance;
-    }
-  }
-
-  return {
-    attack: totalAttack,
-    defense: totalDefense,
-    maxHealth: totalHealth,
-    maxMana: totalMana,
-    maxStamina: totalStamina,
-    critChance: totalCrit
-  };
+  _items?: Record<string, { stats?: { attack?: number; defense?: number; health?: number; mana?: number; stamina?: number; critChance?: number } }>,
+  _classes?: Record<string, ClassInfo>
+): TotalStats {
+  return calculateTotalStatsImpl(user);
 }

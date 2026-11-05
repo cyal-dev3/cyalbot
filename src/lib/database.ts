@@ -1,872 +1,577 @@
-/**
- * Sistema de Base de Datos
- * Wrapper tipado sobre LowDB para persistencia JSON
- */
-
 import { Low } from 'lowdb';
 import { JSONFile } from 'lowdb/node';
-import type { DatabaseSchema, ChatSettings, UserWarning, BettingSystem, TipsterStats, BettingPick } from '../types/database.js';
-import { DEFAULT_DATABASE, DEFAULT_CHAT_SETTINGS, DEFAULT_BETTING_SYSTEM, DEFAULT_TIPSTER_STATS } from '../types/database.js';
-import { DEFAULT_USER, DEFAULT_USER_BETTING, type UserRPG, type UserBetting } from '../types/user.js';
+import { copyFile, readFile, rename, stat } from 'node:fs/promises';
+import type { DatabaseSchema, ChatSettings, UserWarning, BettingSystem, TipsterStats, BettingPick, Guild } from '../types/database.js';
+import { DEFAULT_DATABASE, DEFAULT_CHAT_SETTINGS } from '../types/database.js';
+import { DEFAULT_USER, type UserRPG, type UserBetting } from '../types/user.js';
+import { CLASSES } from '../types/rpg.js';
+import { BettingStore } from './betting-store.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('db');
+
+const AUTOSAVE_INTERVAL_MS = 30_000;
+const BACKUP_MIN_INTERVAL_MS = 60_000;
+const MAX_WARNINGS_PER_GROUP = 1000;
+
+/** Versión actual del esquema; subirla implica añadir una migración en runMigrations */
+export const SCHEMA_VERSION = 2;
 
 /**
- * Clase principal de base de datos
- * Maneja la persistencia de usuarios, chats y configuración
+ * La migración a schemaVersion 2 resta los baseStats de clase que rpg-clase.ts
+ * sumaba a los stats base del usuario (desde entonces la clase se aplica solo en
+ * calculateTotalStats). Debe activarse en el mismo cambio en que rpg-clase.ts
+ * deje de sumar/restar baseStats; hasta entonces queda apagada.
+ */
+export const CLASS_STATS_MIGRATION_ENABLED = false;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Decide si un campo debe recibir su valor por defecto */
+function needsDefault(value: unknown, defaultValue: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof defaultValue === 'number') return typeof value !== 'number' || !Number.isFinite(value);
+  if (Array.isArray(defaultValue)) return !Array.isArray(value);
+  if (isPlainObject(defaultValue)) return !isPlainObject(value);
+  return false;
+}
+
+/** Rellena con copias de los defaults los campos que faltan o están corruptos */
+function applyDefaults<T extends object>(target: T, defaults: T): boolean {
+  let changed = false;
+  const record = target as unknown as Record<string, unknown>;
+  for (const [key, defaultValue] of Object.entries(defaults)) {
+    if (needsDefault(record[key], defaultValue)) {
+      record[key] = structuredClone(defaultValue);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Items retirados de ITEMS que se funden en su equivalente actual */
+const RENAMED_ITEMS: Record<string, string> = {
+  elixir_experiencia: 'elixir_exp'
+};
+
+/**
+ * Migración tabular de un usuario: cada clave de DEFAULT_USER que falte, o cuyo
+ * valor numérico no sea finito, recibe un clon del default. Devuelve si cambió algo.
+ */
+export function migrateUser(user: UserRPG): boolean {
+  let changed = applyDefaults(user, DEFAULT_USER);
+
+  for (const item of user.inventory) {
+    const renamed = RENAMED_ITEMS[item.itemId];
+    if (!renamed) continue;
+    const existing = user.inventory.find(i => i.itemId === renamed);
+    if (existing) {
+      existing.quantity += item.quantity;
+      item.quantity = 0;
+    } else {
+      item.itemId = renamed;
+    }
+    changed = true;
+  }
+  if (changed && user.inventory.some(i => i.quantity <= 0)) {
+    user.inventory = user.inventory.filter(i => i.quantity > 0);
+  }
+
+  return changed;
+}
+
+export function migrateChatSettings(chat: ChatSettings): boolean {
+  return applyDefaults(chat, DEFAULT_CHAT_SETTINGS);
+}
+
+/**
+ * Resta los baseStats de la clase a los stats base del usuario (ver
+ * CLASS_STATS_MIGRATION_ENABLED). Clampa a los mínimos de DEFAULT_USER y
+ * recorta los stats actuales al nuevo máximo. Devuelve si cambió algo.
+ */
+export function removeClassBaseStats(user: UserRPG): boolean {
+  if (!user.playerClass || !CLASSES[user.playerClass]) return false;
+  const base = CLASSES[user.playerClass].baseStats;
+
+  user.maxHealth = Math.max(DEFAULT_USER.maxHealth, user.maxHealth - base.healthBonus);
+  user.maxMana = Math.max(DEFAULT_USER.maxMana, user.maxMana - base.manaBonus);
+  user.maxStamina = Math.max(DEFAULT_USER.maxStamina, user.maxStamina - base.staminaBonus);
+  user.attack = Math.max(DEFAULT_USER.attack, user.attack - base.attackBonus);
+  user.defense = Math.max(DEFAULT_USER.defense, user.defense - base.defenseBonus);
+
+  user.health = Math.min(user.health, user.maxHealth);
+  user.mana = Math.min(user.mana, user.maxMana);
+  user.stamina = Math.min(user.stamina, user.maxStamina);
+  return true;
+}
+
+/**
+ * Persistencia JSON tipada sobre LowDB: usuarios, chats, gremios y configuración.
+ * El betting delega en BettingStore; los wrappers de aquí existen para que los
+ * plugins antiguos compilen sin cambios.
  */
 export class Database {
   private db: Low<DatabaseSchema>;
   private saveInterval: NodeJS.Timeout | null = null;
-  private isDirty: boolean = false;
+  private dirty = false;
+  private saving: Promise<boolean> | null = null;
+  private lastBackupAt = 0;
+  readonly betting: BettingStore;
 
-  constructor(filepath: string = 'database.json') {
+  constructor(private readonly filepath: string = 'database.json') {
     const adapter = new JSONFile<DatabaseSchema>(filepath);
-    this.db = new Low(adapter, { ...DEFAULT_DATABASE });
+    this.db = new Low(adapter, structuredClone(DEFAULT_DATABASE));
+    this.betting = new BettingStore(this);
   }
 
-  /**
-   * Inicializa la base de datos
-   * Carga datos existentes o crea una nueva
-   */
+  /** Carga el archivo (o su .bak si está corrupto), valida la estructura y arranca el autoguardado */
   async init(): Promise<void> {
-    await this.db.read();
+    await this.load();
+    this.ensureStructure();
+    this.runMigrations();
 
-    // Asegurar que existe la estructura básica
-    if (!this.db.data) {
-      this.db.data = { ...DEFAULT_DATABASE };
-    }
-    if (!this.db.data.users) this.db.data.users = {};
-    if (!this.db.data.chats) this.db.data.chats = {};
-    if (!this.db.data.stats) this.db.data.stats = {};
-    if (!this.db.data.guilds) this.db.data.guilds = {};
-    if (!this.db.data.settings) this.db.data.settings = DEFAULT_DATABASE.settings;
+    this.saveInterval = setInterval(() => {
+      if (this.dirty) void this.save();
+    }, AUTOSAVE_INTERVAL_MS);
 
-    // Auto-guardado cada 30 segundos
-    this.saveInterval = setInterval(async () => {
-      if (this.isDirty) {
-        await this.save();
-        this.isDirty = false;
-      }
-    }, 30000);
-
-    console.log('💾 Base de datos inicializada');
+    const size = await this.fileSize();
+    log.info(`base de datos inicializada (${this.filepath}, ${(size / 1024).toFixed(1)} KB, ${Object.keys(this.db.data.users).length} usuarios)`);
   }
 
-  /**
-   * Obtiene un usuario por su JID
-   * Si no existe, lo crea con valores por defecto
-   * Si existe pero le faltan campos, los agrega con valores por defecto
-   */
+  private async fileSize(): Promise<number> {
+    try {
+      return (await stat(this.filepath)).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  private async load(): Promise<void> {
+    try {
+      await this.db.read();
+      return;
+    } catch (error) {
+      log.error(`no se pudo leer ${this.filepath}:`, error);
+    }
+
+    const backupPath = `${this.filepath}.bak`;
+    try {
+      const raw = await readFile(backupPath, 'utf-8');
+      this.db.data = JSON.parse(raw) as DatabaseSchema;
+      log.warn(`datos restaurados desde ${backupPath}`);
+    } catch (backupError) {
+      log.error(`tampoco se pudo usar ${backupPath}:`, backupError);
+      this.db.data = structuredClone(DEFAULT_DATABASE);
+    }
+
+    const corruptPath = `${this.filepath}.corrupt-${Date.now()}`;
+    try {
+      await rename(this.filepath, corruptPath);
+      log.warn(`archivo corrupto renombrado a ${corruptPath}`);
+    } catch {
+      // Si no existe no hay nada que apartar
+    }
+    this.dirty = true;
+  }
+
+  /** Garantiza que cada sección raíz sea un objeto plano; lo que no lo sea se reemplaza por el default */
+  private ensureStructure(): void {
+    if (!isPlainObject(this.db.data)) {
+      this.db.data = structuredClone(DEFAULT_DATABASE);
+      this.dirty = true;
+    }
+    const data = this.db.data as unknown as Record<string, unknown>;
+    const sections: Record<string, unknown> = {
+      users: {},
+      chats: {},
+      guilds: {},
+      stats: {},
+      settings: DEFAULT_DATABASE.settings
+    };
+    for (const [key, fallback] of Object.entries(sections)) {
+      if (!isPlainObject(data[key])) {
+        if (data[key] !== undefined) log.warn(`sección ${key} inválida, se reemplaza por el valor por defecto`);
+        data[key] = structuredClone(fallback);
+        this.dirty = true;
+      }
+    }
+    if (applyDefaults(this.db.data.settings, DEFAULT_DATABASE.settings)) {
+      this.dirty = true;
+    }
+  }
+
+  private runMigrations(): void {
+    const settings = this.db.data.settings;
+    const current = settings.schemaVersion ?? 1;
+    if (current >= SCHEMA_VERSION) return;
+
+    if (current < 2) {
+      if (!CLASS_STATS_MIGRATION_ENABLED) {
+        log.debug('migración de stats de clase pendiente (CLASS_STATS_MIGRATION_ENABLED=false)');
+        return;
+      }
+      let migrated = 0;
+      for (const user of Object.values(this.db.data.users)) {
+        if (removeClassBaseStats(user)) migrated++;
+      }
+      log.info(`migración schemaVersion 2: stats de clase corregidos en ${migrated} usuarios`);
+    }
+
+    settings.schemaVersion = SCHEMA_VERSION;
+    this.dirty = true;
+  }
+
+  /** Marca que hay cambios sin guardar (para quien muta objetos obtenidos por referencia) */
+  markDirty(): void {
+    this.dirty = true;
+  }
+
+  get isDirty(): boolean {
+    return this.dirty;
+  }
+
+  // ==================== USUARIOS ====================
+
+  /** Devuelve el usuario, creándolo o completando campos faltantes con copias de DEFAULT_USER */
   getUser(jid: string): UserRPG {
-    if (!this.db.data.users[jid]) {
-      this.db.data.users[jid] = { ...DEFAULT_USER };
-      this.isDirty = true;
-    } else {
-      // Migrar usuarios existentes: agregar campos faltantes con valores por defecto
-      const user = this.db.data.users[jid];
-      let needsMigration = false;
-
-      for (const [key, defaultValue] of Object.entries(DEFAULT_USER)) {
-        if (!(key in user)) {
-          (user as unknown as Record<string, unknown>)[key] = defaultValue;
-          needsMigration = true;
-        }
-      }
-
-      // Asegurar que los objetos anidados existan
-      if (!user.equipment) {
-        user.equipment = { weapon: null, armor: null, accessory: null };
-        needsMigration = true;
-      }
-      if (!user.inventory) {
-        user.inventory = [];
-        needsMigration = true;
-      }
-      if (!user.combatStats) {
-        user.combatStats = {
-          totalKills: 0,
-          dungeonsCompleted: 0,
-          pvpWins: 0,
-          pvpLosses: 0,
-          totalDamageDealt: 0,
-          totalDamageReceived: 0,
-          bossesKilled: 0
-        };
-        needsMigration = true;
-      }
-      if (!user.achievements) {
-        user.achievements = [];
-        needsMigration = true;
-      }
-      if (!user.titles) {
-        user.titles = ['🌱 Novato'];
-        needsMigration = true;
-      }
-      if (!user.currentTitle) {
-        user.currentTitle = '🌱 Novato';
-        needsMigration = true;
-      }
-      if (!user.activeBuffs) {
-        user.activeBuffs = [];
-        needsMigration = true;
-      }
-      if (!user.dailyQuests) {
-        user.dailyQuests = [];
-        needsMigration = true;
-      }
-      if (!user.weeklyQuests) {
-        user.weeklyQuests = [];
-        needsMigration = true;
-      }
-
-      // Migrar timestamps de lowercase a camelCase
-      const timestampMigrations: [string, string][] = [
-        ['lastclaim', 'lastClaim'],
-        ['lastwork', 'lastWork'],
-        ['lastmine', 'lastMine'],
-        ['lastrob', 'lastRob'],
-        ['lastduel', 'lastDuel'],
-        ['lastattack', 'lastAttack'],
-        ['lastdungeon', 'lastDungeon'],
-        ['lastbomb', 'lastBomb']
-      ];
-
-      for (const [oldKey, newKey] of timestampMigrations) {
-        const userAny = user as unknown as Record<string, unknown>;
-        if (oldKey in userAny && !(newKey in userAny)) {
-          userAny[newKey] = userAny[oldKey];
-          delete userAny[oldKey];
-          needsMigration = true;
-        }
-      }
-
-      // Asegurar valores numéricos válidos para stats máximos
-      if (typeof user.maxHealth !== 'number' || isNaN(user.maxHealth) || user.maxHealth === null) {
-        user.maxHealth = 100;
-        needsMigration = true;
-      }
-      if (typeof user.maxMana !== 'number' || isNaN(user.maxMana) || user.maxMana === null) {
-        user.maxMana = 20;
-        needsMigration = true;
-      }
-      if (typeof user.maxStamina !== 'number' || isNaN(user.maxStamina) || user.maxStamina === null) {
-        user.maxStamina = 100;
-        needsMigration = true;
-      }
-
-      // Asegurar valores numéricos válidos para stats actuales
-      if (typeof user.health !== 'number' || isNaN(user.health) || user.health === null) {
-        user.health = user.maxHealth;
-        needsMigration = true;
-      }
-      if (typeof user.mana !== 'number' || isNaN(user.mana) || user.mana === null) {
-        user.mana = user.maxMana;
-        needsMigration = true;
-      }
-      if (typeof user.stamina !== 'number' || isNaN(user.stamina) || user.stamina === null) {
-        user.stamina = user.maxStamina;
-        needsMigration = true;
-      }
-
-      // Asegurar valores numéricos válidos para stats de combate
-      if (typeof user.attack !== 'number' || isNaN(user.attack) || user.attack === null) {
-        user.attack = 10;
-        needsMigration = true;
-      }
-      if (typeof user.defense !== 'number' || isNaN(user.defense) || user.defense === null) {
-        user.defense = 5;
-        needsMigration = true;
-      }
-      if (typeof user.critChance !== 'number' || isNaN(user.critChance) || user.critChance === null) {
-        user.critChance = 5;
-        needsMigration = true;
-      }
-
-      // Asegurar valores numéricos válidos para economía y nivel
-      if (typeof user.level !== 'number' || isNaN(user.level) || user.level === null) {
-        user.level = 0;
-        needsMigration = true;
-      }
-      if (typeof user.exp !== 'number' || isNaN(user.exp) || user.exp === null) {
-        user.exp = 0;
-        needsMigration = true;
-      }
-      if (typeof user.money !== 'number' || isNaN(user.money) || user.money === null) {
-        user.money = 15;
-        needsMigration = true;
-      }
-      if (typeof user.limit !== 'number' || isNaN(user.limit) || user.limit === null) {
-        user.limit = 20;
-        needsMigration = true;
-      }
-      if (typeof user.potion !== 'number' || isNaN(user.potion) || user.potion === null) {
-        user.potion = 10;
-        needsMigration = true;
-      }
-
-      // Migrar betting: asegurar que cada usuario tenga su propio array de favoritos
-      // (corrige bug de arrays compartidos por shallow copy)
-      if (user.betting) {
-        const oldFavs = user.betting.favoriteTipsters;
-        user.betting = {
-          favoriteTipsters: Array.isArray(oldFavs) ? [...oldFavs] : [],
-          notifyOnFavorite: user.betting.notifyOnFavorite ?? true,
-          stats: {
-            totalFollowed: user.betting.stats?.totalFollowed ?? 0,
-            wonFollowed: user.betting.stats?.wonFollowed ?? 0,
-            lostFollowed: user.betting.stats?.lostFollowed ?? 0
-          }
-        };
-        needsMigration = true;
-      }
-
-      if (needsMigration) {
-        this.isDirty = true;
-      }
+    const existing = this.db.data.users[jid];
+    if (!existing || !isPlainObject(existing)) {
+      this.db.data.users[jid] = structuredClone(DEFAULT_USER);
+      this.dirty = true;
+    } else if (migrateUser(existing)) {
+      this.dirty = true;
     }
     return this.db.data.users[jid];
   }
 
+  /** Reemplaza al usuario por un clon limpio de DEFAULT_USER */
+  resetUser(jid: string): UserRPG {
+    this.db.data.users[jid] = structuredClone(DEFAULT_USER);
+    this.dirty = true;
+    return this.db.data.users[jid];
+  }
+
   /**
-   * Actualiza los datos de un usuario
-   * @param jid - ID del usuario
-   * @param updates - Campos a actualizar
+   * Actualiza campos del usuario. Los stats numéricos críticos ignoran
+   * null/undefined/NaN para no pisar valores válidos.
    */
   updateUser(jid: string, updates: Partial<UserRPG>): void {
     const user = this.getUser(jid);
 
-    // Filtrar valores undefined y null para stats críticos
-    // Esto previene que se sobrescriban valores válidos con null/undefined
     const criticalNumericFields = [
       'health', 'maxHealth', 'stamina', 'maxStamina', 'mana', 'maxMana',
       'attack', 'defense', 'critChance', 'level', 'exp', 'money', 'limit', 'potion'
     ];
 
-    const safeUpdates = { ...updates };
+    const safeUpdates = { ...updates } as Record<string, unknown>;
     for (const field of criticalNumericFields) {
       if (field in safeUpdates) {
-        const value = (safeUpdates as Record<string, unknown>)[field];
-        if (value === undefined || value === null || (typeof value === 'number' && isNaN(value))) {
-          delete (safeUpdates as Record<string, unknown>)[field];
+        const value = safeUpdates[field];
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          delete safeUpdates[field];
         }
       }
     }
 
     Object.assign(user, safeUpdates);
-    this.isDirty = true;
+    this.dirty = true;
   }
 
-  /**
-   * Verifica si un usuario existe
-   */
   hasUser(jid: string): boolean {
     return jid in this.db.data.users;
   }
 
-  /**
-   * Obtiene todos los usuarios registrados
-   */
   getRegisteredUsers(): [string, UserRPG][] {
-    return Object.entries(this.db.data.users)
-      .filter(([_, user]) => user.registered);
+    return Object.entries(this.db.data.users).filter(([, user]) => user.registered);
   }
 
-  /**
-   * Obtiene el top de usuarios por XP
-   * @param limit - Cantidad de usuarios a retornar
-   */
   getTopUsers(limit: number = 10): [string, UserRPG][] {
-    return Object.entries(this.db.data.users)
-      .filter(([_, user]) => user.registered)
+    return this.getRegisteredUsers()
       .sort(([, a], [, b]) => b.exp - a.exp)
       .slice(0, limit);
   }
 
+  // ==================== PERSISTENCIA ====================
+
   /**
-   * Guarda la base de datos en disco
+   * Guarda en disco. Devuelve true si se escribió. isDirty se baja antes de
+   * escribir y se vuelve a subir si falla, para no perder cambios hechos durante
+   * la escritura ni repetir escrituras innecesarias.
    */
-  async save(): Promise<void> {
+  async save(): Promise<boolean> {
+    if (this.saving) return this.saving;
+    this.saving = this.doSave().finally(() => {
+      this.saving = null;
+    });
+    return this.saving;
+  }
+
+  private async doSave(): Promise<boolean> {
+    this.dirty = false;
     try {
+      await this.backupIfDue();
       await this.db.write();
+      return true;
     } catch (error) {
-      console.error('❌ Error guardando base de datos:', error);
+      this.dirty = true;
+      log.error('error guardando base de datos:', error);
+      return false;
     }
   }
 
-  /**
-   * Acceso directo a los datos
-   */
+  /** Copia el archivo actual a .bak como máximo una vez por minuto */
+  private async backupIfDue(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastBackupAt < BACKUP_MIN_INTERVAL_MS) return;
+    try {
+      await copyFile(this.filepath, `${this.filepath}.bak`);
+      this.lastBackupAt = now;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') log.warn('no se pudo crear el respaldo .bak:', error);
+    }
+  }
+
   get data(): DatabaseSchema {
     return this.db.data;
   }
 
-  /**
-   * Detiene el auto-guardado y hace flush final a disco
-   */
+  /** Detiene el autoguardado y hace flush final a disco */
   async stop(): Promise<void> {
     if (this.saveInterval) {
       clearInterval(this.saveInterval);
       this.saveInterval = null;
     }
-    if (this.isDirty) {
+    if (this.dirty) {
       await this.save();
-      this.isDirty = false;
     }
   }
 
-  // ============================================
-  // 🛡️ FUNCIONES DE CONFIGURACIÓN DE CHATS
-  // ============================================
+  // ==================== CHATS ====================
 
-  /**
-   * Obtiene la configuración de un chat/grupo
-   * Si no existe, la crea con valores por defecto
-   */
   getChatSettings(chatId: string): ChatSettings {
-    if (!this.db.data.chats[chatId]) {
-      this.db.data.chats[chatId] = { ...DEFAULT_CHAT_SETTINGS };
-      this.isDirty = true;
-    } else {
-      // Migrar configuración existente: agregar campos faltantes
-      const chat = this.db.data.chats[chatId];
-      let needsMigration = false;
-
-      for (const [key, defaultValue] of Object.entries(DEFAULT_CHAT_SETTINGS)) {
-        if (!(key in chat)) {
-          (chat as unknown as Record<string, unknown>)[key] = defaultValue;
-          needsMigration = true;
-        }
-      }
-
-      if (needsMigration) {
-        this.isDirty = true;
-      }
+    const existing = this.db.data.chats[chatId];
+    if (!existing || !isPlainObject(existing)) {
+      this.db.data.chats[chatId] = structuredClone(DEFAULT_CHAT_SETTINGS);
+      this.dirty = true;
+    } else if (migrateChatSettings(existing)) {
+      this.dirty = true;
     }
     return this.db.data.chats[chatId];
   }
 
-  /**
-   * Actualiza la configuración de un chat
-   */
   updateChatSettings(chatId: string, updates: Partial<ChatSettings>): void {
-    const chat = this.getChatSettings(chatId);
-    Object.assign(chat, updates);
-    this.isDirty = true;
-  }
-
-  // ============================================
-  // ⚠️ FUNCIONES DE ADVERTENCIAS
-  // ============================================
-
-  /**
-   * Agrega una advertencia a un usuario en un grupo
-   */
-  addWarning(chatId: string, warning: UserWarning): number {
-    const chat = this.getChatSettings(chatId);
-    chat.warnings.push(warning);
-    // Cap duro para evitar crecimiento ilimitado en grupos longevos
-    const MAX_WARNINGS_PER_GROUP = 1000;
-    if (chat.warnings.length > MAX_WARNINGS_PER_GROUP) {
-      chat.warnings.splice(0, chat.warnings.length - MAX_WARNINGS_PER_GROUP);
-    }
-    this.isDirty = true;
-    // Retornar el número de advertencias del usuario
-    return chat.warnings.filter(w => w.odTo === warning.odTo).length;
-  }
-
-  /**
-   * Obtiene las advertencias de un usuario en un grupo
-   */
-  getWarnings(chatId: string, userId: string): UserWarning[] {
-    const chat = this.getChatSettings(chatId);
-    return chat.warnings.filter(w => w.odTo === userId);
-  }
-
-  /**
-   * Quita una advertencia de un usuario (la más reciente)
-   */
-  removeWarning(chatId: string, userId: string): boolean {
-    const chat = this.getChatSettings(chatId);
-    const index = chat.warnings.findIndex(w => w.odTo === userId);
-    if (index !== -1) {
-      chat.warnings.splice(index, 1);
-      this.isDirty = true;
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Limpia todas las advertencias de un usuario
-   */
-  clearWarnings(chatId: string, userId: string): number {
-    const chat = this.getChatSettings(chatId);
-    const before = chat.warnings.length;
-    chat.warnings = chat.warnings.filter(w => w.odTo !== userId);
-    const removed = before - chat.warnings.length;
-    if (removed > 0) {
-      this.isDirty = true;
-    }
-    return removed;
-  }
-
-  /**
-   * Obtiene todas las advertencias de un grupo
-   */
-  getAllWarnings(chatId: string): UserWarning[] {
-    const chat = this.getChatSettings(chatId);
-    return chat.warnings;
-  }
-
-  // ============================================
-  // ⚙️ FUNCIONES DE CONFIGURACIÓN GLOBAL
-  // ============================================
-
-  /**
-   * Obtiene la configuración global del bot
-   */
-  getSettings(): DatabaseSchema['settings'] {
-    return this.db.data.settings;
-  }
-
-  /**
-   * Actualiza la configuración global del bot
-   */
-  updateSettings(settings: Partial<DatabaseSchema['settings']>): void {
-    Object.assign(this.db.data.settings, settings);
-    this.isDirty = true;
-  }
-
-  // ============================================
-  // 🎰 FUNCIONES DE BETTING/TIPSTERS
-  // ============================================
-
-  /**
-   * Normaliza el nombre de un tipster para indexar
-   * Elimina emojis, espacios extra, y convierte a minúsculas
-   */
-  normalizeTipsterName(name: string): string {
-    return name
-      .replace(/[\u{1F300}-\u{1F9FF}]/gu, '') // Eliminar emojis
-      .replace(/[^\w\sáéíóúñÁÉÍÓÚÑ]/gi, '') // Solo letras, números, espacios y acentos
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, '_'); // Espacios a guiones bajos
-  }
-
-  /**
-   * Obtiene el sistema de betting de un grupo
-   * Lo crea si no existe
-   */
-  getBettingSystem(chatId: string): BettingSystem {
-    const chat = this.getChatSettings(chatId);
-    if (!chat.bettingSystem) {
-      chat.bettingSystem = { ...DEFAULT_BETTING_SYSTEM, tipsters: {}, picks: [] };
-      this.isDirty = true;
-    }
-    return chat.bettingSystem;
-  }
-
-  /**
-   * Actualiza el sistema de betting
-   */
-  updateBettingSystem(chatId: string, updates: Partial<BettingSystem>): void {
-    const system = this.getBettingSystem(chatId);
-    Object.assign(system, updates);
-    this.isDirty = true;
-  }
-
-  /**
-   * Obtiene o crea un tipster
-   */
-  getOrCreateTipster(chatId: string, tipsterName: string): TipsterStats {
-    const system = this.getBettingSystem(chatId);
-    const normalized = this.normalizeTipsterName(tipsterName);
-
-    if (!system.tipsters[normalized]) {
-      system.tipsters[normalized] = {
-        ...DEFAULT_TIPSTER_STATS,
-        name: tipsterName.trim(),
-        normalized,
-        followers: []
-      };
-      this.isDirty = true;
-    }
-
-    return system.tipsters[normalized];
-  }
-
-  /**
-   * Obtiene un tipster existente
-   */
-  getTipster(chatId: string, tipsterName: string): TipsterStats | null {
-    const system = this.getBettingSystem(chatId);
-    const normalized = this.normalizeTipsterName(tipsterName);
-    return system.tipsters[normalized] || null;
-  }
-
-  /**
-   * Registra un nuevo pick
-   */
-  registerPick(chatId: string, pick: Omit<BettingPick, 'id'>): BettingPick {
-    const system = this.getBettingSystem(chatId);
-    const tipster = this.getOrCreateTipster(chatId, pick.tipsterOriginal);
-
-    // Generar ID único
-    const id = `pick_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    const newPick: BettingPick = {
-      ...pick,
-      id,
-      tipster: tipster.normalized
-    };
-
-    // Agregar pick al inicio
-    system.picks.unshift(newPick);
-
-    // Actualizar stats del tipster
-    tipster.pending++;
-    tipster.totalUnits += pick.units;
-    tipster.lastPickDate = Date.now();
-
-    // Limpiar picks antiguos si excede el límite
-    if (system.picks.length > system.maxPicks) {
-      system.picks = system.picks.slice(0, system.maxPicks);
-    }
-
-    this.isDirty = true;
-    return newPick;
-  }
-
-  /**
-   * Resuelve un pick (marca como ganado o perdido)
-   */
-  resolvePick(chatId: string, pickId: string, won: boolean, resolvedBy: string): BettingPick | null {
-    const system = this.getBettingSystem(chatId);
-    const pick = system.picks.find(p => p.id === pickId);
-
-    if (!pick || pick.status !== 'pending') return null;
-
-    const tipster = system.tipsters[pick.tipster];
-    if (!tipster) return null;
-
-    // Actualizar pick
-    pick.status = won ? 'won' : 'lost';
-    pick.resolvedAt = Date.now();
-    pick.resolvedBy = resolvedBy;
-
-    // Actualizar stats del tipster
-    tipster.pending--;
-
-    if (won) {
-      tipster.wins++;
-      tipster.wonUnits += pick.units;
-      tipster.currentStreak = tipster.currentStreak >= 0 ? tipster.currentStreak + 1 : 1;
-      if (tipster.currentStreak > tipster.bestStreak) {
-        tipster.bestStreak = tipster.currentStreak;
-      }
-    } else {
-      tipster.losses++;
-      tipster.lostUnits += pick.units;
-      tipster.currentStreak = tipster.currentStreak <= 0 ? tipster.currentStreak - 1 : -1;
-      if (tipster.currentStreak < tipster.worstStreak) {
-        tipster.worstStreak = tipster.currentStreak;
-      }
-    }
-
-    // Actualizar stats de seguidores
-    for (const followerJid of pick.followers) {
-      const user = this.getUser(followerJid);
-      if (user.betting) {
-        if (won) {
-          user.betting.stats.wonFollowed++;
-        } else {
-          user.betting.stats.lostFollowed++;
-        }
-      }
-    }
-
-    this.isDirty = true;
-    return pick;
-  }
-
-  /**
-   * Cancela un pick (void/push) sin afectar estadísticas de win/loss
-   */
-  cancelPick(chatId: string, pickId: string, cancelledBy: string): BettingPick | null {
-    const system = this.getBettingSystem(chatId);
-    const pickIndex = system.picks.findIndex(p => p.id === pickId);
-
-    if (pickIndex === -1) return null;
-    const pick = system.picks[pickIndex];
-    if (pick.status !== 'pending') return null;
-
-    const tipster = system.tipsters[pick.tipster];
-    if (tipster) {
-      // Solo decrementar pendientes y unidades totales
-      tipster.pending--;
-      tipster.totalUnits -= pick.units;
-    }
-
-    // Eliminar el pick
-    const cancelledPick = { ...pick };
-    system.picks.splice(pickIndex, 1);
-
-    this.isDirty = true;
-    return cancelledPick;
-  }
-
-  /**
-   * Obtiene picks pendientes de un grupo
-   */
-  getPendingPicks(chatId: string, tipsterName?: string): BettingPick[] {
-    const system = this.getBettingSystem(chatId);
-    let picks = system.picks.filter(p => p.status === 'pending');
-
-    if (tipsterName) {
-      const normalized = this.normalizeTipsterName(tipsterName);
-      picks = picks.filter(p => p.tipster === normalized);
-    }
-
-    return picks;
-  }
-
-  /**
-   * Obtiene un pick por ID de mensaje
-   */
-  getPickByMessageId(chatId: string, messageId: string): BettingPick | null {
-    const system = this.getBettingSystem(chatId);
-    return system.picks.find(p => p.messageId === messageId) || null;
-  }
-
-  setPickMessageId(chatId: string, pickId: string, messageId: string): boolean {
-    const system = this.getBettingSystem(chatId);
-    const pick = system.picks.find(p => p.id === pickId);
-    if (!pick) return false;
-    pick.messageId = messageId;
-    this.isDirty = true;
-    return true;
-  }
-
-  clearPendingPicks(chatId: string): number {
-    const system = this.getBettingSystem(chatId);
-    const pending = system.picks.filter(p => p.status === 'pending');
-    for (const pick of pending) {
-      const tipster = system.tipsters[pick.tipster];
-      if (tipster) {
-        tipster.pending = Math.max(0, tipster.pending - 1);
-        tipster.totalUnits = Math.max(0, tipster.totalUnits - pick.units);
-      }
-    }
-    system.picks = system.picks.filter(p => p.status !== 'pending');
-    this.isDirty = true;
-    return pending.length;
+    Object.assign(this.getChatSettings(chatId), updates);
+    this.dirty = true;
   }
 
   getAllChatIds(): string[] {
     return Object.keys(this.db.data.chats);
   }
 
-  /**
-   * Obtiene un pick por ID
-   */
-  getPickById(chatId: string, pickId: string): BettingPick | null {
-    const system = this.getBettingSystem(chatId);
-    return system.picks.find(p => p.id === pickId) || null;
-  }
+  // ==================== ADVERTENCIAS ====================
 
-  /**
-   * Obtiene el último pick pendiente de un tipster
-   */
-  getLastPendingPick(chatId: string, tipsterName?: string): BettingPick | null {
-    const pending = this.getPendingPicks(chatId, tipsterName);
-    return pending.length > 0 ? pending[0] : null;
-  }
-
-  /**
-   * Sigue un pick
-   */
-  followPick(chatId: string, pickId: string, userJid: string): boolean {
-    const system = this.getBettingSystem(chatId);
-    const pick = system.picks.find(p => p.id === pickId);
-
-    if (!pick || pick.status !== 'pending') return false;
-    if (pick.followers.includes(userJid)) return false;
-
-    pick.followers.push(userJid);
-
-    // Actualizar stats del usuario
-    const user = this.getUser(userJid);
-    if (!user.betting) {
-      user.betting = {
-        favoriteTipsters: [],
-        notifyOnFavorite: true,
-        stats: { totalFollowed: 0, wonFollowed: 0, lostFollowed: 0 }
-      };
+  /** Agrega una advertencia y devuelve cuántas acumula ese usuario en el grupo */
+  addWarning(chatId: string, warning: UserWarning): number {
+    const chat = this.getChatSettings(chatId);
+    chat.warnings.push(warning);
+    // Cap duro para evitar crecimiento ilimitado en grupos longevos
+    if (chat.warnings.length > MAX_WARNINGS_PER_GROUP) {
+      chat.warnings.splice(0, chat.warnings.length - MAX_WARNINGS_PER_GROUP);
     }
-    user.betting.stats.totalFollowed++;
-
-    this.isDirty = true;
-    return true;
+    this.dirty = true;
+    return chat.warnings.filter(w => w.odTo === warning.odTo).length;
   }
 
-  /**
-   * Obtiene seguidores de un tipster
-   */
-  getTipsterFollowers(chatId: string, tipsterName: string): string[] {
-    const tipster = this.getTipster(chatId, tipsterName);
-    return tipster?.followers || [];
+  getWarnings(chatId: string, userId: string): UserWarning[] {
+    return this.getChatSettings(chatId).warnings.filter(w => w.odTo === userId);
   }
 
-  /**
-   * Agrega un seguidor a un tipster
-   */
-  followTipster(chatId: string, tipsterName: string, userJid: string): boolean {
-    const tipster = this.getOrCreateTipster(chatId, tipsterName);
-
-    if (tipster.followers.includes(userJid)) return false;
-
-    tipster.followers.push(userJid);
-
-    // Actualizar favoritos del usuario
-    const user = this.getUser(userJid);
-    if (!user.betting) {
-      user.betting = {
-        favoriteTipsters: [],
-        notifyOnFavorite: true,
-        stats: { totalFollowed: 0, wonFollowed: 0, lostFollowed: 0 }
-      };
-    }
-
-    const normalized = this.normalizeTipsterName(tipsterName);
-    if (!user.betting.favoriteTipsters.includes(normalized)) {
-      if (user.betting.favoriteTipsters.length < 20) { // Máximo 20 favoritos
-        user.betting.favoriteTipsters.push(normalized);
-      }
-    }
-
-    this.isDirty = true;
-    return true;
-  }
-
-  /**
-   * Quita un seguidor de un tipster
-   */
-  unfollowTipster(chatId: string, tipsterName: string, userJid: string): boolean {
-    const tipster = this.getTipster(chatId, tipsterName);
-    if (!tipster) return false;
-
-    const index = tipster.followers.indexOf(userJid);
+  /** Quita la advertencia más antigua del usuario */
+  removeWarning(chatId: string, userId: string): boolean {
+    const chat = this.getChatSettings(chatId);
+    const index = chat.warnings.findIndex(w => w.odTo === userId);
     if (index === -1) return false;
-
-    tipster.followers.splice(index, 1);
-
-    // Quitar de favoritos del usuario
-    const user = this.getUser(userJid);
-    if (user.betting) {
-      const normalized = this.normalizeTipsterName(tipsterName);
-      const favIndex = user.betting.favoriteTipsters.indexOf(normalized);
-      if (favIndex !== -1) {
-        user.betting.favoriteTipsters.splice(favIndex, 1);
-      }
-    }
-
-    this.isDirty = true;
+    chat.warnings.splice(index, 1);
+    this.dirty = true;
     return true;
   }
 
-  /**
-   * Obtiene el betting del usuario
-   */
+  clearWarnings(chatId: string, userId: string): number {
+    const chat = this.getChatSettings(chatId);
+    const before = chat.warnings.length;
+    chat.warnings = chat.warnings.filter(w => w.odTo !== userId);
+    const removed = before - chat.warnings.length;
+    if (removed > 0) this.dirty = true;
+    return removed;
+  }
+
+  getAllWarnings(chatId: string): UserWarning[] {
+    return this.getChatSettings(chatId).warnings;
+  }
+
+  // ==================== GREMIOS ====================
+
+  private guilds(): Record<string, Guild> {
+    if (!this.db.data.guilds) {
+      this.db.data.guilds = {};
+      this.dirty = true;
+    }
+    return this.db.data.guilds;
+  }
+
+  getGuild(id: string): Guild | null {
+    return this.guilds()[id] ?? null;
+  }
+
+  /** Inserta o reemplaza el gremio por su id */
+  saveGuild(guild: Guild): void {
+    this.guilds()[guild.id] = guild;
+    this.dirty = true;
+  }
+
+  deleteGuild(id: string): boolean {
+    const guilds = this.guilds();
+    if (!(id in guilds)) return false;
+    delete guilds[id];
+    this.dirty = true;
+    return true;
+  }
+
+  listGuilds(): Guild[] {
+    return Object.values(this.guilds());
+  }
+
+  // ==================== CONFIGURACIÓN GLOBAL ====================
+
+  getSettings(): DatabaseSchema['settings'] {
+    return this.db.data.settings;
+  }
+
+  updateSettings(settings: Partial<DatabaseSchema['settings']>): void {
+    Object.assign(this.db.data.settings, settings);
+    this.dirty = true;
+  }
+
+  // ==================== BETTING (wrappers de compatibilidad) ====================
+
+  /** @deprecated Usa db.betting.normalizeTipsterName */
+  normalizeTipsterName(name: string): string {
+    return this.betting.normalizeTipsterName(name);
+  }
+
+  /** @deprecated Usa db.betting.getBettingSystem */
+  getBettingSystem(chatId: string): BettingSystem {
+    return this.betting.getBettingSystem(chatId);
+  }
+
+  /** @deprecated Usa db.betting.updateBettingSystem */
+  updateBettingSystem(chatId: string, updates: Partial<BettingSystem>): void {
+    this.betting.updateBettingSystem(chatId, updates);
+  }
+
+  /** @deprecated Usa db.betting.getOrCreateTipster */
+  getOrCreateTipster(chatId: string, tipsterName: string): TipsterStats {
+    return this.betting.getOrCreateTipster(chatId, tipsterName);
+  }
+
+  /** @deprecated Usa db.betting.getTipster */
+  getTipster(chatId: string, tipsterName: string): TipsterStats | null {
+    return this.betting.getTipster(chatId, tipsterName);
+  }
+
+  /** @deprecated Usa db.betting.registerPick */
+  registerPick(chatId: string, pick: Omit<BettingPick, 'id'>): BettingPick {
+    return this.betting.registerPick(chatId, pick);
+  }
+
+  /** @deprecated Usa db.betting.resolvePick */
+  resolvePick(chatId: string, pickId: string, won: boolean, resolvedBy: string): BettingPick | null {
+    return this.betting.resolvePick(chatId, pickId, won, resolvedBy);
+  }
+
+  /** @deprecated Usa db.betting.cancelPick */
+  cancelPick(chatId: string, pickId: string, cancelledBy: string): BettingPick | null {
+    return this.betting.cancelPick(chatId, pickId, cancelledBy);
+  }
+
+  /** @deprecated Usa db.betting.getPendingPicks */
+  getPendingPicks(chatId: string, tipsterName?: string): BettingPick[] {
+    return this.betting.getPendingPicks(chatId, tipsterName);
+  }
+
+  /** @deprecated Usa db.betting.getPickByMessageId */
+  getPickByMessageId(chatId: string, messageId: string): BettingPick | null {
+    return this.betting.getPickByMessageId(chatId, messageId);
+  }
+
+  /** @deprecated Usa db.betting.setPickMessageId */
+  setPickMessageId(chatId: string, pickId: string, messageId: string): boolean {
+    return this.betting.setPickMessageId(chatId, pickId, messageId);
+  }
+
+  /** @deprecated Usa db.betting.clearPendingPicks */
+  clearPendingPicks(chatId: string): number {
+    return this.betting.clearPendingPicks(chatId);
+  }
+
+  /** @deprecated Usa db.betting.getPickById */
+  getPickById(chatId: string, pickId: string): BettingPick | null {
+    return this.betting.getPickById(chatId, pickId);
+  }
+
+  /** @deprecated Usa db.betting.getLastPendingPick */
+  getLastPendingPick(chatId: string, tipsterName?: string): BettingPick | null {
+    return this.betting.getLastPendingPick(chatId, tipsterName);
+  }
+
+  /** @deprecated Usa db.betting.followPick */
+  followPick(chatId: string, pickId: string, userJid: string): boolean {
+    return this.betting.followPick(chatId, pickId, userJid);
+  }
+
+  /** @deprecated Usa db.betting.getTipsterFollowers */
+  getTipsterFollowers(chatId: string, tipsterName: string): string[] {
+    return this.betting.getTipsterFollowers(chatId, tipsterName);
+  }
+
+  /** @deprecated Usa db.betting.followTipster */
+  followTipster(chatId: string, tipsterName: string, userJid: string): boolean {
+    return this.betting.followTipster(chatId, tipsterName, userJid);
+  }
+
+  /** @deprecated Usa db.betting.unfollowTipster */
+  unfollowTipster(chatId: string, tipsterName: string, userJid: string): boolean {
+    return this.betting.unfollowTipster(chatId, tipsterName, userJid);
+  }
+
+  /** @deprecated Usa db.betting.getUserBetting */
   getUserBetting(userJid: string): UserBetting {
-    const user = this.getUser(userJid);
-    if (!user.betting) {
-      // Deep copy para evitar compartir arrays entre usuarios
-      user.betting = {
-        favoriteTipsters: [],
-        notifyOnFavorite: true,
-        stats: {
-          totalFollowed: 0,
-          wonFollowed: 0,
-          lostFollowed: 0
-        }
-      };
-      this.isDirty = true;
-    }
-    return user.betting;
+    return this.betting.getUserBetting(userJid);
   }
 
-  /**
-   * Obtiene todos los tipsters de un grupo ordenados por algún criterio
-   */
-  getTipsterRanking(
-    chatId: string,
-    sortBy: 'winrate' | 'roi' | 'wins' | 'streak' = 'winrate',
-    limit: number = 10
-  ): TipsterStats[] {
-    const system = this.getBettingSystem(chatId);
-    const tipsters = Object.values(system.tipsters);
-
-    return tipsters
-      .filter(t => t.wins + t.losses > 0) // Solo tipsters con historial
-      .sort((a, b) => {
-        switch (sortBy) {
-          case 'winrate': {
-            const wrA = a.wins / (a.wins + a.losses) || 0;
-            const wrB = b.wins / (b.wins + b.losses) || 0;
-            return wrB - wrA;
-          }
-          case 'roi': {
-            const roiA = a.totalUnits > 0 ? ((a.wonUnits - a.lostUnits) / a.totalUnits) * 100 : 0;
-            const roiB = b.totalUnits > 0 ? ((b.wonUnits - b.lostUnits) / b.totalUnits) * 100 : 0;
-            return roiB - roiA;
-          }
-          case 'wins':
-            return b.wins - a.wins;
-          case 'streak':
-            return b.bestStreak - a.bestStreak;
-          default:
-            return 0;
-        }
-      })
-      .slice(0, limit);
+  /** @deprecated Usa db.betting.getTipsterRanking */
+  getTipsterRanking(chatId: string, sortBy: 'winrate' | 'roi' | 'wins' | 'streak' = 'winrate', limit: number = 10): TipsterStats[] {
+    return this.betting.getTipsterRanking(chatId, sortBy, limit);
   }
 
-  /**
-   * Obtiene historial de picks resueltos
-   */
+  /** @deprecated Usa db.betting.getPickHistory */
   getPickHistory(chatId: string, tipsterName?: string, limit: number = 100): BettingPick[] {
-    const system = this.getBettingSystem(chatId);
-    let picks = system.picks.filter(p => p.status !== 'pending');
-
-    if (tipsterName) {
-      const normalized = this.normalizeTipsterName(tipsterName);
-      picks = picks.filter(p => p.tipster === normalized);
-    }
-
-    return picks
-      .sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0))
-      .slice(0, limit);
+    return this.betting.getPickHistory(chatId, tipsterName, limit);
   }
 }
 
-/**
- * Instancia global de la base de datos
- */
 let database: Database | null = null;
 
-/**
- * Obtiene la instancia global de la base de datos
- */
 export function getDatabase(): Database {
   if (!database) {
-    throw new Error('❌ Base de datos no inicializada');
+    throw new Error('Base de datos no inicializada');
   }
   return database;
 }
 
-/**
- * Inicializa la base de datos global
- */
 export async function initDatabase(filepath: string = 'database.json'): Promise<Database> {
   database = new Database(filepath);
   await database.init();

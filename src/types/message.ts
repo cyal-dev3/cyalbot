@@ -23,6 +23,22 @@ export interface MessageHandlerInterface {
   // Modo compacto
   isCompactMode(chatId: string): boolean;
   setCompactMode(chatId: string, enabled: boolean): void;
+  /** Registra un contexto de juego: sus plugins tienen prioridad mientras isActive sea true. */
+  registerContext(context: CommandContext): void;
+}
+
+/**
+ * Contexto de comandos con prioridad: mientras `isActive(m)` devuelva true para
+ * un mensaje, el handler busca el comando primero entre `plugins` (y, si
+ * `noPrefix` es true, también acepta el texto sin prefijo). Sirve para que
+ * "a", "pedir" o "huir" vayan al juego en curso y no a otro plugin con el
+ * mismo alias.
+ */
+export interface CommandContext {
+  name: string;
+  isActive: (m: SerializedMessage) => boolean;
+  plugins: PluginHandler[];
+  noPrefix?: boolean;
 }
 
 /**
@@ -93,6 +109,15 @@ export interface PluginHandler {
 
   /** Texto de ayuda */
   help?: string[];
+
+  /** Ejemplos de uso, sin prefijo: ['ia <pregunta>', 'ia reset'] */
+  usage?: string[];
+
+  /** Acepta el comando sin prefijo (solo dentro de un CommandContext activo). */
+  noPrefix?: boolean;
+
+  /** No rastrear el mensaje del comando para /clear (p. ej. el propio clear). */
+  untracked?: boolean;
 
   /** Solo para el dueño */
   owner?: boolean;

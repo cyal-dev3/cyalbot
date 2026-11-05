@@ -454,6 +454,54 @@ function describeError(error: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// Consulta genérica en JSON (para juegos y utilidades)
+// ---------------------------------------------------------------------------
+
+export interface AskJsonOptions {
+  /** Instrucciones del sistema; debe pedir explícitamente SOLO JSON. */
+  system: string;
+  user: string;
+  maxTokens?: number;
+  effort?: 'low' | 'medium' | 'high';
+}
+
+/**
+ * Pide a Claude una respuesta en JSON y la parsea. Devuelve null si la IA
+ * está desactivada, se agotó el presupuesto, el modelo declina o el JSON no
+ * parsea. Contabiliza el uso como el resto de la integración.
+ */
+export async function askJSON<T>(options: AskJsonOptions): Promise<T | null> {
+  if (!isAIEnabled() || budgetExceeded()) return null;
+  try {
+    const response = await getClient().beta.messages.create({
+      model: CONFIG.ai.model,
+      max_tokens: options.maxTokens ?? 1024,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      system: `${options.system}\n\nResponde únicamente con JSON válido, sin texto antes ni después, sin bloques de código.`,
+      messages: [{ role: 'user', content: options.user }],
+      output_config: { effort: options.effort ?? 'low' },
+    });
+    recordUsage(response.usage);
+    if (response.stop_reason === 'refusal') return null;
+    const text = response.content
+      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+      .trim();
+    const start = text.indexOf('{');
+    const startArr = text.indexOf('[');
+    const from = start === -1 ? startArr : startArr === -1 ? start : Math.min(start, startArr);
+    if (from === -1) return null;
+    const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
+    return JSON.parse(text.slice(from, end + 1)) as T;
+  } catch (error) {
+    log.warn('askJSON falló:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Resumen de grupo
 // ---------------------------------------------------------------------------
 

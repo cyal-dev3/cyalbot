@@ -158,6 +158,8 @@ export interface DatabaseSchema {
     };
     /** Uso de la IA por día (clave YYYY-MM-DD) */
     aiUsage?: Record<string, AIUsageDay>;
+    /** Versión del esquema de datos; Database aplica migraciones únicas al subirla */
+    schemaVersion?: number;
   };
 }
 
@@ -189,8 +191,7 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   badWords: [],
   autoSticker: false,
   autoDownload: false,
-  aiChat: true,
-  bettingSystem: undefined
+  aiChat: true
 };
 
 /**

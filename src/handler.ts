@@ -4,7 +4,7 @@
  */
 
 import { downloadMediaMessage, type WASocket, type proto, type GroupMetadata } from 'baileys';
-import type { MessageContext, SerializedMessage, PluginHandler, PluginRegistry, MuteRegistry } from './types/message.js';
+import type { MessageContext, SerializedMessage, PluginHandler, PluginRegistry, MuteRegistry, CommandContext } from './types/message.js';
 import type { Database } from './lib/database.js';
 import { CONFIG, isOwnerId } from './config.js';
 import { createSticker } from './lib/sticker.js';
@@ -36,6 +36,7 @@ const INVISIBLE_CHAR = '\u200B'; // Zero-width space
  */
 export class MessageHandler {
   private plugins: PluginRegistry = new Map();
+  private contexts: CommandContext[] = [];
   private muteRegistry: MuteRegistry = new Map();
   private spamTracker: Map<string, number[]> = new Map(); // Rastreo de spam por usuario
   // Rastreo de mensajes del bot y comandos para .clear (por grupo)
@@ -269,6 +270,35 @@ export class MessageHandler {
    */
   getPlugins(): PluginRegistry {
     return this.plugins;
+  }
+
+  /** Registra un contexto de juego con prioridad sobre el registro global. */
+  registerContext(context: CommandContext): void {
+    this.contexts.push(context);
+  }
+
+  getContexts(): readonly CommandContext[] {
+    return this.contexts;
+  }
+
+  /** Contextos activos para este mensaje (juego en curso del remitente o del chat). */
+  private activeContexts(m: SerializedMessage): CommandContext[] {
+    const active: CommandContext[] = [];
+    for (const context of this.contexts) {
+      try {
+        if (context.isActive(m)) active.push(context);
+      } catch (error) {
+        log.error(`contexto ${context.name}:`, error);
+      }
+    }
+    return active;
+  }
+
+  private static pluginMatches(plugin: PluginHandler, command: string, fullCommand: string): boolean {
+    if (plugin.command instanceof RegExp) {
+      return plugin.command.test(command.toLowerCase()) || plugin.command.test(fullCommand.toLowerCase());
+    }
+    return plugin.command.some((cmd) => cmd.toLowerCase() === command.toLowerCase());
   }
 
   /**
@@ -792,6 +822,46 @@ export class MessageHandler {
     let args: string[] = [];
     let text = '';
     let isNoPrefixDuelCommand = false;
+
+    // Contextos de juego activos: sus plugins ganan a cualquier otro alias,
+    // y pueden aceptar el texto sin prefijo.
+    const contexts = this.activeContexts(m);
+    if (contexts.length > 0) {
+      const raw = prefixMatch ? m.text.slice(prefixMatch[0].length).trim() : m.text.trim();
+      const [rawCommand, ...rawArgs] = raw.split(/\s+/);
+      if (rawCommand) {
+        for (const context of contexts) {
+          if (!prefixMatch && !context.noPrefix) continue;
+          const plugin = context.plugins.find((p) =>
+            MessageHandler.pluginMatches(p, rawCommand, raw) && (prefixMatch || p.noPrefix !== false));
+          if (!plugin) continue;
+          const ctx: MessageContext = {
+            conn: this.conn,
+            m,
+            text: rawArgs.join(' '),
+            args: rawArgs,
+            command: rawCommand.toLowerCase(),
+            usedPrefix: prefixMatch ? prefixMatch[0] : '',
+            isOwner,
+            isAdmin,
+            isBotAdmin,
+            isGroup: m.isGroup,
+            groupMetadata,
+            participants,
+            groupAdmins,
+            handler: this,
+          };
+          try {
+            log.info(`[${context.name}] ${rawCommand} de ${m.pushName || m.sender.split('@')[0]}`);
+            await plugin.handler(ctx);
+          } catch (error) {
+            log.error(`error en contexto ${context.name} (${rawCommand}):`, error);
+            await m.reply(CONFIG.messages.error);
+          }
+          return;
+        }
+      }
+    }
 
     if (prefixMatch) {
       // Comando con prefijo normal

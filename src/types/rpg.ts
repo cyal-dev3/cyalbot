@@ -103,6 +103,8 @@ export interface Item {
     mana?: number;
     stamina?: number;
     expBoost?: number;
+    /** Puntos porcentuales extra de exito al mejorar en la forja mientras dure el buff */
+    forgeBoost?: number;
     duration?: number;
   };
   requiredLevel?: number;
@@ -799,18 +801,7 @@ export const ITEMS: Record<string, Item> = {
     description: 'Aumenta la probabilidad de éxito en forja por 1 hora.',
     price: 1500,
     sellPrice: 750,
-    consumeEffect: { expBoost: 1, duration: 60 * 60 * 1000 }
-  },
-  elixir_experiencia: {
-    id: 'elixir_experiencia',
-    name: 'Elixir de Experiencia Doble',
-    emoji: '✨',
-    type: 'consumable',
-    rarity: 'epico',
-    description: 'Duplica la XP ganada por 30 minutos.',
-    price: 4000,
-    sellPrice: 2000,
-    consumeEffect: { expBoost: 2, duration: 30 * 60 * 1000 }
+    consumeEffect: { forgeBoost: 10, duration: 60 * 60 * 1000 }
   },
 
   // === MATERIALES ===
