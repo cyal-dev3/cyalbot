@@ -10,12 +10,20 @@ import { ensureDebtTimestamps } from './rpg-economia.js';
 
 const PIEDRA_COST = 100;
 
+interface SmokeOutcome {
+  /** Recompensas base: pasan por grantRewards y el mensaje muestra lo entregado de verdad */
+  rewards?: RewardInput;
+  updates?: Partial<UserRPG>;
+  expLoss?: number;
+  /** Texto del efecto cuando no hay recompensa (cambios directos o pérdidas) */
+  message?: string;
+}
+
 interface SmokeEffect {
   name: string;
   emoji: string;
   description: string;
-  /** Devuelve recompensas (pasan por grantRewards), cambios directos y la XP perdida */
-  apply: (user: UserRPG) => { rewards?: RewardInput; updates?: Partial<UserRPG>; expLoss?: number; message: string };
+  apply: (user: UserRPG) => SmokeOutcome;
 }
 
 const POSITIVE_EFFECTS: SmokeEffect[] = [
@@ -23,19 +31,13 @@ const POSITIVE_EFFECTS: SmokeEffect[] = [
     name: 'Visión Divina',
     emoji: '👁️✨',
     description: 'Ves el futuro y ganas experiencia',
-    apply: () => {
-      const exp = randomInt(100, 500);
-      return { rewards: { exp }, message: `+${formatNumber(exp)} XP` };
-    }
+    apply: () => ({ rewards: { exp: randomInt(100, 500) } })
   },
   {
     name: 'Manos de Oro',
     emoji: '🙌💰',
     description: 'Encuentras dinero en tus bolsillos',
-    apply: () => {
-      const money = randomInt(200, 1000);
-      return { rewards: { money }, message: `+${formatNumber(money)} monedas` };
-    }
+    apply: () => ({ rewards: { money: randomInt(200, 1000) } })
   },
   {
     name: 'Regeneración Total',
@@ -59,31 +61,31 @@ const POSITIVE_EFFECTS: SmokeEffect[] = [
     name: 'Suerte del Fumador',
     emoji: '🍀🎰',
     description: 'Ganas diamantes',
-    apply: () => {
-      const diamonds = randomInt(5, 20);
-      return { rewards: { diamonds }, message: `+${diamonds} 💎 diamantes` };
-    }
+    apply: () => ({ rewards: { diamonds: randomInt(5, 20) } })
   },
   {
     name: 'Pociones Mágicas',
     emoji: '🧪✨',
     description: 'Aparecen pociones en tu inventario',
-    apply: () => {
-      const potions = randomInt(5, 15);
-      return { rewards: { potions }, message: `+${potions} pociones` };
-    }
+    apply: () => ({ rewards: { potions: randomInt(5, 15) } })
   },
   {
     name: 'Iluminación',
     emoji: '💡🌟',
     description: 'Una revelación te hace más sabio y más rico',
-    apply: () => {
-      const exp = randomInt(300, 800);
-      const money = randomInt(100, 300);
-      return { rewards: { exp, money }, message: `+${formatNumber(exp)} XP, +${formatNumber(money)} monedas` };
-    }
+    apply: () => ({ rewards: { exp: randomInt(300, 800), money: randomInt(100, 300) } })
   }
 ];
+
+/** Resume lo que grantRewards entregó de verdad (ya con rango, modos, gremio y corte de esclavitud) */
+function describeDelivered(result: RewardResult): string {
+  const parts: string[] = [];
+  if (result.exp > 0) parts.push(`+${formatNumber(result.exp)} XP`);
+  if (result.money > 0) parts.push(`+${formatNumber(result.money)} monedas`);
+  if (result.diamonds > 0) parts.push(`+${result.diamonds} 💎 diamantes`);
+  if (result.potions > 0) parts.push(`+${result.potions} pociones`);
+  return parts.length ? parts.join(', ') : 'no te quedó nada';
+}
 
 const NEGATIVE_EFFECTS: SmokeEffect[] = [
   {
@@ -192,8 +194,7 @@ export const fumarPlugin: PluginHandler = {
     const isPositive = Math.random() < 0.5;
     const effect = pickRandom(isPositive ? POSITIVE_EFFECTS : NEGATIVE_EFFECTS);
     const outcome = effect.apply(db.getUser(m.sender));
-
-    const lines: string[] = [`${effect.emoji} *${effect.name}*: ${outcome.message}`];
+    const lines: string[] = [];
 
     if (outcome.updates) {
       db.updateUser(m.sender, outcome.updates);

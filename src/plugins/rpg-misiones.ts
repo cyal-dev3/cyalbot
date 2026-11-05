@@ -4,7 +4,6 @@ import { EMOJI, msToTime } from '../lib/utils.js';
 import {
   updateQuestProgress as updateQuestProgressImpl,
   claimCompletedQuests,
-  ensureQuestsFresh,
   renderQuestList,
   DAILY_RESET,
   WEEKLY_RESET,
@@ -48,30 +47,23 @@ export const misionesPlugin: PluginHandler = {
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, args } = ctx;
     const sub = (args[0] ?? '').toLowerCase();
     if (['reclamar', 'claim', 'cobrar'].includes(sub)) return replyClaim(ctx);
 
     const db = getDatabase();
-    const user = db.getUser(m.sender);
     const now = Date.now();
 
-    if (ensureQuestsFresh(user, now)) {
-      db.updateUser(m.sender, {
-        dailyQuests: user.dailyQuests,
-        weeklyQuests: user.weeklyQuests,
-        lastDailyReset: user.lastDailyReset,
-        lastWeeklyReset: user.lastWeeklyReset
-      });
-    }
+    // Cobra el progreso heredado antes de que el reset lo descarte y renueva las misiones que toque
+    const claimed = claimCompletedQuests(db, m.sender, now);
+    const user = db.getUser(m.sender);
 
-    const daily = renderQuestList('📅 *Misiones Diarias:*', user.dailyQuests, msToTime(DAILY_RESET - (now - user.lastDailyReset)));
-    const weekly = renderQuestList('📆 *Misiones Semanales:*', user.weeklyQuests, msToTime(WEEKLY_RESET - (now - user.lastWeeklyReset)));
+    const daily = renderQuestList('📅 *Diarias*', user.dailyQuests, msToTime(DAILY_RESET - (now - user.lastDailyReset)));
+    const weekly = renderQuestList('📆 *Semanales*', user.weeklyQuests, msToTime(WEEKLY_RESET - (now - user.lastWeeklyReset)));
 
-    let text = `📜 *MISIONES ACTIVAS*\n━━━━━━━━━━━━━━━━━━━━━\n\n${daily.text}${weekly.text}━━━━━━━━━━━━━━━━━━━━━\n`;
-    const pending = daily.pending + weekly.pending;
-    text += pending > 0
-      ? `🎉 *Tienes ${pending} misión(es) por cobrar.* Usa *${usedPrefix}misiones reclamar*.`
+    let text = `📜 *MISIONES ACTIVAS*\n━━━━━━━━━━━━━━━━━━━━━\n${daily.text}${weekly.text}`;
+    text += claimed.lines.length
+      ? claimed.lines.join('\n')
       : `💡 Las recompensas se entregan solas al completar cada misión.`;
 
     await m.reply(text);

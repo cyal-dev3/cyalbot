@@ -218,48 +218,22 @@ export function updateQuestProgress(
     }
   }
 
-  if (changed) {
-    db.updateUser(jid, {
-      dailyQuests: user.dailyQuests,
-      weeklyQuests: user.weeklyQuests,
-      lastDailyReset: user.lastDailyReset,
-      lastWeeklyReset: user.lastWeeklyReset,
-      inventory: user.inventory
-    });
-  }
-
+  if (changed) persistQuests(db, jid, user);
   return result;
 }
 
 /**
  * Cobra las misiones completadas que sigan sin reclamar (progreso anterior al
- * auto-reclamo). Devuelve las misiones cobradas y las líneas del mensaje.
+ * auto-reclamo), aunque ya haya pasado el reset, y después renueva las que toque.
  */
 export function claimCompletedQuests(db: Database, jid: string, now: number = Date.now()): QuestUpdateResult {
   const user = db.getUser(jid);
-  let changed = ensureQuestsFresh(user, now);
   const result: QuestUpdateResult = { completed: [], lines: [] };
 
-  for (const progress of [...user.dailyQuests, ...user.weeklyQuests]) {
-    if (isQuestClaimed(progress)) continue;
-    const quest = getQuestById(progress.questId);
-    if (!quest || progress.progress < quest.target) continue;
+  let changed = claimPendingQuests(db, jid, user, now, result);
+  if (ensureQuestsFresh(user, now)) changed = true;
 
-    result.completed.push(quest);
-    result.lines.push(...claimQuest(db, jid, user, progress, quest, now));
-    changed = true;
-  }
-
-  if (changed) {
-    db.updateUser(jid, {
-      dailyQuests: user.dailyQuests,
-      weeklyQuests: user.weeklyQuests,
-      lastDailyReset: user.lastDailyReset,
-      lastWeeklyReset: user.lastWeeklyReset,
-      inventory: user.inventory
-    });
-  }
-
+  if (changed) persistQuests(db, jid, user);
   return result;
 }
 
@@ -268,9 +242,9 @@ function questBar(current: number, max: number, size: number = 8): string {
   return '█'.repeat(filled) + '░'.repeat(size - filled);
 }
 
-/** Lista de misiones con progreso, igual para diarias y semanales */
+/** Lista de misiones con progreso (dos líneas por misión), igual para diarias y semanales */
 export function renderQuestList(title: string, quests: QuestProgress[], resetIn: string): { text: string; pending: number } {
-  let text = `${title}\n   ⏰ Reset en: ${resetIn}\n\n`;
+  let text = `${title} _(reset en ${resetIn})_\n`;
   let pending = 0;
 
   for (const progress of quests) {
@@ -283,12 +257,10 @@ export function renderQuestList(title: string, quests: QuestProgress[], resetIn:
     if (complete && !claimed) pending++;
 
     const status = claimed ? '✅' : complete ? '🎁' : '⏳';
-    text += `${status} ${quest.emoji} *${quest.name}*\n`;
-    text += `   ${quest.description}\n`;
-    text += `   [${questBar(current, quest.target)}] ${formatNumber(current)}/${formatNumber(quest.target)}\n`;
-    if (!claimed) text += `   🎁 ${formatQuestRewards(quest)}\n`;
-    text += '\n';
+    text += `${status} ${quest.emoji} *${quest.name}* — ${quest.description}\n`;
+    text += `   [${questBar(current, quest.target)}] ${formatNumber(current)}/${formatNumber(quest.target)}` +
+      (claimed ? ' · cobrada' : ` · 🎁 ${formatQuestRewards(quest)}`) + '\n';
   }
 
-  return { text, pending };
+  return { text: text + '\n', pending };
 }
