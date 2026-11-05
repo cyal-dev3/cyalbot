@@ -1,5 +1,5 @@
 /**
- * 🧵 Plugin de Descarga de Threads
+ * Plugin de Descarga de Threads
  * Comando: /threads
  * Descarga videos e imágenes de Threads (Meta)
  */

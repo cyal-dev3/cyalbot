@@ -1,5 +1,5 @@
 /**
- * 🔨 Plugin Work - CYALTRONIC
+ * Plugin Work
  * Trabajar para ganar experiencia cada 10 minutos
  */
 

@@ -1,5 +1,5 @@
 /**
- * 👑 Plugin de Owner RPG - CYALTRONIC
+ * Plugin de Owner RPG
  * Control total del sistema RPG para el owner del bot
  *
  * Comandos disponibles:

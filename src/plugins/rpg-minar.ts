@@ -1,5 +1,5 @@
 /**
- * ⛏️ Plugin Minar - CYALTRONIC
+ * Plugin Minar
  * Minar minerales para ganar dinero y experiencia cada 10 minutos
  */
 

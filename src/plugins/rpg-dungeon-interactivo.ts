@@ -1,5 +1,5 @@
 /**
- * 🏰 Plugin de Dungeons Interactivos - RPG
+ * Plugin de Dungeons Interactivos - RPG
  * Sistema de combate por turnos con decisiones del jugador
  */
 

@@ -1,5 +1,5 @@
 /**
- * 🗑️ Plugin para Eliminar Mensajes
+ * Plugin para Eliminar Mensajes
  * Comandos: delete, del
  */
 

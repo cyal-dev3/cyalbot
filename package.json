@@ -1,7 +1,7 @@
 {
-  "name": "cyaltronic",
-  "version": "1.0.0",
-  "description": "🤖 CYALTRONIC - Bot de WhatsApp RPG en TypeScript",
+  "name": "cyalbot",
+  "version": "3.1.0",
+  "description": "Bot de WhatsApp en TypeScript (Baileys) con RPG, moderación de grupos, descargas y chat con Claude",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -10,18 +10,23 @@
     "dev": "tsx watch src/index.ts",
     "qr": "node dist/index.js --method=qr",
     "code": "node dist/index.js --method=code",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
     "telegram:session": "tsx src/generate-session.ts"
   },
   "keywords": [
     "whatsapp",
     "bot",
-    "rpg",
+    "baileys",
     "typescript",
-    "baileys"
+    "claude",
+    "anthropic",
+    "rpg"
   ],
   "author": "Cyal",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.5.0",
     "@distube/ytdl-core": "^4.16.12",
     "@hapi/boom": "^10.0.1",
     "baileys": "^6.7.16",
@@ -42,6 +47,6 @@
     "typescript": "^5.7.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }

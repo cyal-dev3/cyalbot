@@ -1,5 +1,5 @@
 /**
- * 🚫 Plugin Anti-Bad Words - CYALTRONIC
+ * Plugin Anti-Bad Words
  * Filtro de groserías/palabras prohibidas
  * Comandos: /antibad, /addbadword, /delbadword, /listbadwords
  */

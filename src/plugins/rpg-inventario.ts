@@ -1,5 +1,5 @@
 /**
- * 🎒 Plugin de Inventario - RPG
+ * Plugin de Inventario - RPG
  * Comandos: inventario, equipar, desequipar, usar
  */
 

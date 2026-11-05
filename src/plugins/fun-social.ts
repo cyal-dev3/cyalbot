@@ -1,5 +1,5 @@
 /**
- * 🤗 Plugin de Interacciones Sociales
+ * Plugin de Interacciones Sociales
  * Comandos: abrazo, kissall, gudmornin, poka, chingatumadre, hazaña
  */
 

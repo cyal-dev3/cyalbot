@@ -1,5 +1,5 @@
 /**
- * 📌 Plugin de Descarga/Búsqueda en Pinterest
+ * Plugin de Descarga/Búsqueda en Pinterest
  * Comando: /pinterest
  * Usa múltiples APIs con fallback para máxima confiabilidad
  */

@@ -1,5 +1,5 @@
 /**
- * 📢 Plugin de Mención Masiva
+ * Plugin de Mención Masiva
  * Comando: /tagall
  */
 

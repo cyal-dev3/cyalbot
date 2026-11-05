@@ -1,5 +1,5 @@
 /**
- * 📈 Plugin de Nivel - CYALTRONIC
+ * Plugin de Nivel
  * Permite subir de nivel cuando hay suficiente XP
  */
 

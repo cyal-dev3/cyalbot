@@ -1,5 +1,5 @@
 /**
- * 🎵 Plugin de Música - CYALTRONIC
+ * Plugin de Música
  * Busca con play-dl, descarga con API local (Cobalt)
  * SoundCloud como fallback para búsquedas
  */

@@ -1,5 +1,5 @@
 /**
- * 📊 Plugin de Estadísticas - Sistema de Betting CYALTRONIC
+ * Plugin de Estadísticas - Sistema de Betting CYALTRONIC
  * Comandos para ver estadísticas, rankings e historial
  */
 

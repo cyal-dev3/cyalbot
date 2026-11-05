@@ -1,5 +1,5 @@
 /**
- * 👤 Interfaz de usuario RPG para CYALTRONIC
+ * Interfaz de usuario RPG
  * Define la estructura de datos de cada jugador
  */
 

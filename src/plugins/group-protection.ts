@@ -1,5 +1,5 @@
 /**
- * 🛡️ Plugin de Protección de Grupos
+ * Plugin de Protección de Grupos
  * Comandos: /antilink, /antispam
  */
 

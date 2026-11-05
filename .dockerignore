@@ -1,0 +1,14 @@
+node_modules
+dist
+CyaltronicSession
+data
+database.json
+.env
+.env.*
+!.env.example
+*.log
+tmp
+.git
+.github
+docs
+tests

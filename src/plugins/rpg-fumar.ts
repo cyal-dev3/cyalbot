@@ -1,5 +1,5 @@
 /**
- * 🪨💨 Plugin de Fumar Piedra - RPG
+ * Plugin de Fumar Piedra - RPG
  * Comando: fumar - Fuma una piedra con efectos aleatorios
  * 50% positivo, 50% negativo - "Te pusiste bien Luisin"
  */

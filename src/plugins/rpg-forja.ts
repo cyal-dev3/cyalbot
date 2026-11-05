@@ -1,5 +1,5 @@
 /**
- * ⚒️ Sistema de Forja - CYALTRONIC RPG
+ * Sistema de Forja - CYALTRONIC RPG
  * Craftear items, mejorar equipamiento, fundir materiales
  *
  * Comandos:

@@ -1,5 +1,5 @@
 /**
- * 🏪 Plugin de Tienda - RPG
+ * Plugin de Tienda - RPG
  * Comandos: tienda, comprar, vender
  */
 

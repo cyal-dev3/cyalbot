@@ -1,5 +1,5 @@
 /**
- * 🃏 Plugin de Blackjack Multiplayer
+ * Plugin de Blackjack Multiplayer
  * Comando: /blackjack, /jugar, /pedir, /plantarse, /doblar
  */
 

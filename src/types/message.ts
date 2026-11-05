@@ -1,5 +1,5 @@
 /**
- * 💬 Tipos de mensajes para CYALTRONIC
+ * Tipos de mensajes
  * Define interfaces para el manejo de mensajes y plugins
  */
 

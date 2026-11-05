@@ -1,14 +1,19 @@
 /**
- * 📨 Manejador de Mensajes de CYALTRONIC
+ * Manejador de Mensajes
  * Procesa mensajes entrantes y ejecuta comandos
  */
 
 import { downloadMediaMessage, type WASocket, type proto, type GroupMetadata } from 'baileys';
 import type { MessageContext, SerializedMessage, PluginHandler, PluginRegistry, MuteRegistry } from './types/message.js';
 import type { Database } from './lib/database.js';
-import { CONFIG } from './config.js';
+import { CONFIG, isOwnerId } from './config.js';
 import { createSticker } from './lib/sticker.js';
 import { downloadAuto, detectPlatform, type Platform } from './lib/downloaders.js';
+import { findBadWord } from './lib/moderation.js';
+import { createLogger } from './lib/logger.js';
+import { rememberChatLine, isDirectedToBot, respondWithAI, isAIEnabled } from './lib/ai.js';
+
+const log = createLogger('handler');
 
 // Comandos de duelo que funcionan sin prefijo
 const DUEL_COMMANDS_NO_PREFIX = ['g', 'golpe', 'golpear', 'hit', 'rendirse', 'surrender', 'abandonar', 'huir'];
@@ -238,7 +243,7 @@ export class MessageHandler {
         });
       }
     }
-    console.log('🔇 Datos de mute cargados desde la base de datos');
+    log.debug('Datos de mute cargados desde la base de datos');
   }
 
   /**
@@ -330,7 +335,7 @@ export class MessageHandler {
     try {
       return await this.conn.groupMetadata(groupId);
     } catch (error) {
-      console.error('❌ Error obteniendo metadata del grupo:', error);
+      log.error('Error obteniendo metadata del grupo:', error);
       return null;
     }
   }
@@ -351,9 +356,18 @@ export class MessageHandler {
       await this.conn.sendMessage(chatId, { delete: messageKey });
       return true;
     } catch (error) {
-      console.error('❌ Error eliminando mensaje:', error);
+      log.error('Error eliminando mensaje:', error);
       return false;
     }
+  }
+
+  /** Identificadores del bot (número y LID) para detectar menciones. */
+  botIds(): string[] {
+    const ids: string[] = [];
+    const user = this.conn.user as { id?: string; lid?: string } | undefined;
+    if (user?.id) ids.push(user.id);
+    if (user?.lid) ids.push(user.lid);
+    return ids;
   }
 
   /**
@@ -469,13 +483,13 @@ export class MessageHandler {
       if (platform === 'unknown') return;
 
       const platformName = MessageHandler.PLATFORM_NAMES[platform];
-      console.log(`📥 AutoDownload: ${platformName} detectado de ${m.sender}`);
+      log.debug(`AutoDownload: ${platformName} detectado de ${m.sender}`);
 
       // Usar la librería universal de descargadores
       const result = await downloadAuto(url);
 
       if (!result.success || !result.medias || result.medias.length === 0) {
-        console.log(`❌ AutoDownload: No se pudo descargar de ${platformName}`);
+        log.debug(`AutoDownload: No se pudo descargar de ${platformName}`);
         return;
       }
 
@@ -510,13 +524,13 @@ export class MessageHandler {
             }, { quoted: rawMessage });
           }
         } catch (mediaError) {
-          console.error(`❌ AutoDownload: Error enviando media ${i + 1}:`, mediaError);
+          log.error(`AutoDownload: Error enviando media ${i + 1}:`, mediaError);
         }
       }
 
-      console.log(`✅ AutoDownload: ${platformName} completado (${result.medias.length} archivos)`);
+      log.debug(`AutoDownload: ${platformName} completado (${result.medias.length} archivos)`);
     } catch (error) {
-      console.error('❌ Error en auto-download:', error);
+      log.error('Error en auto-download:', error);
     }
   }
 
@@ -528,7 +542,7 @@ export class MessageHandler {
       try {
         await this.processMessage(rawMessage);
       } catch (error) {
-        console.error('❌ Error procesando mensaje:', error);
+        log.error('Error procesando mensaje:', error);
       }
     }
   }
@@ -547,19 +561,12 @@ export class MessageHandler {
     // 🔒 MODE CHECK: Verificar modo del bot
     const botSettings = this.db.getSettings();
     const botMode = botSettings.botMode || 'public';
+    const isOwner = isOwnerId(m.sender);
     if (botMode !== 'public') {
-      const senderNum = m.sender.split('@')[0].replace(/[^0-9]/g, '');
-      const isOwnerMode = CONFIG.owners.some(owner =>
-        senderNum.includes(owner) || owner.includes(senderNum)
-      );
-
-      if (botMode === 'private' && !isOwnerMode) return;
+      if (botMode === 'private' && !isOwner) return;
       if (botMode === 'group' && !m.isGroup) return;
       if (botMode === 'inbox' && m.isGroup) return;
     }
-
-    // Inicializar usuario en DB
-    this.db.getUser(m.sender);
 
     // Variables de grupo
     let groupMetadata: GroupMetadata | undefined;
@@ -631,7 +638,7 @@ export class MessageHandler {
           if (isBotAdmin) {
             // Eliminar mensaje del usuario muteado
             await this.deleteMessage(m.chat, m.key);
-            console.log(`🔇 Mensaje eliminado de usuario muteado: ${m.sender}`);
+            log.debug(`Mensaje eliminado de usuario muteado: ${m.sender}`);
           }
           return; // No procesar comandos de usuarios muteados
         }
@@ -649,7 +656,7 @@ export class MessageHandler {
                 text: `⚠️ @${m.sender.split('@')[0]} los enlaces de grupos no están permitidos aquí.`,
                 mentions: [m.sender]
               });
-              console.log(`🔗 Antilink: Enlace eliminado de ${m.sender}`);
+              log.debug(`Antilink: Enlace eliminado de ${m.sender}`);
 
               // Agregar advertencia automática
               const warningCount = this.db.addWarning(m.chat, {
@@ -668,7 +675,7 @@ export class MessageHandler {
                   });
                   this.db.clearWarnings(m.chat, m.sender);
                 } catch (e) {
-                  console.error('Error expulsando usuario:', e);
+                  log.error('Error expulsando usuario:', e);
                 }
               }
               return;
@@ -698,7 +705,7 @@ export class MessageHandler {
                 text: `⚠️ @${m.sender.split('@')[0]} deja de hacer spam o serás advertido.`,
                 mentions: [m.sender]
               });
-              console.log(`🚫 Antispam: Spam detectado de ${m.sender}`);
+              log.debug(`Antispam: Spam detectado de ${m.sender}`);
 
               // Resetear contador para no advertir en cada mensaje
               this.spamTracker.set(userKey, [now]);
@@ -710,12 +717,7 @@ export class MessageHandler {
           if (chatSettings.antiBad && m.text) {
             const badWords = chatSettings.badWords || [];
             if (badWords.length > 0) {
-              const textLower = m.text.toLowerCase();
-              const foundWord = badWords.find(word => {
-                // Buscar la palabra como palabra completa o parte de palabra
-                const regex = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-                return regex.test(textLower) || textLower.includes(word);
-              });
+              const foundWord = findBadWord(m.text, badWords);
 
               if (foundWord) {
                 await this.deleteMessage(m.chat, m.key);
@@ -723,7 +725,7 @@ export class MessageHandler {
                   text: `⚠️ @${m.sender.split('@')[0]} las groserías no están permitidas aquí.`,
                   mentions: [m.sender]
                 });
-                console.log(`🚫 AntiBad: Grosería detectada de ${m.sender}: ${foundWord}`);
+                log.debug(`AntiBad: Grosería detectada de ${m.sender}: ${foundWord}`);
                 return;
               }
             }
@@ -757,9 +759,9 @@ export class MessageHandler {
             });
 
             await this.conn.sendMessage(m.chat, { sticker: stickerBuffer });
-            console.log(`🎨 AutoSticker: Imagen convertida de ${m.sender}`);
+            log.debug(`AutoSticker: Imagen convertida de ${m.sender}`);
           } catch (error) {
-            console.error('❌ Error en auto-sticker:', error);
+            log.error('Error en auto-sticker:', error);
           }
         }
       }
@@ -776,8 +778,10 @@ export class MessageHandler {
       }
     }
 
-    // Si no hay texto, no procesar comandos
     if (!m.text) return;
+
+    // Historial corto por chat para /resumen y contexto de la IA
+    if (m.isGroup) rememberChatLine(m.chat, m.pushName || m.sender.split('@')[0], m.text);
 
     // Verificar si es un comando con prefijo
     const prefixMatch = m.text.match(CONFIG.prefix);
@@ -807,21 +811,24 @@ export class MessageHandler {
         [command, ...args] = fullCommand.split(/\s+/);
         text = args.join(' ');
       } else {
-        // No es comando con prefijo ni comando de duelo, ignorar
+        // Texto normal en grupo: solo interesa si va dirigido al bot
+        if (isAIEnabled() && CONFIG.ai.replyToMentions && this.db.getChatSettings(m.chat).aiChat !== false
+          && isDirectedToBot(m, this.botIds())) {
+          await respondWithAI({ conn: this.conn, m, rawMessage, text: m.text, isOwner });
+        }
         return;
       }
     } else {
-      // Chat privado sin prefijo, ignorar
+      // Privado sin prefijo: conversación directa con la IA
+      if (isAIEnabled() && CONFIG.ai.privateChat) {
+        await respondWithAI({ conn: this.conn, m, rawMessage, text: m.text, isOwner });
+      }
       return;
     }
 
     if (!command) return;
 
-    // Verificar si es owner
-    const senderNumber = m.sender.split('@')[0].replace(/[^0-9]/g, '');
-    const isOwner = CONFIG.owners.some(owner =>
-      senderNumber.includes(owner) || owner.includes(senderNumber)
-    );
+    const senderNumber = m.sender.split('@')[0];
 
     // Buscar plugin que maneje el comando
     for (const [name, plugin] of this.plugins) {
@@ -893,11 +900,10 @@ export class MessageHandler {
 
         // Ejecutar plugin
         try {
-          const cmdLog = isNoPrefixDuelCommand ? `⚔️ Duelo: ${command}` : `📨 Comando: ${usedPrefix}${command}`;
-          console.log(`${cmdLog} | De: ${m.pushName || senderNumber}`);
+          log.info(`${isNoPrefixDuelCommand ? 'duelo' : 'comando'} ${usedPrefix}${command} de ${m.pushName || senderNumber}`);
           await plugin.handler(ctx);
         } catch (error) {
-          console.error(`❌ Error en plugin ${name}:`, error);
+          log.error(`Error en plugin ${name}:`, error);
           if (error instanceof Error) {
             await m.reply(`❌ Error: ${error.message}`);
           } else {

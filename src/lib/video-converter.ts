@@ -1,5 +1,5 @@
 /**
- * 🎬 Conversor de Video para WhatsApp - CYALTRONIC
+ * Conversor de Video para WhatsApp
  * Re-codifica videos para compatibilidad con WhatsApp
  */
 

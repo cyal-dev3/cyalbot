@@ -1,5 +1,5 @@
 /**
- * 💾 Sistema de Base de Datos para CYALTRONIC
+ * Sistema de Base de Datos
  * Wrapper tipado sobre LowDB para persistencia JSON
  */
 

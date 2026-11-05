@@ -1,5 +1,5 @@
 /**
- * 💕 Plugin de Calculadora de Amor
+ * Plugin de Calculadora de Amor
  * Comando: /amor
  */
 

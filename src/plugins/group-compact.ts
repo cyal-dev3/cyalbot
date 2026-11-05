@@ -1,5 +1,5 @@
 /**
- * 🔇 Plugin de Modo Compacto
+ * Plugin de Modo Compacto
  * Reduce el spam del bot usando reacciones en lugar de mensajes
  */
 

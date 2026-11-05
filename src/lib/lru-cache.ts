@@ -1,5 +1,5 @@
 /**
- * 📦 Simple LRU Cache Implementation
+ * Simple LRU Cache Implementation
  * Limita el tamaño del cache eliminando elementos menos usados
  */
 

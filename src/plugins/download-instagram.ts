@@ -1,5 +1,5 @@
 /**
- * 📸 Plugin de Descarga de Instagram
+ * Plugin de Descarga de Instagram
  * Comando: /ig
  * Usa múltiples APIs con fallback para máxima confiabilidad
  */

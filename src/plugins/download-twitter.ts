@@ -1,5 +1,5 @@
 /**
- * 🐦 Plugin de Descarga de Twitter/X
+ * Plugin de Descarga de Twitter/X
  * Comando: /twitter
  * Usa múltiples APIs con fallback para máxima confiabilidad
  */

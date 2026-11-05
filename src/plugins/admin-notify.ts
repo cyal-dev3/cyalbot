@@ -1,5 +1,5 @@
 /**
- * 🔔 Plugin de Notificación Forzada - CYALTRONIC
+ * Plugin de Notificación Forzada
  * Envía un mensaje que notifica a todos los miembros del grupo
  * incluso si tienen el grupo silenciado
  */

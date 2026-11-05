@@ -1,5 +1,5 @@
 /**
- * 🏰 Plugin de Dungeons - RPG
+ * Plugin de Dungeons - RPG
  * Comando: dungeon - Explora mazmorras peligrosas
  */
 

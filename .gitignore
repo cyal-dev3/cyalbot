@@ -34,3 +34,10 @@ temp/
 *.tmp
 .claude
 CLAUDE.md
+
+# Caché de resolución de LIDs (contiene números de teléfono)
+lidsresolve.json
+*.session
+
+# Datos en Docker
+data/

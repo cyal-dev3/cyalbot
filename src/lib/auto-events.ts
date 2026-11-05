@@ -1,5 +1,5 @@
 /**
- * 🎲 Sistema de Eventos Automáticos Aleatorios - CYALTRONIC
+ * Sistema de Eventos Automáticos Aleatorios
  *
  * Genera eventos aleatorios de bonificación (x2 a x10) con duraciones
  * variables (1m, 2m, 5m, 10m, 30m) de manera automática y aleatoria.

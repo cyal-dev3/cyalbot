@@ -1,5 +1,5 @@
 /**
- * 🎬 Plugin Sticker a Video/GIF - CYALTRONIC
+ * Plugin Sticker a Video/GIF
  * Convierte stickers animados a video o GIF
  * Comando: .tovideo, .tovid, .togif
  */

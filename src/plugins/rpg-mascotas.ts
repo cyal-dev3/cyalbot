@@ -1,5 +1,5 @@
 /**
- * 🐾 Plugin Mascotas - CYALTRONIC
+ * Plugin Mascotas
  * Sistema de compañeros: adopta, alimenta y entrena una mascota
  * que aporta pequeños buffs al dueño y sube de nivel con él.
  */

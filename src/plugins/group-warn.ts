@@ -1,5 +1,5 @@
 /**
- * ⚠️ Plugin de Sistema de Advertencias
+ * Plugin de Sistema de Advertencias
  * Comandos: /warn, /unwarn, /listwarn, /clearwarn
  */
 

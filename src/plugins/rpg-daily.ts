@@ -1,5 +1,5 @@
 /**
- * 🎁 Plugin Daily - CYALTRONIC
+ * Plugin Daily
  * Recompensa diaria que se puede reclamar cada 2 horas
  */
 

@@ -1,5 +1,5 @@
 /**
- * 🔧 Utilidades para CYALTRONIC
+ * Utilidades
  * Funciones auxiliares y constantes
  */
 

@@ -1,5 +1,5 @@
 /**
- * 🎨 Plugin Auto-Sticker - CYALTRONIC
+ * Plugin Auto-Sticker
  * Convierte imágenes automáticamente a stickers
  * Comando: /autosticker on|off
  */

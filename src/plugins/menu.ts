@@ -1,5 +1,5 @@
 /**
- * 📋 Plugin de Menú - CYALTRONIC
+ * Plugin de Menú
  * Menú simplificado por categorías con mejoras
  */
 
@@ -34,6 +34,9 @@ interface CommandDetail {
  * Tips aleatorios para el menú
  */
 const MENU_TIPS = [
+  '💡 Mencióname en el grupo o escríbeme en privado y te respondo',
+  '💡 /resumen te pone al día si llegaste tarde a la conversación',
+  '💡 Responde a una foto con /ia y te digo qué hay en ella',
   '💡 Usa /perfil para ver tu progreso',
   '💡 /daily te da recompensas gratis cada día',
   '💡 Mina materiales con /minar para /forja',
@@ -54,6 +57,7 @@ const MENU_TIPS = [
  * Comandos rápidos (más usados)
  */
 const QUICK_COMMANDS = [
+  { cmd: 'ia', emoji: '🧠' },
   { cmd: 'perfil', emoji: '👤' },
   { cmd: 'daily', emoji: '🎁' },
   { cmd: 'work', emoji: '💼' },
@@ -68,6 +72,10 @@ const QUICK_COMMANDS = [
  * Comandos NUEVOS (categoría especial)
  */
 const NEW_COMMANDS: CommandDetail[] = [
+  // IA con Claude
+  { cmd: 'ia', aliases: ['ai', 'bot', 'pregunta'], desc: 'Pregúntale lo que sea al bot; recuerda la conversación un rato', usage: '/ia ¿qué es un agujero negro?' },
+  { cmd: 'resumen', aliases: ['tldr', 'summary'], desc: 'Resume los últimos mensajes del grupo', usage: '/resumen [cantidad]' },
+  { cmd: 'iachat', aliases: ['aichat'], desc: 'Que la IA responda a menciones en el grupo (admin)', usage: '/iachat on|off' },
   // Sistema de Betting/Tipsters (NUEVO)
   { cmd: 'betting', aliases: ['apuestas'], desc: 'Activar/desactivar sistema de betting (admin)', usage: '/betting on|off|auto' },
   { cmd: 'pick', aliases: ['apuesta', 'bet'], desc: 'Registrar pick respondiendo a imagen de tipster', usage: '/pick [unidades]' },
@@ -100,6 +108,12 @@ const NEW_COMMANDS: CommandDetail[] = [
  * Categorías del menú
  */
 const CATEGORIES: MenuCategory[] = [
+  {
+    id: 'ia',
+    emoji: '🧠',
+    name: 'Inteligencia Artificial',
+    commands: ['ia', 'resumen', 'iachat', 'iastats']
+  },
   {
     id: 'rpg',
     emoji: '🎮',
@@ -217,6 +231,11 @@ const CATEGORIES: MenuCategory[] = [
  * Detalles de comandos
  */
 const COMMANDS: Record<string, CommandDetail> = {
+  // IA
+  ia: { cmd: 'ia', aliases: ['ai', 'bot', 'claude', 'pregunta'], desc: 'Pregúntale al bot. También puedes mencionarlo o responder a un mensaje suyo. Responde a una imagen con /ia para que la describa. "/ia reset" borra la memoria del chat', usage: '/ia <pregunta>' },
+  resumen: { cmd: 'resumen', aliases: ['resume', 'summary', 'tldr'], desc: 'Resume los últimos mensajes del grupo (por defecto 100)', usage: '/resumen [cantidad]' },
+  iachat: { cmd: 'iachat', aliases: ['aichat', 'iamenciones'], desc: 'Activa/desactiva que la IA responda cuando la mencionan (admin)', usage: '/iachat on|off' },
+  iastats: { cmd: 'iastats', aliases: ['aistats', 'iauso'], desc: 'Consumo de tokens de la IA hoy (owner)', usage: '/iastats' },
   // RPG Básico
   verificar: { cmd: 'verificar', aliases: ['registrar', 'register'], desc: 'Registrarte en el juego', usage: '/verificar nombre.edad' },
   perfil: { cmd: 'perfil', aliases: ['profile', 'p'], desc: 'Ver tu perfil o el de alguien', usage: '/perfil [@usuario]' },

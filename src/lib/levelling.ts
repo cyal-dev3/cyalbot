@@ -1,5 +1,5 @@
 /**
- * 📊 Sistema de Niveles para CYALTRONIC
+ * Sistema de Niveles
  * Fórmula exponencial basada en el bot original
  */
 

@@ -1,5 +1,5 @@
 /**
- * 🗄️ Tipos de base de datos para CYALTRONIC
+ * Tipos de base de datos
  * Define el esquema de la base de datos JSON
  */
 
@@ -42,6 +42,8 @@ export interface ChatSettings {
   autoSticker: boolean;
   // Auto-Downloader: detectar URLs y descargar automáticamente
   autoDownload: boolean;
+  // IA: responder cuando mencionan al bot o le contestan (por grupo)
+  aiChat?: boolean;
   // Frases personalizadas para comandos de diversión
   customPoka?: string[];        // Frases personalizadas para .poka
   customCtm?: string[];         // Frases personalizadas para .ctm
@@ -154,7 +156,17 @@ export interface DatabaseSchema {
       maxInterval: number;
       announcementGroups: string[];
     };
+    /** Uso de la IA por día (clave YYYY-MM-DD) */
+    aiUsage?: Record<string, AIUsageDay>;
   };
+}
+
+/** Consumo diario de la integración con Claude */
+export interface AIUsageDay {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
 }
 
 /**
@@ -177,6 +189,7 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   badWords: [],
   autoSticker: false,
   autoDownload: false,
+  aiChat: true,
   bettingSystem: undefined
 };
 

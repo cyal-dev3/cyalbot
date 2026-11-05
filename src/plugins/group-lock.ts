@@ -1,5 +1,5 @@
 /**
- * 🔒 Plugin de Cerrar/Abrir Grupo
+ * Plugin de Cerrar/Abrir Grupo
  * Comandos: close, open, cerrar, abrir
  */
 

@@ -1,5 +1,5 @@
 /**
- * 📥 Librería Universal de Descargadores - CYALTRONIC
+ * Librería Universal de Descargadores
  * APIs múltiples con fallbacks para máxima confiabilidad
  */
 
@@ -55,6 +55,9 @@ interface Dev3ApiResponse {
  * Esta es la opción más rápida y confiable
  */
 export async function downloadWithDev3Api(url: string, audioOnly = false, quality: 'best' | 'medium' | 'low' = 'medium'): Promise<DownloadResult> {
+  if (!CONFIG.downloaderApi.url) {
+    return { success: false, error: 'dev3-downloader: no configurado (DOWNLOADER_API_URL)' };
+  }
   try {
     const response = await fetch(`${CONFIG.downloaderApi.url}/v1/download`, {
       method: 'POST',
@@ -99,6 +102,7 @@ export async function downloadWithDev3Api(url: string, audioOnly = false, qualit
  * Verifica si la API local está disponible
  */
 export async function isDev3ApiAvailable(): Promise<boolean> {
+  if (!CONFIG.downloaderApi.url) return false;
   try {
     const response = await fetch(`${CONFIG.downloaderApi.url}/health`, {
       signal: AbortSignal.timeout(5000),

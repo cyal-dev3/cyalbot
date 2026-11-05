@@ -1,5 +1,5 @@
 /**
- * 🌐 Plugin Universal de Descarga
+ * Plugin Universal de Descarga
  * Comando: /dl, /download
  * Detecta automáticamente la plataforma y descarga
  */

@@ -1,5 +1,5 @@
 /**
- * 🎰 Plugin de Tragamonedas
+ * Plugin de Tragamonedas
  * Comando: /slot
  */
 

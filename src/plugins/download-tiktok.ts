@@ -1,5 +1,5 @@
 /**
- * 📱 Plugin de Descarga de TikTok
+ * Plugin de Descarga de TikTok
  * Comando: /tiktok
  * Usa múltiples APIs con fallback para máxima confiabilidad
  */

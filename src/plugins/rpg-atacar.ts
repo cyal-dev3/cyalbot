@@ -1,5 +1,5 @@
 /**
- * ⚔️ Plugin de Combate PvE - RPG
+ * Plugin de Combate PvE - RPG
  * Comando: atacar - Lucha contra monstruos aleatorios
  */
 

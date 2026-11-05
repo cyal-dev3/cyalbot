@@ -1,5 +1,5 @@
 /**
- * 🎫 Plugin de Picks - Sistema de Betting CYALTRONIC
+ * Plugin de Picks - Sistema de Betting CYALTRONIC
  * Comandos para registrar y gestionar picks de tipsters
  */
 

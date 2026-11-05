@@ -1,5 +1,5 @@
 /**
- * 🎮 Constantes Centralizadas del Sistema RPG
+ * Constantes Centralizadas del Sistema RPG
  * Todos los valores configurables del RPG en un solo lugar
  */
 

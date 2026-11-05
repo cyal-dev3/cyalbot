@@ -1,5 +1,5 @@
 /**
- * 📊 Plugin admin-stats - CYALTRONIC
+ * Plugin admin-stats
  * Dashboard owner-only con métricas del bot para monitoreo en VPS.
  */
 

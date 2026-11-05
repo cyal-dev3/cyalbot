@@ -1,5 +1,5 @@
 /**
- * 👤 Plugin de Perfil - CYALTRONIC
+ * Plugin de Perfil
  * Muestra el perfil y estadísticas del jugador
  */
 

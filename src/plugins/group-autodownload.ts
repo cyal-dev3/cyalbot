@@ -1,5 +1,5 @@
 /**
- * 📥 Plugin Auto-Downloader - CYALTRONIC
+ * Plugin Auto-Downloader
  * Detecta URLs de redes sociales y descarga automáticamente
  * Comando: /autodownload on|off
  */

@@ -1,5 +1,5 @@
 /**
- * 📜 Plugin de Misiones - RPG
+ * Plugin de Misiones - RPG
  * Comandos: misiones, mision, reclamarmision
  */
 

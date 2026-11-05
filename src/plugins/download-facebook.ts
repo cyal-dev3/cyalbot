@@ -1,5 +1,5 @@
 /**
- * 📘 Plugin de Descarga de Facebook
+ * Plugin de Descarga de Facebook
  * Comando: /fb
  * Usa múltiples APIs con fallback para máxima confiabilidad
  */

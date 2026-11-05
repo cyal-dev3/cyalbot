@@ -1,5 +1,5 @@
 /**
- * 🔒 Plugin Mode System - CYALTRONIC
+ * Plugin Mode System
  * Controla el modo de operación del bot
  * Comando: /mode public|private|group|inbox
  */

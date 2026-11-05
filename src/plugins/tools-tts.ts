@@ -1,5 +1,5 @@
 /**
- * 🔊 Plugin Text-to-Speech (TTS) - CYALTRONIC
+ * Plugin Text-to-Speech (TTS)
  * Convierte texto a voz usando Google Translate TTS
  * Comando: /tts [idioma] <texto>
  */

@@ -1,5 +1,5 @@
 /**
- * 👋 Plugin de Bienvenida y Despedida
+ * Plugin de Bienvenida y Despedida
  * Comandos: /setwelcome, /setbye, /welcome, /bye
  */
 

@@ -1,5 +1,5 @@
 /**
- * 🔄 Sistema de Regeneración Pasiva - CYALTRONIC
+ * Sistema de Regeneración Pasiva
  *
  * Regenera vida y energía de los jugadores automáticamente con el tiempo.
  * - Vida: +10 HP cada hora (máximo: maxHealth)

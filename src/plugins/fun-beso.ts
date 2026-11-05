@@ -1,5 +1,5 @@
 /**
- * 💋 Plugin de Besos
+ * Plugin de Besos
  * Comando: /beso, /kiss
  */
 

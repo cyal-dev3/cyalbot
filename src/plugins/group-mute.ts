@@ -1,5 +1,5 @@
 /**
- * 🔇 Plugin de Mute para Grupos
+ * Plugin de Mute para Grupos
  * Comandos: mute, unmute, automute, listmute
  */
 

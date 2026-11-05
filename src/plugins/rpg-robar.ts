@@ -1,5 +1,5 @@
 /**
- * 🦹 Plugin de Robo - RPG
+ * Plugin de Robo - RPG
  * Comando: robar - Intenta robar recursos de otro jugador
  */
 

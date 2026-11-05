@@ -1,6 +1,6 @@
 /**
- * 🔌 Motor Principal de CYALTRONIC
- * Conexión a WhatsApp usando Baileys
+ * Conexión a WhatsApp con Baileys: autenticación por QR o código de
+ * emparejamiento, y creación del socket.
  */
 
 import makeWASocket, {
@@ -8,32 +8,33 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  Browsers,
   type WASocket,
   type ConnectionState,
-  Browsers
 } from 'baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
-import * as readline from 'readline';
-import * as fs from 'fs';
+import * as readline from 'node:readline';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import NodeCache from 'node-cache';
 import chalk from 'chalk';
-// @ts-ignore - qrcode-terminal no tiene tipos
+// @ts-ignore - qrcode-terminal no publica tipos
 import qrcode from 'qrcode-terminal';
 import { CONFIG } from './config.js';
+import { createLogger } from './lib/logger.js';
 
-// Logger silencioso para Baileys
-const logger = pino({ level: 'silent' });
+const log = createLogger('whatsapp');
 
-// Caché para reintentos de mensajes — bounded para VPS de larga duración
-export const msgRetryCounterCache = new NodeCache({
-  stdTTL: 300,
-  useClones: false,
-  maxKeys: 5000
-});
+// Baileys es muy ruidoso; sus logs se silencian y se usan los nuestros.
+const baileysLogger = pino({ level: 'silent' });
 
-// setTimeout activo para solicitar el código de emparejamiento (trackeado para poder cancelarlo)
+export const msgRetryCounterCache = new NodeCache({ stdTTL: 300, useClones: false, maxKeys: 5000 });
+
 let pairingTimeout: NodeJS.Timeout | null = null;
+let rl: readline.Interface | null = null;
+let useQRMethod = true;
+let savedPhoneNumber: string | undefined;
 
 export function cancelPairingTimeout(): void {
   if (pairingTimeout) {
@@ -42,241 +43,136 @@ export function cancelPairingTimeout(): void {
   }
 }
 
-// Variable global para el readline
-let rl: readline.Interface | null = null;
-
-// Variables globales para el método de autenticación
-let useQRMethod = true;
-let savedPhoneNumber: string | undefined;
-
-/**
- * Verifica si existe el archivo creds.json (sesión guardada)
- */
 function hasExistingSession(): boolean {
-  const credsPath = `${CONFIG.authFolder}/creds.json`;
-  return fs.existsSync(credsPath);
+  return fs.existsSync(path.join(CONFIG.authFolder, 'creds.json'));
 }
 
-/**
- * Crea o retorna la interfaz readline
- */
-function getReadline(): readline.Interface {
-  if (!rl) {
-    rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
+function ask(prompt: string): Promise<string> {
+  rl ??= readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => rl!.question(prompt, resolve));
+}
+
+function closePrompt(): void {
+  rl?.close();
+  rl = null;
+}
+
+/** Deja solo dígitos. México: añade el 1 tras el 52 si falta (formato de WhatsApp). */
+export function formatPhoneNumber(phone: string): string {
+  let digits = phone.replace(/\D/g, '');
+  if (digits.startsWith('52') && !digits.startsWith('521') && digits.length === 12) {
+    digits = '521' + digits.slice(2);
   }
-  return rl;
+  return digits;
 }
 
-/**
- * Cierra la interfaz readline
- */
-function closeReadline(): void {
-  if (rl) {
-    rl.close();
-    rl = null;
-  }
-}
-
-/**
- * Pregunta al usuario y espera respuesta
- */
-async function question(prompt: string): Promise<string> {
-  const readline = getReadline();
-  return new Promise((resolve) => {
-    readline.question(prompt, (answer) => {
-      resolve(answer);
-    });
-  });
-}
-
-/**
- * Formatea un número de teléfono para WhatsApp
- */
-function formatPhoneNumber(phone: string): string {
-  let formatted = phone.replace(/[^0-9]/g, '');
-
-  // Caso especial para México: agregar 1 después del 52
-  if (formatted.startsWith('52') && !formatted.startsWith('521') && formatted.length === 12) {
-    formatted = '521' + formatted.slice(2);
-  }
-
-  return formatted;
-}
-
-/**
- * Inicia el bot y conecta a WhatsApp
- */
-export async function startBot(): Promise<WASocket> {
-  // Cargar estado de autenticación
-  const { state, saveCreds } = await useMultiFileAuthState(CONFIG.authFolder);
-  const { version } = await fetchLatestBaileysVersion();
-
-  console.log(chalk.cyan(`\n🔌 Versión de WhatsApp Web: ${version.join('.')}\n`));
-
-  // Determinar método de autenticación desde argumentos
+async function chooseAuthMethod(): Promise<{ useQR: boolean; phoneNumber?: string }> {
   const methodQR = process.argv.includes('--method=qr');
   const methodCode = process.argv.includes('--method=code');
-  const phoneArg = process.argv.find(arg => arg.startsWith('--phone='));
-  const phoneFromArg = phoneArg?.split('=')[1];
+  const phoneFromArg = process.argv.find((a) => a.startsWith('--phone='))?.split('=')[1];
 
-  let useQR = useQRMethod;
-  let phoneNumber: string | undefined = savedPhoneNumber;
-
-  // PRIORIDAD 1: Si existe creds.json, conectar directamente sin preguntar nada
   if (hasExistingSession()) {
-    console.log(chalk.green('📱 Sesión existente encontrada, conectando...\n'));
-    // No preguntamos nada, solo conectamos
-  }
-  // PRIORIDAD 2: Si se pasó argumento por línea de comandos
-  else if (methodQR || methodCode) {
-    useQR = methodQR || !methodCode;
-    if (phoneFromArg) {
-      phoneNumber = formatPhoneNumber(phoneFromArg);
-      savedPhoneNumber = phoneNumber;
-    }
-  }
-  // PRIORIDAD 3: Primera vez sin sesión - preguntar al usuario
-  else {
-    console.log(chalk.yellow('═══════════════════════════════════════'));
-    console.log(chalk.yellow('   🤖 CYALTRONIC - Autenticación'));
-    console.log(chalk.yellow('═══════════════════════════════════════\n'));
-
-    const answer = await question(chalk.white(
-      '📱 Selecciona el método de autenticación:\n\n' +
-      '  1️⃣  Escanear código QR\n' +
-      '  2️⃣  Código de 8 dígitos\n\n' +
-      '➡️  Tu elección (1 o 2): '
-    ));
-
-    useQR = answer.trim() !== '2';
-
-    if (!useQR) {
-      console.log('');
-      const phone = await question(chalk.white(
-        '📞 Ingresa tu número de WhatsApp con código de país:\n' +
-        '   Ejemplo: 5213314429560 (México)\n\n' +
-        '➡️  Número: '
-      ));
-      phoneNumber = formatPhoneNumber(phone);
-      savedPhoneNumber = phoneNumber;
-    }
-
-    closeReadline(); // Cerrar readline después de obtener respuestas
+    log.info('sesión existente encontrada, conectando');
+    return { useQR: useQRMethod, phoneNumber: savedPhoneNumber };
   }
 
-  // Guardar método elegido globalmente
+  if (methodQR || methodCode) {
+    return {
+      useQR: methodQR || !methodCode,
+      phoneNumber: phoneFromArg ? formatPhoneNumber(phoneFromArg) : undefined,
+    };
+  }
+
+  // Interactivo: primera vez sin sesión y sin argumentos.
+  console.log('');
+  console.log(chalk.bold('Vincular WhatsApp'));
+  console.log('  1) Escanear código QR');
+  console.log('  2) Código de 8 dígitos (sin cámara)');
+  const answer = await ask('Elige (1 o 2): ');
+  const useQR = answer.trim() !== '2';
+  let phoneNumber: string | undefined;
+  if (!useQR) {
+    const phone = await ask('Número con código de país (ej. 5213312345678): ');
+    phoneNumber = formatPhoneNumber(phone);
+  }
+  closePrompt();
+  return { useQR, phoneNumber };
+}
+
+export async function startBot(): Promise<WASocket> {
+  const { state, saveCreds } = await useMultiFileAuthState(CONFIG.authFolder);
+  const { version } = await fetchLatestBaileysVersion();
+  log.info(`WhatsApp Web v${version.join('.')}`);
+
+  const { useQR, phoneNumber } = await chooseAuthMethod();
   useQRMethod = useQR;
+  savedPhoneNumber = phoneNumber;
 
-  // Crear conexión con Baileys
   const conn = makeWASocket({
     version,
-    logger,
+    logger: baileysLogger,
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger)
+      keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
     },
     browser: Browsers.ubuntu('Chrome'),
     generateHighQualityLinkPreview: true,
     msgRetryCounterCache,
     defaultQueryTimeoutMs: undefined,
-    markOnlineOnConnect: true
+    markOnlineOnConnect: true,
   });
 
-  // Solicitar código de pairing si es necesario (solo si NO hay sesión existente)
   if (!useQR && !hasExistingSession() && phoneNumber) {
-    console.log(chalk.yellow('\n⏳ Solicitando código de emparejamiento...\n'));
-
+    log.info('solicitando código de emparejamiento');
     pairingTimeout = setTimeout(async () => {
       pairingTimeout = null;
       try {
-        const code = await conn.requestPairingCode(phoneNumber!);
-        const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-
-        console.log(chalk.green('═══════════════════════════════════════'));
-        console.log(chalk.green('   🔐 CÓDIGO DE EMPAREJAMIENTO'));
-        console.log(chalk.green('═══════════════════════════════════════\n'));
-        console.log(chalk.white.bold(`   📱 Tu código: ${chalk.cyan.bold(formattedCode)}\n`));
-        console.log(chalk.gray('   1. Abre WhatsApp en tu teléfono'));
-        console.log(chalk.gray('   2. Ve a Dispositivos vinculados'));
-        console.log(chalk.gray('   3. Toca "Vincular dispositivo"'));
-        console.log(chalk.gray('   4. Ingresa el código de arriba\n'));
-        console.log(chalk.green('═══════════════════════════════════════\n'));
+        const code = await conn.requestPairingCode(phoneNumber);
+        const pretty = code?.match(/.{1,4}/g)?.join('-') || code;
+        console.log('');
+        console.log(chalk.bold(`  Código de emparejamiento: ${chalk.cyan(pretty)}`));
+        console.log(chalk.gray('  WhatsApp > Dispositivos vinculados > Vincular dispositivo > Vincular con número'));
+        console.log('');
       } catch (error) {
-        console.error(chalk.red('❌ Error al solicitar código:'), error);
+        log.error('no se pudo pedir el código:', error);
       }
     }, 3000);
   }
 
-  // Manejar eventos de conexión
-  conn.ev.on('connection.update', (update: Partial<ConnectionState>) => {
-    handleConnectionUpdate(conn, update);
-  });
-
-  // Guardar credenciales cuando cambien
+  conn.ev.on('connection.update', (update) => onConnectionUpdate(conn, update));
   conn.ev.on('creds.update', saveCreds);
-
   return conn;
 }
 
-/**
- * Maneja los cambios de estado de conexión
- */
-function handleConnectionUpdate(
-  conn: WASocket,
-  update: Partial<ConnectionState>
-): void {
+function onConnectionUpdate(conn: WASocket, update: Partial<ConnectionState>): void {
   const { connection, lastDisconnect, qr } = update;
 
-  // Mostrar QR solo si NO hay sesión existente y el usuario eligió QR
   if (qr && useQRMethod && !hasExistingSession()) {
-    console.log(chalk.cyan('\n📱 Escanea el código QR con WhatsApp:\n'));
+    console.log('');
+    console.log(chalk.bold('  Escanea este QR con WhatsApp (Dispositivos vinculados):'));
     qrcode.generate(qr, { small: true });
     console.log('');
   }
 
-  // Conexión cerrada
   if (connection === 'close') {
-    const boom = lastDisconnect?.error as Boom;
-    const statusCode = boom?.output?.statusCode;
-
-    console.log(chalk.yellow('\n⚠️  Conexión cerrada'));
-
+    const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
     if (statusCode === DisconnectReason.loggedOut) {
-      console.log(chalk.red('❌ Sesión cerrada. Elimina la carpeta CyaltronicSession y vuelve a escanear.\n'));
+      log.error(`sesión cerrada desde el teléfono. Borra ${CONFIG.authFolder} y vuelve a vincular.`);
     } else if (statusCode === DisconnectReason.connectionReplaced) {
-      console.log(chalk.red('❌ Sesión reemplazada. Cierra otras instancias del bot.\n'));
+      log.error('sesión reemplazada: hay otra instancia del bot corriendo.');
     } else {
-      console.log(chalk.yellow('🔄 Reconectando automáticamente...\n'));
+      log.warn(`conexión cerrada (código ${statusCode ?? 'desconocido'})`);
     }
   }
 
-  // Conexión abierta exitosamente
   if (connection === 'open') {
-    console.log(chalk.green('\n═══════════════════════════════════════'));
-    console.log(chalk.green('   ✅ CYALTRONIC CONECTADO'));
-    console.log(chalk.green('═══════════════════════════════════════\n'));
-    console.log(chalk.white(`   🤖 Bot: ${CONFIG.botName}`));
-    console.log(chalk.white(`   📱 Usuario: ${conn.user?.id?.split(':')[0] || 'N/A'}`));
-    console.log(chalk.white(`   📅 Fecha: ${new Date().toLocaleString('es-MX')}\n`));
-    console.log(chalk.green('═══════════════════════════════════════\n'));
-    console.log(chalk.cyan('   ⏳ Esperando mensajes...\n'));
+    const user = conn.user?.id?.split(':')[0] || 'desconocido';
+    log.info(`conectado como ${user}`);
   }
 }
 
-/**
- * Verifica si hubo desconexión y si debe reconectar
- */
+/** Reconectar salvo que la sesión se haya cerrado o reemplazado. */
 export function shouldReconnect(error: Error | undefined): boolean {
-  const boom = error as Boom | undefined;
-  const statusCode = boom?.output?.statusCode;
-
-  // No reconectar si cerró sesión o fue reemplazada
-  if (statusCode === DisconnectReason.loggedOut) return false;
-  if (statusCode === DisconnectReason.connectionReplaced) return false;
-
-  // Reconectar en otros casos
-  return true;
+  const statusCode = (error as Boom | undefined)?.output?.statusCode;
+  return statusCode !== DisconnectReason.loggedOut && statusCode !== DisconnectReason.connectionReplaced;
 }

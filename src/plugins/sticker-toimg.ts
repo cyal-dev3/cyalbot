@@ -1,5 +1,5 @@
 /**
- * 🖼️ Plugin Sticker a Imagen - CYALTRONIC
+ * Plugin Sticker a Imagen
  * Convierte stickers a imágenes PNG
  * Comando: .toimg, .toimage, .img
  */

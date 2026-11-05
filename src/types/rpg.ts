@@ -1,5 +1,5 @@
 /**
- * 🎮 Tipos del Sistema RPG Expandido - CYALTRONIC
+ * Tipos del Sistema RPG Expandido
  * Define items, clases, monstruos, dungeons, misiones y logros
  */
 

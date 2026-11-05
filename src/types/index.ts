@@ -1,5 +1,5 @@
 /**
- * 📦 Exportaciones centralizadas de tipos
+ * Exportaciones centralizadas de tipos
  * CYALTRONIC Bot
  */
 

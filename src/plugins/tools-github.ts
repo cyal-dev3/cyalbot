@@ -1,5 +1,5 @@
 /**
- * 🐛 Plugin de GitHub Issues - CYALTRONIC
+ * Plugin de GitHub Issues
  * Comandos: /bug, /feat
  * Permite a usuarios reportar bugs y solicitar features creando issues en GitHub
  */
@@ -7,9 +7,9 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 
 // Configuración de GitHub
-const GITHUB_OWNER = 'cyal-dev3';
-const GITHUB_REPO = 'cyalbot';
-const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues`;
+// Repositorio destino de los issues, en formato owner/repo (configurable por GITHUB_REPO).
+const GITHUB_REPO = process.env.GITHUB_REPO || 'cyal-dev3/cyalbot';
+const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/issues`;
 
 // Requisitos mínimos de caracteres
 const MIN_CHARS_BUG = 50;

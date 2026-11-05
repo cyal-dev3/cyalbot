@@ -1,5 +1,5 @@
 /**
- * 🏆 Plugin de Rankings y Logros - RPG
+ * Plugin de Rankings y Logros - RPG
  * Comandos: ranking, top, logros, achievements
  */
 

@@ -1,5 +1,5 @@
 /**
- * 🎰 Plugin de Ruleta Multiplayer
+ * Plugin de Ruleta Multiplayer
  * Comando: /ruleta, /apostar, /ruletamesa, /ruletainfo
  */
 

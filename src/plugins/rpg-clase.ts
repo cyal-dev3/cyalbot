@@ -1,5 +1,5 @@
 /**
- * 🎭 Plugin de Clases - RPG
+ * Plugin de Clases - RPG
  * Comandos: clase, clases, elegirclase
  */
 

@@ -1,5 +1,5 @@
 /**
- * ⚔️ Plugin de Duelos PvP - RPG
+ * Plugin de Duelos PvP - RPG
  * Sistema de combate en tiempo real MEJORADO
  * Más interactivo, balanceado y estratégico
  */

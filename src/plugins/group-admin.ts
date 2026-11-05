@@ -1,5 +1,5 @@
 /**
- * 👑 Plugin de Administración de Grupo
+ * Plugin de Administración de Grupo
  * Comandos: promote, demote, kick
  */
 

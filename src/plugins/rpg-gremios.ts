@@ -1,5 +1,5 @@
 /**
- * 🏰 Plugin Gremios - CYALTRONIC
+ * Plugin Gremios
  * Permite formar, unirse y gestionar gremios con tesorería compartida.
  * Comandos: /gremio crear|unirse|salir|tesoro|depositar|info|listar
  */

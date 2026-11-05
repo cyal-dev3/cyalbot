@@ -1,5 +1,5 @@
 /**
- * 🎨 Librería de Stickers - CYALTRONIC
+ * Librería de Stickers
  * Convierte imágenes/videos a stickers y viceversa
  */
 

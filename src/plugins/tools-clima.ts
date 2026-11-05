@@ -1,5 +1,5 @@
 /**
- * 🌤️ Plugin de Clima
+ * Plugin de Clima
  * Comando: /clima
  */
 
@@ -8,7 +8,7 @@ import type { PluginHandler, MessageContext } from '../types/message.js';
 /**
  * Obtiene información del clima usando wttr.in
  */
-async function getWeather(city: string): Promise<{
+export async function getWeather(city: string): Promise<{
   success: boolean;
   data?: {
     location: string;

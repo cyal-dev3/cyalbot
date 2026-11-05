@@ -1,5 +1,5 @@
 /**
- * 🎫 Plugin de Tipsters - Sistema de Betting CYALTRONIC
+ * Plugin de Tipsters - Sistema de Betting CYALTRONIC
  * Comandos para gestionar tipsters favoritos y notificaciones
  */
 

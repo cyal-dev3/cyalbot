@@ -1,5 +1,5 @@
 /**
- * 🎮 Utilidades del Sistema RPG - CYALTRONIC
+ * Utilidades del Sistema RPG
  * Funciones compartidas entre plugins RPG
  */
 

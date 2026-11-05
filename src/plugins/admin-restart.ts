@@ -1,119 +1,91 @@
 /**
- * 🔄 Plugin de Administracion del Servidor
- * Comandos: restart, reiniciar, gitpull, update
- * Solo para el owner del bot
+ * Administración del servidor: restart, gitpull, logs.
+ * Solo owner. Asume que el bot corre bajo pm2 con el nombre de CONFIG.pm2Name.
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { PluginHandler } from '../types/message.js';
+import { CONFIG } from '../config.js';
 
-/**
- * Plugin: Restart - Reinicia el bot usando pm2
- */
+const run = promisify(execFile);
+
+function fence(text: string, max = 3500): string {
+  let out = text.trim();
+  if (out.length > max) out = '...(truncado)\n' + out.slice(-max);
+  return '```' + out + '```';
+}
+
 export const restartPlugin: PluginHandler = {
   command: ['restart', 'reiniciar', 'reboot'],
   tags: ['owner'],
-  help: ['restart - Reinicia el servidor del bot (solo owner)'],
+  help: ['restart - Reinicia el bot vía pm2'],
   owner: true,
 
   handler: async (ctx) => {
-    await ctx.m.reply('🔄 *Reiniciando servidor...*\n\nEl bot se desconectara momentaneamente.');
-
-    // Dar tiempo para que el mensaje se envie
+    await ctx.m.reply('🔄 Reiniciando. El bot se desconectará unos segundos.');
+    // Pequeña espera para que el mensaje alcance a salir antes de morir.
     setTimeout(() => {
-      exec('pm2 restart CYALTRONIC', (error, stdout, stderr) => {
+      execFile('pm2', ['restart', CONFIG.pm2Name], (error) => {
         if (error) {
-          console.error('Error al reiniciar con pm2:', error);
-          // El mensaje de error no llegara porque el bot ya se reinicio o fallo
+          console.error('No se pudo reiniciar con pm2:', error.message);
+          // Si pm2 no está, salimos y dejamos que el supervisor (docker, systemd) nos levante.
+          process.exit(0);
         }
       });
     }, 1500);
-  }
+  },
 };
 
-/**
- * Plugin: GitPull - Jala los ultimos cambios de GitHub
- */
 export const gitPullPlugin: PluginHandler = {
   command: ['gitpull', 'pull', 'update', 'actualizar'],
   tags: ['owner'],
-  help: ['gitpull - Descarga los ultimos cambios de GitHub (solo owner)'],
+  help: ['gitpull - Descarga los últimos cambios del repositorio'],
   owner: true,
 
   handler: async (ctx) => {
-    await ctx.m.reply('📥 *Descargando cambios de GitHub...*');
-
-    const gitCommand = 'cd /home/dev3/cyalbot/ && sudo -u dev3 git pull';
-
-    exec(gitCommand, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Error en git pull:', error);
-        ctx.m.reply(`❌ *Error al hacer git pull:*\n\n\`\`\`${error.message}\`\`\``);
+    await ctx.m.reply('📥 Descargando cambios...');
+    try {
+      const { stdout, stderr } = await run('git', ['pull', '--ff-only'], { cwd: process.cwd() });
+      const output = (stdout || stderr || '').trim();
+      if (/already up to date|ya está actualizado/i.test(output)) {
+        await ctx.m.reply('✅ Ya tienes la última versión.');
         return;
       }
-
-      const output = stdout || stderr || 'Sin cambios';
-
-      // Verificar si hay cambios
-      if (output.includes('Already up to date') || output.includes('Ya esta actualizado')) {
-        ctx.m.reply('✅ *Ya tienes la ultima version*\n\nNo hay cambios nuevos en el repositorio.');
-      } else {
-        ctx.m.reply(`✅ *Cambios descargados exitosamente*\n\n\`\`\`${output}\`\`\`\n\n💡 Usa */restart* para aplicar los cambios.`);
-      }
-    });
-  }
+      await ctx.m.reply(`✅ Cambios descargados.\n\n${fence(output)}\n\nCompila con \`npm run build\` y usa */restart* para aplicarlos.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await ctx.m.reply(`❌ Error al hacer git pull:\n\n${fence(message)}`);
+    }
+  },
 };
 
-/**
- * Plugin: Logs - Ver los logs de errores del servidor
- */
 export const logsPlugin: PluginHandler = {
   command: ['logs', 'errorlogs', 'errors', 'serverlogs'],
   tags: ['owner'],
-  help: [
-    'logs - Ver los ultimos 20 errores del servidor',
-    'logs [numero] - Ver los ultimos N errores (max 100)'
-  ],
+  help: ['logs [n] - Últimas n líneas de error del servidor (máx 100)'],
   owner: true,
 
   handler: async (ctx) => {
     const { m, args } = ctx;
+    const requested = parseInt(args[0] ?? '', 10);
+    const lines = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 100) : 20;
 
-    // Numero de lineas a mostrar (default 20, max 100)
-    let lines = 20;
-    if (args[0]) {
-      const requested = parseInt(args[0]);
-      if (!isNaN(requested) && requested > 0) {
-        lines = Math.min(requested, 100);
-      }
-    }
-
-    await m.reply(`📋 *Obteniendo ultimos ${lines} errores...*`);
-
-    // Usar pm2 logs con --err para solo errores y --nostream para no bloquear
-    const logsCommand = `pm2 logs CYALTRONIC --err --lines ${lines} --nostream`;
-
-    exec(logsCommand, { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Error al obtener logs:', error);
-        m.reply(`❌ *Error al obtener logs:*\n\n\`\`\`${error.message}\`\`\``);
+    try {
+      const { stdout, stderr } = await run(
+        'pm2',
+        ['logs', CONFIG.pm2Name, '--err', '--lines', String(lines), '--nostream'],
+        { maxBuffer: 1024 * 1024 },
+      );
+      const output = (stdout || stderr || '').trim();
+      if (output.length < 10) {
+        await m.reply('✅ No hay errores recientes.');
         return;
       }
-
-      const output = stdout || stderr || 'Sin errores recientes';
-
-      // Truncar si es muy largo para WhatsApp (max ~4000 chars)
-      let logOutput = output.trim();
-      if (logOutput.length > 4000) {
-        logOutput = logOutput.substring(logOutput.length - 4000);
-        logOutput = '...(truncado)\n\n' + logOutput;
-      }
-
-      if (!logOutput || logOutput === 'Sin errores recientes' || logOutput.length < 10) {
-        m.reply('✅ *No hay errores recientes*\n\nEl servidor está funcionando correctamente.');
-      } else {
-        m.reply(`📋 *LOGS DE ERRORES (ultimos ${lines}):*\n\n\`\`\`${logOutput}\`\`\``);
-      }
-    });
-  }
+      await m.reply(`📋 Últimos ${lines} errores:\n\n${fence(output)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await m.reply(`❌ No se pudieron leer los logs:\n\n${fence(message)}`);
+    }
+  },
 };

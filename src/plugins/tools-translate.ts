@@ -1,5 +1,5 @@
 /**
- * 🌐 Plugin de Traducción
+ * Plugin de Traducción
  * Comando: /translate
  */
 

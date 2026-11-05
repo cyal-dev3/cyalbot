@@ -1,5 +1,5 @@
 /**
- * 🧹 Cleanup Scheduler — tareas periódicas de mantenimiento para VPS
+ * Cleanup Scheduler — tareas periódicas de mantenimiento para VPS
  *
  * - Sweep de tmp/ (archivos temporales de sticker / video conversion huérfanos tras crash)
  * - Poda de CyaltronicSession/ (pre-keys / sessions viejas)

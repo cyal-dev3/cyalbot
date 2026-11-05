@@ -1,5 +1,5 @@
 /**
- * ✅ Plugin de Registro - CYALTRONIC
+ * Plugin de Registro
  * Permite a los usuarios registrarse en el sistema RPG
  */
 

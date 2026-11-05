@@ -1,5 +1,5 @@
 /**
- * 🗑️ Plugin Anti-Delete - CYALTRONIC
+ * Plugin Anti-Delete
  * Reenvía mensajes eliminados al mismo grupo
  * Comando: /antidelete on|off
  */

@@ -1,5 +1,5 @@
 /**
- * 🎨 Plugin de Stickers - CYALTRONIC
+ * Plugin de Stickers
  * Convierte imágenes, videos y GIFs a stickers
  * Comando: .s, .sticker, .stiker
  */

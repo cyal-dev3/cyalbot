@@ -1,5 +1,5 @@
 /**
- * 📌 Plugin de Fijar Mensajes
+ * Plugin de Fijar Mensajes
  * Comando: pin - Fija un mensaje usando la API nativa de WhatsApp
  */
 
