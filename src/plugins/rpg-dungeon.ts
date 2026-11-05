@@ -188,4 +188,7 @@ export const dungeonPlugin: PluginHandler = {
   }
 };
 
+/** @deprecated Mismo plugin que dungeonPlugin; lo importaba plugins/index.ts. */
+export const dungeonsPlugin: PluginHandler = dungeonPlugin;
+
 export default dungeonPlugin;

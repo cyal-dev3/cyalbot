@@ -1,152 +1,132 @@
-/**
- * Plugin de Traducción
- * Comando: /translate
- */
+import type { PluginHandler } from '../types/message.js';
+import { createLogger } from '../lib/logger.js';
+import { normalizeText } from '../lib/utils.js';
 
-import type { PluginHandler, MessageContext } from '../types/message.js';
+const log = createLogger('tools');
+const TIMEOUT_MS = 10_000;
+const MAX_CHARS = 2000;
 
-// Códigos de idiomas comunes
-const LANGUAGE_CODES: Record<string, string> = {
-  // Español
-  'es': 'es', 'español': 'es', 'spanish': 'es',
-  // Inglés
-  'en': 'en', 'ingles': 'en', 'english': 'en', 'ing': 'en',
-  // Portugués
-  'pt': 'pt', 'portugues': 'pt', 'portuguese': 'pt',
-  // Francés
-  'fr': 'fr', 'frances': 'fr', 'french': 'fr',
-  // Alemán
-  'de': 'de', 'aleman': 'de', 'german': 'de',
-  // Italiano
-  'it': 'it', 'italiano': 'it', 'italian': 'it',
-  // Japonés
-  'ja': 'ja', 'japones': 'ja', 'japanese': 'ja', 'jp': 'ja',
-  // Coreano
-  'ko': 'ko', 'coreano': 'ko', 'korean': 'ko', 'kr': 'ko',
-  // Chino
-  'zh': 'zh', 'chino': 'zh', 'chinese': 'zh', 'cn': 'zh',
-  // Ruso
-  'ru': 'ru', 'ruso': 'ru', 'russian': 'ru',
-  // Árabe
-  'ar': 'ar', 'arabe': 'ar', 'arabic': 'ar',
-  // Hindi
-  'hi': 'hi', 'hindi': 'hi',
-  // Turco
-  'tr': 'tr', 'turco': 'tr', 'turkish': 'tr',
-  // Holandés
-  'nl': 'nl', 'holandes': 'nl', 'dutch': 'nl',
-  // Polaco
-  'pl': 'pl', 'polaco': 'pl', 'polish': 'pl',
-};
+interface Language {
+  code: string;
+  /** Nombre en español para mostrar */
+  label: string;
+  /** Formas aceptadas al escribir el idioma (sin acentos, minúsculas) */
+  names: string[];
+}
 
-/**
- * Traduce texto usando Google Translate API
- */
-async function translateText(text: string, targetLang: string, sourceLang: string = 'auto'): Promise<{
-  success: boolean;
+export const LANGUAGES: Language[] = [
+  { code: 'es', label: 'español', names: ['espanol', 'spanish', 'esp'] },
+  { code: 'en', label: 'inglés', names: ['ingles', 'english', 'ing'] },
+  { code: 'pt', label: 'portugués', names: ['portugues', 'portuguese', 'br'] },
+  { code: 'fr', label: 'francés', names: ['frances', 'french'] },
+  { code: 'de', label: 'alemán', names: ['aleman', 'german'] },
+  { code: 'it', label: 'italiano', names: ['italiano', 'italian'] },
+  { code: 'ja', label: 'japonés', names: ['japones', 'japanese', 'jp'] },
+  { code: 'ko', label: 'coreano', names: ['coreano', 'korean', 'kr'] },
+  { code: 'zh-CN', label: 'chino', names: ['chino', 'chinese', 'zh', 'cn'] },
+  { code: 'ru', label: 'ruso', names: ['ruso', 'russian'] },
+  { code: 'ar', label: 'árabe', names: ['arabe', 'arabic'] },
+  { code: 'hi', label: 'hindi', names: ['hindi'] },
+  { code: 'tr', label: 'turco', names: ['turco', 'turkish'] },
+  { code: 'nl', label: 'neerlandés', names: ['holandes', 'neerlandes', 'dutch'] },
+  { code: 'pl', label: 'polaco', names: ['polaco', 'polish'] },
+  { code: 'ca', label: 'catalán', names: ['catalan'] },
+  { code: 'la', label: 'latín', names: ['latin'] },
+];
+
+export function findLanguage(input: string): Language | null {
+  const key = normalizeText(input.trim());
+  if (!key) return null;
+  return LANGUAGES.find((l) => l.code.toLowerCase() === key || l.code.toLowerCase().split('-')[0] === key || l.names.includes(key)) ?? null;
+}
+
+function labelFor(code: string): string {
+  return findLanguage(code)?.label ?? code;
+}
+
+/** Respuesta de translate_a/single con dt=t&dj=1: sentences con trans y el idioma detectado. */
+interface GoogleTranslateResponse {
+  sentences?: { trans?: string }[];
+  src?: string;
+}
+
+export interface TranslationResult {
+  ok: boolean;
   translation?: string;
-  detectedLang?: string;
+  detected?: string;
   error?: string;
-}> {
+}
+
+export async function translateText(text: string, targetCode: string, sourceCode = 'auto'): Promise<TranslationResult> {
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(sourceCode)}&tl=${encodeURIComponent(targetCode)}&dt=t&dj=1&q=${encodeURIComponent(text)}`;
   try {
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
-
     const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-
-    const data = await response.json() as [[[string, string]], unknown, string];
-
-    if (!data || !data[0]) {
-      return { success: false, error: 'No se pudo traducir el texto' };
-    }
-
-    // Construir traducción desde las partes
-    let translation = '';
-    for (const part of data[0]) {
-      if (part[0]) translation += part[0];
-    }
-
-    return {
-      success: true,
-      translation,
-      detectedLang: data[2] || sourceLang
-    };
+    if (!response.ok) return { ok: false, error: `El traductor respondió ${response.status}.` };
+    if (!(response.headers.get('content-type') ?? '').includes('json')) return { ok: false, error: 'El traductor devolvió algo inesperado.' };
+    const data = (await response.json()) as GoogleTranslateResponse;
+    const translation = (data.sentences ?? []).map((s) => s.trans ?? '').join('').trim();
+    if (!translation) return { ok: false, error: 'No obtuve traducción.' };
+    return { ok: true, translation, detected: data.src || sourceCode };
   } catch (error) {
-    console.error('Error en traducción:', error);
-    return { success: false, error: 'Error al conectar con el traductor' };
+    log.warn('traductor:', error instanceof Error ? error.message : error);
+    return { ok: false, error: 'No pude conectar con el traductor.' };
   }
 }
 
-/**
- * Comando /translate - Traducir texto
- */
 export const translatePlugin: PluginHandler = {
   command: ['translate', 'traducir', 'tr'],
-  description: 'Traducir texto a otro idioma',
-  category: 'tools',
+  description: 'Traduce texto a otro idioma',
+  category: 'herramientas',
+  help: [
+    'translate [idioma] <texto> - Traduce (por defecto al español); también citando un mensaje',
+    'translate idiomas - Lista los idiomas disponibles',
+  ],
+  usage: ['translate en Hola mundo', 'translate japonés Buenos días', 'translate (citando un mensaje)'],
 
-  async handler(ctx: MessageContext) {
-    const { m, text, args } = ctx;
-
-    // Obtener texto del mensaje citado si existe
-    let textToTranslate = '';
-    let targetLang = 'es'; // Por defecto español
-
-    if (args.length === 0 && m.quoted?.text) {
-      // Si no hay argumentos pero hay mensaje citado
-      textToTranslate = m.quoted.text;
-    } else if (args.length === 1 && m.quoted?.text) {
-      // Si hay un argumento (idioma) y mensaje citado
-      targetLang = LANGUAGE_CODES[args[0].toLowerCase()] || args[0].toLowerCase();
-      textToTranslate = m.quoted.text;
-    } else if (args.length >= 2) {
-      // Primer argumento es el idioma, el resto es el texto
-      targetLang = LANGUAGE_CODES[args[0].toLowerCase()] || args[0].toLowerCase();
-      textToTranslate = args.slice(1).join(' ');
-    } else if (args.length === 1) {
-      // Solo texto, traducir a español
-      textToTranslate = args[0];
+  handler: async ({ m, args, usedPrefix }) => {
+    if (args.length === 1 && /^(idiomas|langs?|languages)$/i.test(args[0])) {
+      return m.reply(`🌐 *Idiomas*\n${LANGUAGES.map((l) => `• ${l.code} (${l.label})`).join('\n')}`);
     }
 
-    if (!textToTranslate) {
-      const langList = '• es (español)\n• en (inglés)\n• pt (portugués)\n• fr (francés)\n• de (alemán)\n• it (italiano)\n• ja (japonés)\n• ko (coreano)\n• zh (chino)\n• ru (ruso)';
+    const quoted = m.quoted?.text?.trim() || '';
+    let target = findLanguage('es')!;
+    let text = '';
 
-      await m.reply(
-        `🌐 *TRADUCTOR*\n\n` +
-        `📝 Uso:\n` +
-        `• /translate <idioma> <texto>\n` +
-        `• /translate <idioma> (citando mensaje)\n\n` +
-        `🌍 Idiomas disponibles:\n${langList}\n\n` +
-        `📌 Ejemplo:\n` +
-        `/translate en Hola mundo\n` +
-        `/translate japones Buenos días`
+    const firstAsLang = args.length > 0 ? findLanguage(args[0]) : null;
+    if (args.length === 0) {
+      text = quoted;
+    } else if (firstAsLang && args.length === 1) {
+      target = firstAsLang;
+      text = quoted;
+      if (!text) {
+        return m.reply(`¿Qué traduzco al ${target.label}? Escribe *${usedPrefix}translate ${args[0]} <texto>* o cita un mensaje.`);
+      }
+    } else if (firstAsLang) {
+      target = firstAsLang;
+      text = args.slice(1).join(' ');
+    } else {
+      text = args.join(' ');
+    }
+
+    if (!text) {
+      return m.reply(
+        `🌐 *${usedPrefix}translate [idioma] <texto>* o cita un mensaje.\n` +
+        `Ejemplos: *${usedPrefix}translate en Hola mundo*, *${usedPrefix}translate japonés Buenos días*\n` +
+        `Idiomas: *${usedPrefix}translate idiomas*`,
       );
-      return;
     }
+    if (text.length > MAX_CHARS) return m.reply(`Demasiado largo: máximo ${MAX_CHARS} caracteres.`);
 
     await m.react('⏳');
-
-    const result = await translateText(textToTranslate, targetLang);
-
-    if (!result.success || !result.translation) {
+    const result = await translateText(text, target.code);
+    if (!result.ok || !result.translation) {
       await m.react('❌');
-      await m.reply(`❌ ${result.error || 'No se pudo traducir el texto'}`);
-      return;
+      return m.reply(`❌ ${result.error ?? 'No pude traducir el texto.'}`);
     }
-
     await m.react('✅');
-
-    const langName = Object.entries(LANGUAGE_CODES).find(([_, code]) => code === result.detectedLang)?.[0] || result.detectedLang;
-
-    await m.reply(
-      `🌐 *TRADUCCIÓN*\n\n` +
-      `📤 Idioma detectado: ${langName}\n` +
-      `📥 Idioma destino: ${targetLang}\n\n` +
-      `📝 Original:\n${textToTranslate}\n\n` +
-      `✨ Traducción:\n${result.translation}`
-    );
-  }
+    await m.reply(`🌐 *${labelFor(result.detected ?? 'auto')} → ${target.label}*\n\n${result.translation}`);
+  },
 };

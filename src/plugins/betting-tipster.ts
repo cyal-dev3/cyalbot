@@ -91,6 +91,9 @@ export const tipsterPlugin: PluginHandler = {
   },
 };
 
+/** @deprecated /mistipsters ya es un alias de /tipster lista; plugins/index.ts debe dejar de registrarlo. */
+export const misTipstersPlugin = tipsterPlugin;
+
 export const tipstersDePlugin: PluginHandler = {
   command: ['tipsters', 'tipstersde'],
   tags: ['betting'],

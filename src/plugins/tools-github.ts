@@ -1,271 +1,138 @@
 /**
- * Plugin de GitHub Issues
- * Comandos: /bug, /feat
- * Permite a usuarios reportar bugs y solicitar features creando issues en GitHub
+ * /bug y /feat: crean issues en GitHub desde WhatsApp. Al issue solo va el
+ * nombre visible y los últimos 4 dígitos del número; nunca el JID del grupo.
  */
 
-import type { PluginHandler, MessageContext } from '../types/message.js';
+import type { PluginHandler } from '../types/message.js';
+import { createLogger } from '../lib/logger.js';
+import { RateLimiter } from '../lib/rate-limit.js';
+import { normalizeNumber } from '../config.js';
 
-// Configuración de GitHub
-// Repositorio destino de los issues, en formato owner/repo (configurable por GITHUB_REPO).
+const log = createLogger('tools');
+
+/** Repositorio destino de los issues, en formato owner/repo (configurable por GITHUB_REPO). */
 const GITHUB_REPO = process.env.GITHUB_REPO || 'cyal-dev3/cyalbot';
 const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/issues`;
+const TIMEOUT_MS = 15_000;
+const TITLE_MAX = 70;
 
-// Requisitos mínimos de caracteres
-const MIN_CHARS_BUG = 50;
-const MIN_CHARS_FEAT = 80;
+const perUser = new RateLimiter(3, 60 * 60_000);
+const global = new RateLimiter(20, 24 * 60 * 60_000);
+const GLOBAL_KEY = 'all';
 
-/**
- * Crea un issue en GitHub
- */
-async function createGitHubIssue(
-  title: string,
-  body: string,
-  labels: string[]
-): Promise<{ success: boolean; url?: string; error?: string }> {
+interface IssueResult {
+  ok: boolean;
+  number?: number;
+  url?: string;
+  error?: string;
+}
+
+async function createGitHubIssue(title: string, body: string, labels: string[]): Promise<IssueResult> {
   const token = process.env.GITHUB_TOKEN;
-
-  if (!token) {
-    return {
-      success: false,
-      error: 'Token de GitHub no configurado. Contacta al administrador.'
-    };
-  }
+  if (!token) return { ok: false, error: 'El reporte a GitHub no está configurado en este bot (falta GITHUB_TOKEN).' };
 
   try {
     const response = await fetch(GITHUB_API_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json',
-        'X-GitHub-Api-Version': '2022-11-28'
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'cyalbot',
       },
-      body: JSON.stringify({
-        title,
-        body,
-        labels
-      })
+      body: JSON.stringify({ title, body, labels }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error('GitHub API Error:', response.status, errorData);
-      return {
-        success: false,
-        error: `Error de GitHub API: ${response.status}`
-      };
+      const detail = await response.text().catch(() => '');
+      log.error(`GitHub respondió ${response.status}:`, detail.slice(0, 300));
+      return { ok: false, error: `GitHub respondió con error ${response.status}.` };
     }
-
-    const data = await response.json() as { html_url: string };
-    return {
-      success: true,
-      url: data.html_url
-    };
+    const data = (await response.json()) as { number: number; html_url: string };
+    return { ok: true, number: data.number, url: data.html_url };
   } catch (error) {
-    console.error('Error creating GitHub issue:', error);
-    return {
-      success: false,
-      error: 'Error de conexión con GitHub'
-    };
+    log.error('no se pudo crear el issue:', error instanceof Error ? error.message : error);
+    return { ok: false, error: 'No pude conectar con GitHub.' };
   }
 }
 
-/**
- * Formatea la fecha actual
- */
-function getCurrentDate(): string {
-  return new Date().toLocaleString('es-MX', {
-    timeZone: 'America/Mexico_City',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
+/** Primera línea del texto, sin saltos ni espacios repetidos, recortada para el título. */
+export function issueTitle(prefix: string, text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const cut = flat.length > TITLE_MAX ? `${flat.slice(0, TITLE_MAX - 1).trimEnd()}…` : flat;
+  return `${prefix} ${cut}`;
 }
 
-/**
- * Comando /bug - Reportar un bug
- */
-export const bugPlugin: PluginHandler = {
-  command: ['bug', 'reportar', 'reporte'],
-  description: 'Reportar un bug encontrado en el bot',
-  category: 'tools',
-  group: true,
+/** Nombre visible y últimos 4 dígitos: suficiente para reconocerse, sin exponer el número completo. */
+export function reporterLabel(pushName: string, sender: string): string {
+  const digits = normalizeNumber(sender);
+  const suffix = digits.length >= 4 ? `…${digits.slice(-4)}` : 'sin número';
+  return `${pushName.trim() || 'Usuario'} (${suffix})`;
+}
 
-  async handler(ctx: MessageContext) {
-    const { m, text } = ctx;
+interface IssueCommand {
+  kind: 'bug' | 'feat';
+  minChars: number;
+  labels: string[];
+  titlePrefix: string;
+}
 
-    // Verificar que se proporcionó descripción
-    if (!text.trim()) {
-      await m.reply(
-        `🐛 *REPORTAR BUG*\n\n` +
-        `📝 *Uso:* .bug <descripción detallada>\n\n` +
-        `📌 *Requisitos:*\n` +
-        `• Mínimo *${MIN_CHARS_BUG} caracteres*\n` +
-        `• Describe qué comando usaste\n` +
-        `• Explica qué esperabas que pasara\n` +
-        `• Describe qué pasó realmente\n\n` +
-        `📋 *Ejemplo:*\n` +
-        `.bug Cuando uso el comando .daily me dice que ya lo usé pero no he recibido las recompensas. ` +
-        `Esto pasa desde ayer y ya intenté varias veces.`
-      );
-      return;
-    }
+export function makeIssueCommand(spec: IssueCommand): PluginHandler {
+  const isBug = spec.kind === 'bug';
+  const name = spec.kind;
+  const what = isBug ? 'el bug' : 'la función';
+  const checklist = isBug
+    ? '• ¿Qué comando usaste?\n• ¿Qué esperabas?\n• ¿Qué pasó en realidad?'
+    : '• ¿Qué función quieres?\n• ¿Por qué sería útil?\n• ¿Cómo se usaría?';
+  const example = isBug
+    ? 'Cuando uso daily me dice que ya lo usé pero no recibí las recompensas. Pasa desde ayer y ya probé varias veces.'
+    : 'Me gustaría un comando clima que muestre el clima de cualquier ciudad para saber si va a llover antes de salir. Se usaría como: clima Ciudad de México';
 
-    // Verificar longitud mínima
-    if (text.trim().length < MIN_CHARS_BUG) {
-      await m.reply(
-        `❌ *Descripción muy corta*\n\n` +
-        `Tu reporte tiene *${text.trim().length}* caracteres.\n` +
-        `Se requieren mínimo *${MIN_CHARS_BUG}* caracteres.\n\n` +
-        `💡 *Tip:* Incluye más detalles como:\n` +
-        `• ¿Qué comando usaste?\n` +
-        `• ¿Qué esperabas?\n` +
-        `• ¿Qué ocurrió?`
-      );
-      return;
-    }
+  return {
+    command: isBug ? ['bug', 'reportar', 'reporte'] : ['feat', 'feature', 'sugerencia', 'sugerir', 'idea'],
+    description: isBug ? 'Reporta un bug del bot (crea un issue en GitHub)' : 'Sugiere una función para el bot (crea un issue en GitHub)',
+    category: 'herramientas',
+    help: [`${name} <descripción> - ${isBug ? 'Reportar un bug' : 'Sugerir una función'} (mínimo ${spec.minChars} caracteres)`],
+    usage: [`${name} ${example.slice(0, 40)}…`],
 
-    await m.react('⏳');
+    handler: async ({ m, text, usedPrefix }) => {
+      const description = text.trim();
+      if (!description) {
+        return m.reply(`*${usedPrefix}${name} <descripción>* (mínimo ${spec.minChars} caracteres). Cuenta:\n${checklist}\n\nEjemplo: *${usedPrefix}${name} ${example}*`);
+      }
+      if (description.length < spec.minChars) {
+        return m.reply(`Muy corto: ${description.length} caracteres y se necesitan ${spec.minChars}. Añade detalle:\n${checklist}`);
+      }
 
-    // Construir el issue
-    const reporterName = m.pushName || 'Usuario';
-    const reporterPhone = m.sender.split('@')[0];
-    const groupId = m.chat;
+      const user = perUser.try(m.sender);
+      if (!user.ok) return m.reply(`Ya enviaste 3 reportes en la última hora. Vuelve a intentarlo en ${Math.ceil(user.retryInMs / 60_000)} min.`);
+      const everyone = global.try(GLOBAL_KEY);
+      if (!everyone.ok) {
+        perUser.reset(m.sender);
+        return m.reply('Hoy ya se enviaron demasiados reportes al equipo. Inténtalo mañana.');
+      }
 
-    const issueTitle = `[BUG] ${text.substring(0, 60)}${text.length > 60 ? '...' : ''}`;
+      await m.react('⏳');
+      const reporter = reporterLabel(m.pushName, m.sender);
+      const where = m.isGroup ? 'grupo' : 'chat privado';
+      const date = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City', dateStyle: 'short', timeStyle: 'short' });
+      const body =
+        `## ${isBug ? 'Reporte de bug' : 'Solicitud de función'}\n\n${description}\n\n---\n\n` +
+        `| Campo | Valor |\n|---|---|\n| Reportado por | ${reporter} |\n| Desde | ${where} |\n| Fecha | ${date} |\n\n` +
+        `_Creado automáticamente desde WhatsApp._`;
 
-    const issueBody = `## Reporte de Bug
-
-### Descripción
-${text}
-
----
-
-### Información del reporte
-| Campo | Valor |
-|-------|-------|
-| **Reportado por** | ${reporterName} |
-| **ID Usuario** | \`${reporterPhone}\` |
-| **Grupo** | \`${groupId}\` |
-| **Fecha** | ${getCurrentDate()} |
-
----
-
-*Este issue fue creado automáticamente desde WhatsApp usando CYALTRONIC.*`;
-
-    const result = await createGitHubIssue(issueTitle, issueBody, ['bug', 'from-whatsapp']);
-
-    if (result.success) {
+      const result = await createGitHubIssue(issueTitle(spec.titlePrefix, description), body, spec.labels);
+      if (!result.ok) {
+        perUser.reset(m.sender);
+        await m.react('❌');
+        return m.reply(`❌ No pude crear ${what}: ${result.error}`);
+      }
       await m.react('✅');
-      await m.reply(
-        `✅ *BUG REPORTADO*\n\n` +
-        `Gracias por tu reporte, *${reporterName}*!\n\n` +
-        `🔗 *Issue creado:*\n${result.url}\n\n` +
-        `📋 El equipo revisará tu reporte pronto.`
-      );
-    } else {
-      await m.react('❌');
-      await m.reply(
-        `❌ *Error al crear reporte*\n\n` +
-        `${result.error}\n\n` +
-        `Por favor intenta más tarde o contacta al administrador.`
-      );
-    }
-  }
-};
+      await m.reply(`✅ ${isBug ? 'Bug reportado' : 'Sugerencia enviada'} como issue *#${result.number}*. Gracias, ${m.pushName || 'crack'}.\n${result.url}`);
+    },
+  };
+}
 
-/**
- * Comando /feat - Solicitar una nueva función
- */
-export const featPlugin: PluginHandler = {
-  command: ['feat', 'feature', 'sugerencia', 'sugerir', 'idea'],
-  description: 'Sugerir una nueva función para el bot',
-  category: 'tools',
-  group: true,
-
-  async handler(ctx: MessageContext) {
-    const { m, text } = ctx;
-
-    // Verificar que se proporcionó descripción
-    if (!text.trim()) {
-      await m.reply(
-        `💡 *SUGERIR FUNCIÓN*\n\n` +
-        `📝 *Uso:* .feat <descripción detallada>\n\n` +
-        `📌 *Requisitos:*\n` +
-        `• Mínimo *${MIN_CHARS_FEAT} caracteres*\n` +
-        `• Describe qué función quieres\n` +
-        `• Explica por qué sería útil\n` +
-        `• Da ejemplos de uso\n\n` +
-        `📋 *Ejemplo:*\n` +
-        `.feat Me gustaría un comando .clima que muestre el clima de cualquier ciudad. ` +
-        `Sería útil para saber si va a llover antes de salir. ` +
-        `Se usaría como: .clima Ciudad de México`
-      );
-      return;
-    }
-
-    // Verificar longitud mínima
-    if (text.trim().length < MIN_CHARS_FEAT) {
-      await m.reply(
-        `❌ *Descripción muy corta*\n\n` +
-        `Tu sugerencia tiene *${text.trim().length}* caracteres.\n` +
-        `Se requieren mínimo *${MIN_CHARS_FEAT}* caracteres.\n\n` +
-        `💡 *Tip:* Incluye más detalles como:\n` +
-        `• ¿Qué función quieres?\n` +
-        `• ¿Por qué sería útil?\n` +
-        `• ¿Cómo se usaría?`
-      );
-      return;
-    }
-
-    await m.react('⏳');
-
-    // Construir el issue
-    const reporterName = m.pushName || 'Usuario';
-    const reporterPhone = m.sender.split('@')[0];
-    const groupId = m.chat;
-
-    const issueTitle = `[FEAT] ${text.substring(0, 60)}${text.length > 60 ? '...' : ''}`;
-
-    const issueBody = `## Solicitud de Nueva Función
-
-### Descripción
-${text}
-
----
-
-### Información de la solicitud
-| Campo | Valor |
-|-------|-------|
-| **Sugerido por** | ${reporterName} |
-| **ID Usuario** | \`${reporterPhone}\` |
-| **Grupo** | \`${groupId}\` |
-| **Fecha** | ${getCurrentDate()} |
-
----
-
-*Este issue fue creado automáticamente desde WhatsApp usando CYALTRONIC.*`;
-
-    const result = await createGitHubIssue(issueTitle, issueBody, ['enhancement', 'from-whatsapp']);
-
-    if (result.success) {
-      await m.react('✅');
-      await m.reply(
-        `✅ *SUGERENCIA ENVIADA*\n\n` +
-        `Gracias por tu idea, *${reporterName}*!\n\n` +
-        `🔗 *Issue creado:*\n${result.url}\n\n` +
-        `📋 El equipo evaluará tu sugerencia.`
-      );
-    } else {
-      await m.react('❌');
-      await m.reply(
-        `❌ *Error al enviar sugerencia*\n\n` +
-        `${result.error}\n\n` +
-        `Por favor intenta más tarde o contacta al administrador.`
-      );
-    }
-  }
-};
+export const bugPlugin = makeIssueCommand({ kind: 'bug', minChars: 50, labels: ['bug', 'from-whatsapp'], titlePrefix: '[BUG]' });
+export const featPlugin = makeIssueCommand({ kind: 'feat', minChars: 80, labels: ['enhancement', 'from-whatsapp'], titlePrefix: '[FEAT]' });

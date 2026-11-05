@@ -68,12 +68,12 @@ const RULES: Rule[] = [
   {
     code: 'NOT_FOUND',
     pattern:
-      /video unavailable|is unavailable|(?:video|page|user|tweet|post|content|media|account|playlist|item) not found|does not exist|has been removed|been deleted|no longer available|no video could be found|this content isn't available|no such user|could not be found|name or service not known|nodename nor servname|no address associated|name resolution|getaddrinfo failed/i,
+      /video unavailable|is unavailable|(?:video|page|user|tweet|post|content|media|account|playlist|item) not found|does not exist|has been removed|been deleted|no longer available|this content isn't available|no such user|could not be found|name or service not known|nodename nor servname|no address associated|name resolution|getaddrinfo failed/i,
   },
   {
     code: 'UNSUPPORTED',
     pattern:
-      /unsupported url|no video formats found|requested format is not available|is not a valid url|unable to extract|no suitable (?:extractor|format)|only images|not a video|no media found|this tweet does not contain|does not contain any media|unable to recognize|no formats found|unable to obtain file audio codec|has no audio|no audio stream|does not contain audio|tunnel connection failed|unable to download webpage|unable to download (?:json|api|video)|ssl: certificate|certificate verify failed/i,
+      /unsupported url|no video formats found|no video could be found|requested format is not available|is not a valid url|unable to extract|no suitable (?:extractor|format)|only images|not a video|no media found|this tweet does not contain|does not contain any media|unable to recognize|no formats found|unable to obtain file audio codec|has no audio|no audio stream|does not contain audio|tunnel connection failed|unable to download webpage|unable to download (?:json|api|video)|ssl: certificate|certificate verify failed/i,
   },
 ];
 
@@ -120,6 +120,9 @@ export function cleanMessage(line: string): string {
     .replace(/^\[download\]\s*/i, '')
     // El id del extractor generico es el ultimo segmento de la URL y puede contener cualquier cosa.
     .replace(/^\[[^\]]+\]\s*(?:\S+?:\s+)?/, '')
+    // Coletillas de yt-dlp que no aportan nada al usuario del bot.
+    .replace(/;?\s*please report this issue.*$/i, '')
+    .replace(/\s*See\s+https?:\/\/github\.com\/yt-dlp\/yt-dlp\/wiki\S*.*$/i, '')
     .trim();
 }
 

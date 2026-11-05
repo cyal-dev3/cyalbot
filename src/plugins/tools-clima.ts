@@ -1,157 +1,121 @@
-/**
- * Plugin de Clima
- * Comando: /clima
- */
+import type { PluginHandler } from '../types/message.js';
+import { createLogger } from '../lib/logger.js';
 
-import type { PluginHandler, MessageContext } from '../types/message.js';
+const log = createLogger('tools');
+const TIMEOUT_MS = 10_000;
 
-/**
- * Obtiene información del clima usando wttr.in
- */
-export async function getWeather(city: string): Promise<{
-  success: boolean;
-  data?: {
-    location: string;
-    temperature: string;
-    feelsLike: string;
-    condition: string;
-    humidity: string;
-    wind: string;
-    visibility: string;
-    uvIndex: string;
-    precipitation: string;
-  };
-  error?: string;
-}> {
+export interface WeatherData {
+  location: string;
+  temperature: string;
+  feelsLike: string;
+  condition: string;
+  humidity: string;
+  wind: string;
+  visibility: string;
+  uvIndex: string;
+  precipitation: string;
+  /** Máxima y mínima de hoy */
+  maxTemp: string;
+  minTemp: string;
+  /** Probabilidad de lluvia de hoy (máxima entre las franjas horarias) */
+  rainChance: string;
+}
+
+export type WeatherResult = { success: true; data: WeatherData } | { success: false; error: string };
+
+interface WttrResponse {
+  nearest_area?: { areaName?: { value?: string }[]; country?: { value?: string }[]; region?: { value?: string }[] }[];
+  current_condition?: {
+    temp_C?: string;
+    FeelsLikeC?: string;
+    weatherDesc?: { value?: string }[];
+    lang_es?: { value?: string }[];
+    humidity?: string;
+    windspeedKmph?: string;
+    winddir16Point?: string;
+    visibility?: string;
+    uvIndex?: string;
+    precipMM?: string;
+  }[];
+  weather?: { maxtempC?: string; mintempC?: string; hourly?: { chanceofrain?: string }[] }[];
+}
+
+/** Clima actual desde wttr.in (JSON) con descripción en español. */
+export async function getWeather(city: string): Promise<WeatherResult> {
   try {
-    const url = `https://wttr.in/${encodeURIComponent(city)}?format=j1`;
-
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'curl/7.68.0', // wttr.in responde mejor con User-Agent de curl
-        'Accept-Language': 'es'
-      }
+    const response = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=j1&lang=es`, {
+      // wttr.in responde mejor con User-Agent de curl.
+      headers: { 'User-Agent': 'curl/7.68.0', 'Accept-Language': 'es' },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-
-    if (!response.ok) {
-      return { success: false, error: 'Ciudad no encontrada' };
+    if (response.status === 404) return { success: false, error: 'Ciudad no encontrada.' };
+    if (!response.ok) return { success: false, error: `El servicio de clima respondió ${response.status}.` };
+    if (!(response.headers.get('content-type') ?? '').includes('json')) {
+      return { success: false, error: 'El servicio de clima no reconoció esa ciudad.' };
     }
 
-    const data = await response.json() as {
-      nearest_area?: Array<{
-        areaName?: Array<{ value?: string }>;
-        country?: Array<{ value?: string }>;
-        region?: Array<{ value?: string }>;
-      }>;
-      current_condition?: Array<{
-        temp_C?: string;
-        FeelsLikeC?: string;
-        weatherDesc?: Array<{ value?: string }>;
-        humidity?: string;
-        windspeedKmph?: string;
-        winddir16Point?: string;
-        visibility?: string;
-        uvIndex?: string;
-        precipMM?: string;
-      }>;
-    };
-
+    const data = (await response.json()) as WttrResponse;
     const area = data.nearest_area?.[0];
     const current = data.current_condition?.[0];
+    if (!area || !current) return { success: false, error: 'No pude obtener el clima de esa ciudad.' };
 
-    if (!area || !current) {
-      return { success: false, error: 'No se pudo obtener información del clima' };
-    }
-
-    const location = `${area.areaName?.[0]?.value || city}, ${area.region?.[0]?.value || ''}, ${area.country?.[0]?.value || ''}`;
+    const today = data.weather?.[0];
+    const rainChance = Math.max(0, ...(today?.hourly ?? []).map((h) => parseInt(h.chanceofrain ?? '0', 10) || 0));
+    const location = [area.areaName?.[0]?.value || city, area.region?.[0]?.value, area.country?.[0]?.value]
+      .filter((part): part is string => Boolean(part && part.trim()))
+      .join(', ');
 
     return {
       success: true,
       data: {
-        location: location.replace(/, ,/g, ',').replace(/,\s*$/, ''),
+        location,
         temperature: current.temp_C || '?',
         feelsLike: current.FeelsLikeC || '?',
-        condition: current.weatherDesc?.[0]?.value || 'Desconocido',
+        condition: current.lang_es?.[0]?.value || current.weatherDesc?.[0]?.value || 'Desconocido',
         humidity: current.humidity || '?',
-        wind: `${current.windspeedKmph || '?'} km/h ${current.winddir16Point || ''}`,
+        wind: `${current.windspeedKmph || '?'} km/h ${current.winddir16Point || ''}`.trim(),
         visibility: current.visibility || '?',
         uvIndex: current.uvIndex || '?',
-        precipitation: current.precipMM || '0'
-      }
+        precipitation: current.precipMM || '0',
+        maxTemp: today?.maxtempC || '?',
+        minTemp: today?.mintempC || '?',
+        rainChance: String(rainChance),
+      },
     };
   } catch (error) {
-    console.error('Error obteniendo clima:', error);
-    return { success: false, error: 'Error al conectar con el servicio' };
+    log.warn('clima:', error instanceof Error ? error.message : error);
+    return { success: false, error: 'No pude conectar con el servicio de clima.' };
   }
 }
 
-/**
- * Obtiene emoji según la condición del clima
- */
-function getWeatherEmoji(condition: string): string {
-  const lower = condition.toLowerCase();
-  if (lower.includes('sunny') || lower.includes('clear') || lower.includes('despejado')) return '☀️';
-  if (lower.includes('cloud') || lower.includes('nube') || lower.includes('overcast')) return '☁️';
-  if (lower.includes('rain') || lower.includes('lluvia') || lower.includes('drizzle')) return '🌧️';
-  if (lower.includes('thunder') || lower.includes('tormenta') || lower.includes('storm')) return '⛈️';
-  if (lower.includes('snow') || lower.includes('nieve')) return '❄️';
-  if (lower.includes('fog') || lower.includes('mist') || lower.includes('niebla')) return '🌫️';
-  if (lower.includes('partly') || lower.includes('parcial')) return '⛅';
-  if (lower.includes('haze')) return '🌁';
-  return '🌤️';
-}
-
-/**
- * Comando /clima - Obtener información del clima
- */
 export const climaPlugin: PluginHandler = {
   command: ['clima', 'weather', 'tiempo'],
-  description: 'Obtener información del clima de una ciudad',
-  category: 'tools',
+  description: 'Clima actual de una ciudad',
+  category: 'herramientas',
+  help: ['clima <ciudad> - Clima actual, máxima/mínima y probabilidad de lluvia'],
+  usage: ['clima Ciudad de México', 'clima Madrid, España'],
 
-  async handler(ctx: MessageContext) {
-    const { m, text } = ctx;
-
+  handler: async ({ m, text, usedPrefix }) => {
     const city = text.trim();
-
     if (!city) {
-      await m.reply(
-        `🌤️ *CLIMA*\n\n` +
-        `📝 Uso: /clima <ciudad>\n\n` +
-        `📌 Ejemplos:\n` +
-        `• /clima Ciudad de México\n` +
-        `• /clima Madrid, España\n` +
-        `• /clima New York\n` +
-        `• /clima Tokyo`
-      );
-      return;
+      return m.reply(`¿De qué ciudad? *${usedPrefix}clima Guadalajara* o *${usedPrefix}clima Madrid, España*`);
     }
 
     await m.react('⏳');
-
     const result = await getWeather(city);
-
-    if (!result.success || !result.data) {
+    if (!result.success) {
       await m.react('❌');
-      await m.reply(`❌ ${result.error || 'No se pudo obtener el clima'}`);
-      return;
+      return m.reply(`❌ ${result.error}`);
     }
-
-    const emoji = getWeatherEmoji(result.data.condition);
-
+    const w = result.data;
     await m.react('✅');
-
     await m.reply(
-      `${emoji} *CLIMA ACTUAL*\n\n` +
-      `📍 *Ubicación:* ${result.data.location}\n\n` +
-      `🌡️ *Temperatura:* ${result.data.temperature}°C\n` +
-      `🤔 *Sensación:* ${result.data.feelsLike}°C\n` +
-      `☁️ *Condición:* ${result.data.condition}\n\n` +
-      `💧 *Humedad:* ${result.data.humidity}%\n` +
-      `💨 *Viento:* ${result.data.wind}\n` +
-      `👁️ *Visibilidad:* ${result.data.visibility} km\n` +
-      `☀️ *Índice UV:* ${result.data.uvIndex}\n` +
-      `🌧️ *Precipitación:* ${result.data.precipitation} mm`
+      `🌤️ *${w.location}*\n\n` +
+      `🌡️ ${w.temperature}°C (sensación ${w.feelsLike}°C) · ${w.condition}\n` +
+      `📈 Máx ${w.maxTemp}°C · 📉 Mín ${w.minTemp}°C\n` +
+      `🌧️ Lluvia: ${w.rainChance}% (${w.precipitation} mm)\n` +
+      `💧 Humedad ${w.humidity}% · 💨 Viento ${w.wind}\n` +
+      `👁️ Visibilidad ${w.visibility} km · ☀️ UV ${w.uvIndex}`,
     );
-  }
+  },
 };

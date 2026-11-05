@@ -66,6 +66,16 @@ describe('mapYtdlpError', () => {
     assert.notEqual(mapYtdlpError('ERROR: client closed').code, 'CLIENT_CLOSED');
   });
 
+  it('recorta las coletillas de yt-dlp del mensaje', () => {
+    const err = mapYtdlpError('ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies.');
+    assert.equal(err.code, 'LOGIN_REQUIRED');
+    assert.equal(err.message, 'Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.');
+    const generic = mapYtdlpError('ERROR: [generic] video: Unable to download webpage: <urlopen error Tunnel connection failed: 502 Bad Gateway>; please report this issue on https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template.');
+    assert.equal(generic.message, 'Unable to download webpage: <urlopen error Tunnel connection failed: 502 Bad Gateway>');
+    // Un tuit solo con fotos no es "no encontrado": el bot puede intentar otra via.
+    assert.equal(mapYtdlpError('ERROR: [twitter] 1: No video could be found in this tweet').code, 'UNSUPPORTED');
+  });
+
   it('usa el fallback si no hay salida', () => {
     assert.equal(mapYtdlpError('', 'fallo').message, 'fallo');
     assert.equal(extractErrorLine(''), null);

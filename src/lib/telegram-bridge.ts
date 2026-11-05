@@ -1,17 +1,22 @@
 /**
- * Telegram Bridge - Puente de reenvío Telegram → WhatsApp
- *
- * Utiliza GramJS (Userbot) para escuchar mensajes de grupos de Telegram
- * y reenviarlos a un grupo de WhatsApp usando Baileys.
+ * Puente Telegram -> WhatsApp con GramJS (userbot). Escucha los grupos de
+ * Telegram configurados y reenvía sus mensajes al grupo de WhatsApp a través
+ * de una cola persistente (telegram-queue.ts), detectando picks de tipsters.
  */
 
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
-import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
+import { NewMessage, type NewMessageEvent } from 'telegram/events/index.js';
 import type { WASocket } from 'baileys';
-import chalk from 'chalk';
+import { CONFIG } from '../config.js';
 import { getDatabase } from './database.js';
+import { TELEGRAM_BRIDGE_AUTHOR } from './betting-store.js';
 import { extractTipsterName, buildTipsterStatCard } from './betting-parser.js';
+import { createLogger } from './logger.js';
+import { MessageQueue, type Delivery, type QueuedMessage } from './telegram-queue.js';
+import { mentionTag } from './utils.js';
+
+const log = createLogger('telegram');
 
 interface TelegramBridgeConfig {
   apiId: number;
@@ -21,815 +26,363 @@ interface TelegramBridgeConfig {
   whatsappGroupId: string;
 }
 
-// ============================================================================
-// Cola de mensajes para procesamiento secuencial (persistente)
-// ============================================================================
+const MAX_BRIDGE_MEDIA_BYTES = 5 * 1024 * 1024;
+const HEALTH_CHECK_MS = 30_000;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_DELAYS = [5_000, 10_000, 30_000, 60_000, 120_000];
 
-/**
- * Datos pre-procesados del mensaje para poder reenviarlo sin depender del socket original
- */
-interface ProcessedMessageData {
-  id: string;
-  senderName: string;
-  text: string;
-  mediaBuffer?: Buffer;
-  mediaType?: 'photo' | 'video';
-  config: TelegramBridgeConfig;
-  timestamp: number;
-  retries: number;
-}
-
-class MessageQueue {
-  private queue: ProcessedMessageData[] = [];
-  private isProcessing = false;
-  private isPaused = false;
-  private currentSock: WASocket | null = null;
-  private readonly maxRetries = 10; // Más reintentos ya que no descartamos mensajes
-  private readonly delayBetweenMessages = 1000;
-  private readonly retryDelays = [2000, 5000, 10000, 15000, 30000]; // Backoff más largo
-  private consecutiveErrors = 0;
-  private readonly maxConsecutiveErrors = 5;
-  private readonly maxQueueSize = 100; // Límite de mensajes en cola
-  private readonly maxMessageAge = 30 * 60 * 1000; // 30 minutos máximo de antigüedad
-
-  /**
-   * Actualiza el socket de WhatsApp (llamar después de reconexión)
-   */
-  updateSocket(sock: WASocket): void {
-    this.currentSock = sock;
-    console.log(
-      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-      chalk.cyan(`🔄 Socket de WhatsApp actualizado en la cola`)
-    );
-    // Si hay mensajes pendientes y no estamos pausados, intentar procesar
-    if (this.queue.length > 0 && !this.isPaused && !this.isProcessing) {
-      this.processQueue();
-    }
-  }
-
-  /**
-   * Agrega un mensaje pre-procesado a la cola
-   */
-  async enqueue(
-    event: NewMessageEvent,
-    client: TelegramClient,
-    config: TelegramBridgeConfig
-  ): Promise<void> {
-    // NO actualizar el socket aquí - usar el que se actualiza vía updateSocket()
-
-    // Verificar límite de cola
-    if (this.queue.length >= this.maxQueueSize) {
-      // Eliminar mensajes más antiguos si excedemos el límite
-      const removed = this.queue.shift();
-      if (removed) {
-        console.log(
-          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-          chalk.yellow(`⚠️ Cola llena, descartando mensaje antiguo de ${removed.senderName}`)
-        );
-      }
-    }
-
-    try {
-      // Pre-procesar el mensaje para no depender del evento original
-      const message = event.message;
-      const senderName = await this.getSenderName(client, event);
-      const text = message.text || message.message || '';
-
-      let mediaBuffer: Buffer | undefined;
-      let mediaType: 'photo' | 'video' | undefined;
-
-      // Cap de tamaño para pre-buffering (evita OOM en cola con muchos videos)
-      const MAX_BRIDGE_MEDIA_BYTES = 5 * 1024 * 1024; // 5 MB
-
-      // Descargar media ahora para no perderlo
-      if (message.photo || message.video) {
-        const docSize = (message.document as unknown as { size?: unknown })?.size;
-        const vidSize = (message.video as unknown as { size?: unknown })?.size;
-        const rawSize = docSize ?? vidSize ?? 0;
-        const mediaSize = typeof rawSize === 'bigint' ? Number(rawSize) : Number(rawSize);
-        if (mediaSize > MAX_BRIDGE_MEDIA_BYTES) {
-          console.log(
-            chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-            chalk.yellow(`⚠️ Media de ${Math.round(mediaSize / 1024 / 1024)}MB omitida (> 5MB), se envía solo texto`)
-          );
-        } else {
-          try {
-            mediaBuffer = await client.downloadMedia(message, {}) as Buffer;
-            if (mediaBuffer && mediaBuffer.length > MAX_BRIDGE_MEDIA_BYTES) {
-              console.log(
-                chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-                chalk.yellow(`⚠️ Media descargada supera 5MB, descartando buffer`)
-              );
-              mediaBuffer = undefined;
-            } else {
-              mediaType = message.photo ? 'photo' : 'video';
-            }
-          } catch (err) {
-            console.log(
-              chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-              chalk.yellow(`⚠️ No se pudo descargar media, guardando solo texto`)
-            );
-          }
-        }
-      }
-
-      const processedMessage: ProcessedMessageData = {
-        id: `${message.chatId}-${message.id}-${Date.now()}`,
-        senderName,
-        text,
-        mediaBuffer,
-        mediaType,
-        config,
-        timestamp: Date.now(),
-        retries: 0
-      };
-
-      this.queue.push(processedMessage);
-
-      console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.cyan(`📥 Mensaje en cola (${this.queue.length} pendientes)`)
-      );
-
-      this.processQueue();
-    } catch (error) {
-      console.error(
-        chalk.red(`❌ Error al encolar mensaje:`),
-        error instanceof Error ? error.message : error
-      );
-    }
-  }
-
-  /**
-   * Obtiene el nombre del remitente
-   */
-  private async getSenderName(client: TelegramClient, event: NewMessageEvent): Promise<string> {
-    try {
-      const sender = await event.message.getSender();
-      if (sender) {
-        if ('firstName' in sender) {
-          const user = sender as Api.User;
-          return user.firstName + (user.lastName ? ` ${user.lastName}` : '');
-        }
-        if ('title' in sender) {
-          return (sender as Api.Channel).title || 'Canal';
-        }
-      }
-    } catch {
-      // Ignorar errores
-    }
-    return 'Desconocido';
-  }
-
-  /**
-   * Procesa la cola de mensajes secuencialmente
-   */
-  private async processQueue(): Promise<void> {
-    if (this.isProcessing || this.queue.length === 0 || this.isPaused) return;
-
-    // Verificar que tenemos socket antes de procesar
-    if (!this.currentSock?.user) {
-      console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.yellow(`⏸️ Socket de WhatsApp no disponible, esperando...`)
-      );
-      return;
-    }
-
-    this.isProcessing = true;
-
-    while (this.queue.length > 0 && !this.isPaused) {
-      // Limpiar mensajes muy antiguos
-      this.cleanOldMessages();
-
-      if (this.queue.length === 0) break;
-
-      const item = this.queue[0]; // Peek, no shift aún
-
-      try {
-        await this.processMessage(item);
-        // Éxito - ahora sí eliminamos de la cola
-        this.queue.shift();
-        this.consecutiveErrors = 0;
-
-        console.log(
-          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-          chalk.green(`✅ Mensaje enviado (${this.queue.length} pendientes)`)
-        );
-
-        // Delay entre mensajes
-        if (this.queue.length > 0) {
-          await this.delay(this.delayBetweenMessages);
-        }
-      } catch (error) {
-        await this.handleError(item, error);
-      }
-    }
-
-    this.isProcessing = false;
-  }
-
-  /**
-   * Limpia mensajes que exceden el tiempo máximo de antigüedad
-   */
-  private cleanOldMessages(): void {
-    const now = Date.now();
-    const oldCount = this.queue.length;
-
-    this.queue = this.queue.filter(msg => {
-      const age = now - msg.timestamp;
-      if (age > this.maxMessageAge) {
-        console.log(
-          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-          chalk.yellow(`⏰ Mensaje de ${msg.senderName} expirado (${Math.round(age/60000)}min)`)
-        );
-        return false;
-      }
-      return true;
-    });
-
-    const removed = oldCount - this.queue.length;
-    if (removed > 0) {
-      console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.yellow(`🧹 ${removed} mensaje(s) expirado(s) eliminado(s)`)
-      );
-    }
-  }
-
-  /**
-   * Procesa un mensaje individual
-   */
-  private async processMessage(item: ProcessedMessageData): Promise<void> {
-    // Verificar que tenemos socket disponible
-    if (!this.currentSock?.user) {
-      throw new Error('Connection Closed - WhatsApp socket no disponible');
-    }
-
-    const sock = this.currentSock;
-    const { senderName, text, mediaBuffer, mediaType, config } = item;
-
-    // Detectar tipster
-    const tipsterInfo = await handleTipsterDetection(sock, config, text, mediaBuffer, mediaType === 'photo');
-
-    // Construir tarjeta de stats si hay tipster detectado
-    let statCard = '';
-    if (tipsterInfo) {
-      const db = getDatabase();
-      const tipster = db.getTipster(config.whatsappGroupId, tipsterInfo.tipsterName);
-      statCard = '\n\n' + buildTipsterStatCard(tipsterInfo.tipsterName, tipster);
-    }
-
-    // Línea de seguidores
-    let followerLine = '';
-    if (tipsterInfo && tipsterInfo.mentions.length > 0) {
-      const mentionText = tipsterInfo.mentions
-        .map(jid => `@${jid.split('@')[0]}`)
-        .join(' ');
-      followerLine = `\n\n🔔 Seguidores: ${mentionText}`;
-    }
-
-    const header = `*${senderName}:* ${text}`;
-    const caption = header + statCard + followerLine;
-
-    // Enviar según tipo de contenido
-    if (mediaBuffer && mediaType) {
-      let sent;
-      if (mediaType === 'photo') {
-        sent = await sock.sendMessage(config.whatsappGroupId, {
-          image: mediaBuffer,
-          caption,
-          mentions: tipsterInfo?.mentions || []
-        });
-      } else {
-        sent = await sock.sendMessage(config.whatsappGroupId, {
-          video: mediaBuffer,
-          caption,
-          mentions: tipsterInfo?.mentions || []
-        });
-      }
-
-      if (tipsterInfo) {
-        console.log(
-          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-          chalk.magenta(`🎫 Tipster detectado: ${tipsterInfo.tipsterName}`)
-        );
-        if (tipsterInfo.pickId && sent?.key?.id) {
-          getDatabase().setPickMessageId(config.whatsappGroupId, tipsterInfo.pickId, sent.key.id);
-        }
-      }
-    } else if (text) {
-      // Mensaje de texto puro: incluir header + tarjeta si hay tipster, o solo header
-      await sock.sendMessage(config.whatsappGroupId, {
-        text: caption
-      });
-    }
-  }
-
-  /**
-   * Maneja errores - mantiene el mensaje en cola para reintentar
-   */
-  private async handleError(item: ProcessedMessageData, error: unknown): Promise<void> {
-    const isConnectionError = this.isConnectionError(error);
-    this.consecutiveErrors++;
-    item.retries++;
-
-    // Si hay muchos errores consecutivos, pausar la cola (pero NO limpiarla)
-    if (isConnectionError && this.consecutiveErrors >= this.maxConsecutiveErrors) {
-      console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.red(`🛑 Demasiados errores de conexión. Pausando cola (${this.queue.length} mensajes guardados)...`)
-      );
-
-      this.isPaused = true;
-      // NO limpiamos la cola - los mensajes se mantienen para cuando se reconecte
-      return;
-    }
-
-    if (isConnectionError && item.retries < this.maxRetries) {
-      const delayIndex = Math.min(item.retries - 1, this.retryDelays.length - 1);
-      const delay = this.retryDelays[delayIndex];
-
-      console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.yellow(`⏳ Reintento ${item.retries}/${this.maxRetries} en ${delay/1000}s... (${this.queue.length} en cola)`)
-      );
-
-      await this.delay(delay);
-      // El mensaje sigue al frente de la cola, se reintentará
-    } else if (item.retries >= this.maxRetries) {
-      // Después de muchos reintentos, eliminar el mensaje
-      this.queue.shift();
-      console.error(
-        chalk.red(`❌ Mensaje descartado después de ${this.maxRetries} reintentos:`),
-        `De: ${item.senderName}`
-      );
-    }
-  }
-
-  /**
-   * Detecta si es un error de conexión
-   */
-  private isConnectionError(error: unknown): boolean {
-    if (error instanceof Error) {
-      const message = error.message.toLowerCase();
-      return message.includes('connection closed') ||
-             message.includes('connection lost') ||
-             message.includes('timed out') ||
-             message.includes('socket hang up') ||
-             message.includes('econnreset') ||
-             message.includes('network');
-    }
-    return false;
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  get pendingCount(): number {
-    return this.queue.length;
-  }
-
-  pause(): void {
-    this.isPaused = true;
-    console.log(
-      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-      chalk.yellow(`⏸️ Cola pausada (${this.queue.length} mensajes guardados)`)
-    );
-  }
-
-  resume(): void {
-    this.isPaused = false;
-    this.consecutiveErrors = 0;
-    console.log(
-      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-      chalk.green(`▶️ Cola reanudada (${this.queue.length} mensajes pendientes)`)
-    );
-    this.processQueue();
-  }
-
-  get paused(): boolean {
-    return this.isPaused;
-  }
-}
-
-// Instancia global de la cola
-const messageQueue = new MessageQueue();
-
+let currentSock: WASocket | null = null;
 let telegramClient: TelegramClient | null = null;
+let healthCheck: NodeJS.Timeout | null = null;
+let reconnecting: Promise<boolean> | null = null;
+let reconnectExhausted = false;
+let loaded = false;
 
-/**
- * Valida que todas las variables de entorno necesarias estén configuradas
- */
-function validateConfig(): TelegramBridgeConfig | null {
-  const apiId = process.env.TELEGRAM_API_ID;
-  const apiHash = process.env.TELEGRAM_API_HASH;
-  const stringSession = process.env.TELEGRAM_STRING_SESSION;
-  const telegramGroupIds = process.env.TELEGRAM_GROUP_IDS;
-  const whatsappGroupId = process.env.WHATSAPP_GROUP_ID;
+// ---------------------------------------------------------------------------
+// Avisos al owner y cola
+// ---------------------------------------------------------------------------
 
-  if (!apiId || !apiHash) {
-    console.log(chalk.yellow('⚠️  Telegram Bridge: TELEGRAM_API_ID o TELEGRAM_API_HASH no configurados'));
-    return null;
+async function notifyOwner(text: string): Promise<void> {
+  if (!currentSock?.user || CONFIG.owners.length === 0) return;
+  await currentSock.sendMessage(`${CONFIG.owners[0]}@s.whatsapp.net`, { text: `⚠️ ${text}` });
+}
+
+/** Detecta #Tipster, registra el pick si procede y arma la tarjeta y las menciones. */
+function prepareDelivery(item: QueuedMessage): Delivery {
+  const header = `*${item.senderName}:* ${item.text}`.trim();
+  const tipsterName = extractTipsterName(item.text);
+  if (!tipsterName) return { caption: header };
+
+  const store = getDatabase().betting;
+  const system = store.peekBettingSystem(item.whatsappGroupId);
+  if (!system?.enabled) return { caption: header };
+
+  const tipster = store.getTipster(item.whatsappGroupId, tipsterName);
+  const mentions = (tipster?.followers ?? []).filter((jid) => store.getUserBetting(jid).notifyOnFavorite);
+
+  let pickId: string | undefined;
+  if (system.autoRegister && item.mediaPath) {
+    pickId = store.registerPick(item.whatsappGroupId, {
+      tipster: store.normalizeTipsterName(tipsterName),
+      tipsterOriginal: tipsterName,
+      description: item.text.substring(0, 500),
+      units: 1,
+      status: 'pending',
+      createdAt: Date.now(),
+      createdBy: TELEGRAM_BRIDGE_AUTHOR,
+      followers: [],
+    }).id;
+    log.info(`pick auto-registrado: ${tipsterName}`);
+  } else {
+    log.debug(`tipster detectado: ${tipsterName}`);
   }
 
-  if (!stringSession) {
-    console.log(chalk.yellow('⚠️  Telegram Bridge: TELEGRAM_STRING_SESSION no configurado'));
-    console.log(chalk.gray('   Ejecuta: npm run telegram:session'));
-    return null;
-  }
-
-  if (!telegramGroupIds) {
-    console.log(chalk.yellow('⚠️  Telegram Bridge: TELEGRAM_GROUP_IDS no configurado'));
-    return null;
-  }
-
-  if (!whatsappGroupId) {
-    console.log(chalk.yellow('⚠️  Telegram Bridge: WHATSAPP_GROUP_ID no configurado'));
-    return null;
-  }
-
+  const card = `\n\n${buildTipsterStatCard(tipsterName, tipster)}`;
+  const followers = mentions.length > 0 ? `\n\n🔔 Seguidores: ${mentions.map(mentionTag).join(' ')}` : '';
   return {
-    apiId: parseInt(apiId, 10),
-    apiHash,
-    stringSession,
-    telegramGroupIds: telegramGroupIds.split(',').map(id => id.trim()),
-    whatsappGroupId,
+    caption: header + card + followers,
+    mentions,
+    onSent: (messageId) => {
+      if (!pickId || !messageId) return;
+      store.setPickMessageId(item.whatsappGroupId, pickId, messageId);
+      store.rememberReply(item.whatsappGroupId, messageId, pickId);
+    },
   };
 }
 
+const messageQueue = new MessageQueue({
+  dir: process.env.BRIDGE_DATA_DIR || 'data',
+  notify: notifyOwner,
+  prepare: prepareDelivery,
+});
 
-/**
- * Maneja un mensaje nuevo de Telegram - Encola el mensaje para procesamiento secuencial
- */
-function handleTelegramMessage(
-  event: NewMessageEvent,
-  client: TelegramClient,
-  config: TelegramBridgeConfig
-): void {
-  const message = event.message;
+// ---------------------------------------------------------------------------
+// Configuración
+// ---------------------------------------------------------------------------
 
-  // Ignorar mensajes propios
-  if (message.out) return;
-
-  // Verificar que el mensaje viene de uno de los grupos configurados
-  const chatId = message.chatId?.toString();
-  if (!chatId) return;
-
-  // Normalizar el ID (puede venir con o sin el prefijo -100)
-  const normalizedChatId = chatId.startsWith('-100') ? chatId : `-100${chatId}`;
-  const isFromConfiguredGroup = config.telegramGroupIds.some(id => {
-    const normalizedConfigId = id.startsWith('-100') ? id : `-100${id}`;
-    return normalizedConfigId === normalizedChatId || id === chatId;
-  });
-
-  if (!isFromConfiguredGroup) return;
-
-  // Log del mensaje recibido
-  console.log(
-    chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-    chalk.blue(`[Telegram] `) +
-    chalk.white(`Nuevo mensaje recibido, encolando...`)
-  );
-
-  // Encolar el mensaje (pre-procesa y guarda los datos) - el socket se obtiene de la cola
-  messageQueue.enqueue(event, client, config);
+function validateConfig(): TelegramBridgeConfig | null {
+  const { TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_STRING_SESSION, TELEGRAM_GROUP_IDS, WHATSAPP_GROUP_ID } = process.env;
+  const missing = [
+    !TELEGRAM_API_ID && 'TELEGRAM_API_ID',
+    !TELEGRAM_API_HASH && 'TELEGRAM_API_HASH',
+    !TELEGRAM_STRING_SESSION && 'TELEGRAM_STRING_SESSION',
+    !TELEGRAM_GROUP_IDS && 'TELEGRAM_GROUP_IDS',
+    !WHATSAPP_GROUP_ID && 'WHATSAPP_GROUP_ID',
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    log.info(`puente desactivado: falta ${missing.join(', ')}${missing.includes('TELEGRAM_STRING_SESSION') ? ' (genera la sesión con npm run telegram:session)' : ''}`);
+    return null;
+  }
+  const apiId = parseInt(TELEGRAM_API_ID!, 10);
+  if (!Number.isFinite(apiId)) {
+    log.error('TELEGRAM_API_ID debe ser numérico; puente desactivado');
+    return null;
+  }
+  return {
+    apiId,
+    apiHash: TELEGRAM_API_HASH!,
+    stringSession: TELEGRAM_STRING_SESSION!,
+    telegramGroupIds: TELEGRAM_GROUP_IDS!.split(',').map((id) => id.trim()).filter(Boolean),
+    whatsappGroupId: WHATSAPP_GROUP_ID!,
+  };
 }
 
-/**
- * Detecta y notifica sobre picks de tipsters (formato: #NombreTipster en primera línea)
- */
-async function handleTipsterDetection(
-  sock: WASocket,
-  config: TelegramBridgeConfig,
-  text: string,
-  mediaBuffer?: Buffer,
-  isPhoto?: boolean
-): Promise<{ tipsterName: string; mentions: string[]; pickId?: string } | null> {
-  const tipsterName = extractTipsterName(text);
-  if (!tipsterName) return null;
+// ---------------------------------------------------------------------------
+// Entrada de mensajes
+// ---------------------------------------------------------------------------
 
+function normalizeChatId(id: string): string {
+  return id.startsWith('-100') ? id : `-100${id.replace(/^-/, '')}`;
+}
+
+async function senderName(event: NewMessageEvent): Promise<string> {
   try {
-    const db = getDatabase();
-    const system = db.getBettingSystem(config.whatsappGroupId);
+    const sender = await event.message.getSender();
+    if (sender && 'firstName' in sender) {
+      const user = sender as Api.User;
+      return [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Desconocido';
+    }
+    if (sender && 'title' in sender) return (sender as Api.Channel).title || 'Canal';
+  } catch (error) {
+    log.debug('sin datos del remitente:', error instanceof Error ? error.message : error);
+  }
+  return 'Desconocido';
+}
 
-    if (!system.enabled) return null;
+function mediaSize(message: Api.Message): number {
+  const raw = (message.document as unknown as { size?: unknown })?.size ?? (message.video as unknown as { size?: unknown })?.size ?? 0;
+  return typeof raw === 'bigint' ? Number(raw) : Number(raw) || 0;
+}
 
-    const normalized = db.normalizeTipsterName(tipsterName);
-    const tipster = db.getTipster(config.whatsappGroupId, tipsterName);
+async function handleTelegramMessage(event: NewMessageEvent, client: TelegramClient, config: TelegramBridgeConfig): Promise<void> {
+  const message = event.message;
+  if (message.out) return;
+  const chatId = message.chatId?.toString();
+  if (!chatId) return;
+  const normalized = normalizeChatId(chatId);
+  if (!config.telegramGroupIds.some((id) => id === chatId || normalizeChatId(id) === normalized)) return;
 
-    const mentions: string[] = [];
-    if (tipster && tipster.followers.length > 0) {
-      for (const followerJid of tipster.followers) {
-        const userBetting = db.getUserBetting(followerJid);
-        if (userBetting.notifyOnFavorite) {
-          mentions.push(followerJid);
+  const text = message.text || message.message || '';
+  const hasMedia = Boolean(message.photo || message.video);
+  const mediaType = message.photo ? 'photo' : message.video ? 'video' : undefined;
+  let mediaBuffer: Buffer | undefined;
+  let mediaOmitted = false;
+
+  if (hasMedia) {
+    const size = mediaSize(message);
+    if (size > MAX_BRIDGE_MEDIA_BYTES) {
+      log.warn(`media de ${Math.round(size / 1024 / 1024)} MB omitida (> 5 MB)`);
+      mediaOmitted = true;
+    } else {
+      try {
+        const downloaded = await client.downloadMedia(message, {});
+        if (Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= MAX_BRIDGE_MEDIA_BYTES) {
+          mediaBuffer = downloaded;
+        } else {
+          mediaOmitted = true;
         }
+      } catch (error) {
+        log.warn('no se pudo descargar la media, se reenvía solo el texto:', error instanceof Error ? error.message : error);
+        mediaOmitted = true;
       }
     }
+  }
+  if (!text && !mediaBuffer) {
+    if (!mediaOmitted) return;
+  }
 
-    let pickId: string | undefined;
-    if (system.autoRegister && mediaBuffer) {
-      const pick = db.registerPick(config.whatsappGroupId, {
-        tipster: normalized,
-        tipsterOriginal: tipsterName,
-        description: text.substring(0, 500),
-        units: 1,
-        status: 'pending',
-        createdAt: Date.now(),
-        createdBy: 'TELEGRAM_BRIDGE',
-        followers: [],
-        messageId: undefined
-      });
-      pickId = pick.id;
+  messageQueue.enqueue({
+    id: `${chatId}-${message.id}`,
+    senderName: await senderName(event),
+    text,
+    whatsappGroupId: config.whatsappGroupId,
+    mediaType,
+    mediaBuffer,
+    mediaOmitted,
+  });
+}
 
-      console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.magenta(`🎫 Pick auto-registrado: ${tipsterName}`)
-      );
-    }
+// ---------------------------------------------------------------------------
+// Conexión y reconexión de Telegram
+// ---------------------------------------------------------------------------
 
-    return { tipsterName, mentions, pickId };
+async function disconnectClient(): Promise<void> {
+  const old = telegramClient;
+  telegramClient = null;
+  if (!old) return;
+  try {
+    await old.disconnect();
   } catch (error) {
-    console.error('Error en detección de tipster:', error);
-    return null;
+    log.debug('al desconectar el cliente anterior:', error instanceof Error ? error.message : error);
   }
 }
 
-
-// Variables para reconexión de Telegram
-let currentConfig: TelegramBridgeConfig | null = null;
-let telegramReconnectAttempts = 0;
-const MAX_TELEGRAM_RECONNECT_ATTEMPTS = 10;
-const TELEGRAM_RECONNECT_DELAYS = [5000, 10000, 30000, 60000, 120000]; // Backoff exponencial
-
-/**
- * Conecta el cliente de Telegram con manejo de reconexión
- */
 async function connectTelegramClient(config: TelegramBridgeConfig): Promise<boolean> {
+  await disconnectClient();
+  const client = new TelegramClient(new StringSession(config.stringSession), config.apiId, config.apiHash, { connectionRetries: 5 });
   try {
-    const session = new StringSession(config.stringSession);
-
-    telegramClient = new TelegramClient(session, config.apiId, config.apiHash, {
-      connectionRetries: 5,
-    });
-
-    await telegramClient.connect();
-
-    // Verificar que estamos autenticados
-    const me = await telegramClient.getMe();
-    if (me && 'firstName' in me) {
-      console.log(chalk.green(`   ✅ Conectado como: ${me.firstName} ${me.lastName || ''}`));
-    }
-
-    // Configurar el handler de mensajes nuevos (sin pasar socket - se usa el de la cola)
-    telegramClient.addEventHandler(
-      (event: NewMessageEvent) => handleTelegramMessage(event, telegramClient!, config),
-      new NewMessage({})
-    );
-
-    // Monitorear estado de conexión de Telegram
-    setupTelegramConnectionMonitor(config);
-
-    telegramReconnectAttempts = 0; // Reset en conexión exitosa
+    await client.connect();
+    const me = await client.getMe();
+    if (me && 'firstName' in me) log.info(`conectado a Telegram como ${[me.firstName, me.lastName].filter(Boolean).join(' ')}`);
+    client.addEventHandler((event: NewMessageEvent) => {
+      handleTelegramMessage(event, client, config).catch((error) => log.error('al procesar un mensaje de Telegram:', error));
+    }, new NewMessage({}));
+    telegramClient = client;
+    reconnectExhausted = false;
     return true;
   } catch (error) {
-    console.error(chalk.red('❌ Error conectando a Telegram:'), error);
+    log.error('no se pudo conectar a Telegram:', error instanceof Error ? error.message : error);
+    try {
+      await client.disconnect();
+    } catch {
+      // el cliente nunca llegó a abrirse
+    }
     return false;
   }
 }
 
-// Intervalo de monitoreo de conexión
-let telegramHealthCheckInterval: NodeJS.Timeout | null = null;
-
 /**
- * Configura el monitoreo de conexión de Telegram para reconexión automática
+ * Reconexión con backoff. Una sola en vuelo: quien llame mientras otra corre
+ * recibe la misma promesa. Tras agotar los intentos deja de insistir hasta
+ * que alguien reinicie el puente a mano.
  */
-function setupTelegramConnectionMonitor(config: TelegramBridgeConfig): void {
-  // Limpiar intervalo anterior si existe
-  if (telegramHealthCheckInterval) {
-    clearInterval(telegramHealthCheckInterval);
-  }
-
-  // Monitoreo periódico de salud de la conexión cada 30 segundos
-  telegramHealthCheckInterval = setInterval(async () => {
-    try {
-      if (!telegramClient) {
-        console.log(
-          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-          chalk.yellow(`⚠️ Cliente de Telegram no existe, reconectando...`)
-        );
-        await attemptTelegramReconnect(config);
-        return;
+export function attemptTelegramReconnect(config: TelegramBridgeConfig): Promise<boolean> {
+  if (reconnecting) return reconnecting;
+  if (reconnectExhausted) return Promise.resolve(false);
+  reconnecting = (async () => {
+    for (let attempt = 1; attempt <= MAX_RECONNECT_ATTEMPTS; attempt++) {
+      const delay = RECONNECT_DELAYS[Math.min(attempt - 1, RECONNECT_DELAYS.length - 1)];
+      log.warn(`reconectando Telegram (intento ${attempt}/${MAX_RECONNECT_ATTEMPTS}) en ${Math.round(delay / 1000)}s`);
+      await new Promise((resolve) => setTimeout(resolve, delay).unref());
+      if (await connectTelegramClient(config)) {
+        log.info('Telegram reconectado');
+        if (messageQueue.isPaused) messageQueue.resume();
+        return true;
       }
-
-      if (!telegramClient.connected) {
-        console.log(
-          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-          chalk.yellow(`⚠️ Telegram desconectado, reconectando...`)
-        );
-        await attemptTelegramReconnect(config);
-        return;
-      }
-
-      // Ping de salud - intentar obtener información del usuario
-      try {
-        await telegramClient.getMe();
-      } catch (pingError) {
-        console.log(
-          chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-          chalk.yellow(`⚠️ Telegram no responde al ping, reconectando...`)
-        );
-        await attemptTelegramReconnect(config);
-      }
-    } catch (error) {
-      console.error(
-        chalk.red(`❌ Error en health check de Telegram:`),
-        error instanceof Error ? error.message : error
-      );
     }
-  }, 30000); // Verificar cada 30 segundos
+    reconnectExhausted = true;
+    log.error('máximo de intentos de reconexión de Telegram alcanzado; usa /bridge restart');
+    await notifyOwner('Puente Telegram: no pude reconectar tras varios intentos. Usa /bridge restart.').catch(() => undefined);
+    return false;
+  })().finally(() => {
+    reconnecting = null;
+  });
+  return reconnecting;
 }
 
-/**
- * Intenta reconectar a Telegram con backoff exponencial
- */
-async function attemptTelegramReconnect(config: TelegramBridgeConfig): Promise<void> {
-  if (telegramReconnectAttempts >= MAX_TELEGRAM_RECONNECT_ATTEMPTS) {
-    console.log(
-      chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-      chalk.red(`❌ Máximo de intentos de reconexión de Telegram alcanzado. Reinicia el bot manualmente.`)
-    );
-    return;
-  }
-
-  telegramReconnectAttempts++;
-  const delayIndex = Math.min(telegramReconnectAttempts - 1, TELEGRAM_RECONNECT_DELAYS.length - 1);
-  const delay = TELEGRAM_RECONNECT_DELAYS[delayIndex];
-
-  console.log(
-    chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-    chalk.yellow(`🔄 Reconectando Telegram (intento ${telegramReconnectAttempts}/${MAX_TELEGRAM_RECONNECT_ATTEMPTS}) en ${delay/1000}s...`)
-  );
-
-  await new Promise(resolve => setTimeout(resolve, delay));
-
-  try {
-    // Desconectar cliente actual si existe
-    if (telegramClient) {
-      try {
-        await telegramClient.disconnect();
-      } catch {
-        // Ignorar errores de desconexión
+function startHealthCheck(config: TelegramBridgeConfig): void {
+  if (healthCheck) clearInterval(healthCheck);
+  healthCheck = setInterval(async () => {
+    if (reconnecting) return;
+    try {
+      if (!telegramClient || !telegramClient.connected) {
+        log.warn('Telegram desconectado');
+        await attemptTelegramReconnect(config);
+        return;
       }
-      telegramClient = null;
-    }
-
-    // Reconectar
-    const success = await connectTelegramClient(config);
-    if (success) {
-      console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-        chalk.green(`✅ Telegram reconectado exitosamente`)
-      );
-      // Reanudar cola si estaba pausada por errores de conexión
-      if (messageQueue.paused) {
-        messageQueue.resume();
-      }
-    } else {
-      // Reintentar
+      await telegramClient.getMe();
+    } catch (error) {
+      log.warn('Telegram no responde al ping:', error instanceof Error ? error.message : error);
       await attemptTelegramReconnect(config);
     }
-  } catch (error) {
-    console.error(
-      chalk.red(`❌ Error en reconexión de Telegram:`),
-      error instanceof Error ? error.message : error
-    );
-    await attemptTelegramReconnect(config);
-  }
+  }, HEALTH_CHECK_MS);
+  healthCheck.unref();
 }
 
-/**
- * Inicia el cliente de Telegram y el puente de reenvío
- */
+// ---------------------------------------------------------------------------
+// API pública
+// ---------------------------------------------------------------------------
+
 export async function startTelegramBridge(sock: WASocket): Promise<TelegramClient | null> {
-  const config = validateConfig();
-  if (!config) {
-    console.log(chalk.gray('   Telegram Bridge deshabilitado'));
-    return null;
-  }
-
-  currentConfig = config;
-
-  // Actualizar el socket en la cola ANTES de conectar
+  currentSock = sock;
   messageQueue.updateSocket(sock);
-
-  try {
-    console.log(chalk.yellow('🔌 Conectando a Telegram...'));
-
-    const success = await connectTelegramClient(config);
-    if (!success) {
-      return null;
-    }
-
-    console.log(chalk.green(`   ✅ Escuchando ${config.telegramGroupIds.length} grupo(s) de Telegram`));
-    console.log(chalk.green(`   ✅ Reenviando a: ${config.whatsappGroupId}`));
-    console.log(chalk.green(`   ✅ Cola de mensajes habilitada (procesamiento secuencial)`));
-    console.log(chalk.green(`   ✅ Reconexión automática de Telegram habilitada`));
-
-    return telegramClient;
-  } catch (error) {
-    console.error(chalk.red('❌ Error iniciando Telegram Bridge:'), error);
-    return null;
+  if (!loaded) {
+    loaded = true;
+    await messageQueue.load().catch((error) => log.error('al cargar la cola persistida:', error));
   }
+
+  const config = validateConfig();
+  if (!config) return null;
+
+  log.info('conectando a Telegram');
+  if (!(await connectTelegramClient(config))) return null;
+  startHealthCheck(config);
+  log.info(`escuchando ${config.telegramGroupIds.length} grupo(s) de Telegram, reenviando a ${config.whatsappGroupId}`);
+  return telegramClient;
 }
 
-/**
- * Detiene el cliente de Telegram
- */
 export async function stopTelegramBridge(): Promise<void> {
-  // Detener el monitoreo de salud
-  if (telegramHealthCheckInterval) {
-    clearInterval(telegramHealthCheckInterval);
-    telegramHealthCheckInterval = null;
-  }
-
-  if (telegramClient) {
-    try {
-      await telegramClient.disconnect();
-    } catch {
-      // Ignorar errores de desconexión
-    }
-    telegramClient = null;
-    console.log(chalk.yellow('🔌 Telegram Bridge desconectado'));
-  }
+  if (healthCheck) clearInterval(healthCheck);
+  healthCheck = null;
+  await disconnectClient();
+  await messageQueue.stop();
+  log.info('puente Telegram detenido');
 }
 
-/**
- * Obtiene el cliente de Telegram (para uso externo si es necesario)
- */
+export async function restartTelegramBridge(sock: WASocket): Promise<TelegramClient | null> {
+  log.info('reiniciando el puente Telegram');
+  if (healthCheck) clearInterval(healthCheck);
+  healthCheck = null;
+  await disconnectClient();
+  reconnectExhausted = false;
+  messageQueue.resume();
+  return startTelegramBridge(sock);
+}
+
 export function getTelegramClient(): TelegramClient | null {
   return telegramClient;
 }
 
-/**
- * Obtiene el número de mensajes pendientes en la cola
- */
 export function getPendingMessagesCount(): number {
   return messageQueue.pendingCount;
 }
 
-/**
- * Pausa la cola de mensajes (llamar durante reconexiones de WhatsApp)
- */
+/** Pausa manual (sin reanudación automática). index.ts la llama al cerrarse WhatsApp. */
 export function pauseMessageQueue(): void {
   messageQueue.pause();
 }
 
-/**
- * Reanuda la cola de mensajes (llamar después de reconectarse a WhatsApp)
- */
 export function resumeMessageQueue(): void {
   messageQueue.resume();
 }
 
-/**
- * Verifica si la cola está pausada
- */
 export function isMessageQueuePaused(): boolean {
-  return messageQueue.paused;
+  return messageQueue.isPaused;
 }
 
-/**
- * Actualiza el socket de WhatsApp en la cola (llamar después de reconexión)
- */
+/** El socket cambia en cada reconexión de WhatsApp. */
 export function updateQueueSocket(sock: WASocket): void {
+  currentSock = sock;
   messageQueue.updateSocket(sock);
 }
 
-/**
- * Reinicia el Telegram Bridge manualmente
- */
-export async function restartTelegramBridge(sock: WASocket): Promise<TelegramClient | null> {
-  console.log(
-    chalk.gray(`[${new Date().toLocaleTimeString('es-MX')}] `) +
-    chalk.yellow(`🔄 Reiniciando Telegram Bridge...`)
-  );
-
-  // Detener el bridge actual
-  await stopTelegramBridge();
-
-  // Resetear intentos de reconexión
-  telegramReconnectAttempts = 0;
-
-  // Reiniciar
-  return startTelegramBridge(sock);
-}
-
-/**
- * Verifica si el cliente de Telegram está conectado
- */
 export function isTelegramConnected(): boolean {
   return telegramClient?.connected ?? false;
+}
+
+export interface BridgeStatus {
+  configured: boolean;
+  telegramConnected: boolean;
+  reconnecting: boolean;
+  reconnectExhausted: boolean;
+  queuePending: number;
+  queuePaused: boolean;
+  queueOldestAgeMs: number;
+  whatsappGroupId: string | null;
+  telegramGroups: number;
+}
+
+export function getBridgeStatus(): BridgeStatus {
+  const config = validateConfig();
+  return {
+    configured: config !== null,
+    telegramConnected: isTelegramConnected(),
+    reconnecting: reconnecting !== null,
+    reconnectExhausted,
+    queuePending: messageQueue.pendingCount,
+    queuePaused: messageQueue.isPaused,
+    queueOldestAgeMs: messageQueue.oldestAgeMs,
+    whatsappGroupId: config?.whatsappGroupId ?? null,
+    telegramGroups: config?.telegramGroupIds.length ?? 0,
+  };
 }
