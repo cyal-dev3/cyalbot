@@ -5,8 +5,8 @@ import type { MessageContext } from '../src/types/message.js';
 
 process.env.BOT_OWNERS = '5210000000001';
 const {
-  findParticipant, isParticipantAdmin, getAdmins, findBotParticipant, canonicalJid,
-  resolveTarget, resolveTargets, assertCanModerate,
+  findParticipant, isParticipantAdmin, getAdmins, findBotParticipant, canonicalJid, isSameParticipant,
+  resolveTarget, resolveTargets, assertCanModerate, numbersInArgs,
 } = await import('../src/lib/participants.js');
 
 const GROUP = '120363000000000000@g.us';
@@ -101,7 +101,9 @@ for (const mode of ['pn', 'lid'] as Mode[]) {
     assert.equal(resolveTarget(ctx(mode, { sender, quoted: GROUP })), null);
     // Número en args: se busca también en p.jid; solo si allowNumber.
     assert.equal(resolveTarget(ctx(mode, { sender, args: ['5210000000003'] })), null);
-    assert.equal(resolveTarget(ctx(mode, { sender, args: ['+52 1 000 000 0003'] }), { allowNumber: true }), idOf(mode, USER));
+    // El handler parte el texto por espacios: un número escrito con espacios llega en varios args.
+    assert.equal(resolveTarget(ctx(mode, { sender, args: '+52 1 000 000 0003'.split(/\s+/) }), { allowNumber: true }), idOf(mode, USER));
+    assert.equal(resolveTarget(ctx(mode, { sender, args: ['(52)', '1000-000-0003', '10m'] }), { allowNumber: true }), idOf(mode, USER));
     // Número que no está en el grupo: se devuelve como jid para que assertCanModerate lo explique.
     assert.equal(resolveTarget(ctx(mode, { sender, args: ['5217777777777'] }), { allowNumber: true }), STRANGER);
     // Uno mismo se descarta salvo allowSelf.
@@ -112,6 +114,19 @@ for (const mode of ['pn', 'lid'] as Mode[]) {
   test(`[${mode}] resolveTargets devuelve varias menciones sin duplicados`, () => {
     const targets = resolveTargets(ctx(mode, { sender: idOf(mode, ADMIN), mentionedJid: [USER.pn, USER.lid, OTHER.lid, GROUP] }));
     assert.deepEqual(targets, [idOf(mode, USER), idOf(mode, OTHER)]);
+    // Varios números en args, cada uno un objetivo.
+    const byNumber = resolveTargets(ctx(mode, { sender: idOf(mode, ADMIN), args: ['5210000000003', '5210000000005'] }), { allowNumber: true });
+    assert.deepEqual(byNumber, [idOf(mode, USER), idOf(mode, OTHER)]);
+  });
+
+  test(`[${mode}] isSameParticipant compara número y LID a través de la metadata`, () => {
+    const md = metadata(mode);
+    assert.equal(isSameParticipant(md, USER.pn, USER.lid), true);
+    assert.equal(isSameParticipant(md, '5210000000003:3@s.whatsapp.net', USER.lid), true);
+    assert.equal(isSameParticipant(md, USER.pn, OTHER.pn), false);
+    assert.equal(isSameParticipant(md, STRANGER, STRANGER), true);
+    assert.equal(isSameParticipant(md, undefined, USER.pn), false);
+    assert.equal(isSameParticipant(null, USER.pn, USER.lid), false);
   });
 
   test(`[${mode}] assertCanModerate: uno mismo, el bot, el owner del bot y desconocidos`, () => {
@@ -149,3 +164,14 @@ for (const mode of ['pn', 'lid'] as Mode[]) {
     }
   });
 }
+
+test('numbersInArgs une los grupos cortos de un número con espacios y separa los números completos', () => {
+  assert.deepEqual(numbersInArgs('+52 1 000 000 0003'.split(/\s+/)), ['5210000000003']);
+  assert.deepEqual(numbersInArgs(['5210000000003', '5210000000004']), ['5210000000003', '5210000000004']);
+  // Una palabra (la duración de tempmute) cierra el número en curso; "10" solo no es un número.
+  assert.deepEqual(numbersInArgs(['5210000000003', '10m']), ['5210000000003']);
+  assert.deepEqual(numbersInArgs(['52', '1', '000', '000', '0003', '10m']), ['5210000000003']);
+  assert.deepEqual(numbersInArgs(['(52)', '1000-000-0003']), ['5210000000003']);
+  assert.deepEqual(numbersInArgs(['@5210000000003', 'razon', '2', 'veces']), []);
+  assert.deepEqual(numbersInArgs([]), []);
+});

@@ -52,7 +52,8 @@ async function resolveTrack(ctx: MessageContext, text: string): Promise<Track | 
   }
 
   let source: SearchSource = 'youtube';
-  let query = text.trim();
+  // Sin texto propio se busca lo que dice el mensaje citado (si no traía un enlace).
+  let query = text.trim() || getQuotedText(m).trim().slice(0, 120);
   const scMatch = query.match(/^(?:sc|soundcloud)\s+(.+)$/i);
   if (scMatch) {
     source = 'soundcloud';
@@ -83,7 +84,7 @@ export const playPlugin: PluginHandler = {
 
   async handler(ctx: MessageContext) {
     const { conn, m, text, handler } = ctx;
-    if (!text.trim() && !getQuotedText(m)) {
+    if (!text.trim() && !getQuotedText(m).trim()) {
       await m.reply('🎵 *PLAY*\n\n📝 Uso:\n• /play Bad Bunny Monaco\n• /play <url de YouTube>\n\nBusca en YouTube y manda el audio en mp3.');
       return;
     }

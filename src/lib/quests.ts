@@ -158,6 +158,35 @@ function claimQuest(db: Database, jid: string, user: UserRPG, progress: QuestPro
 }
 
 /**
+ * Cobra las misiones ya completadas que sigan sin reclamar (progreso heredado
+ * de antes del auto-reclamo). Va SIEMPRE antes de ensureQuestsFresh para que un
+ * reset no se lleve lo que el jugador ya ganó. Devuelve si cobró alguna.
+ */
+function claimPendingQuests(db: Database, jid: string, user: UserRPG, now: number, result: QuestUpdateResult): boolean {
+  let claimed = false;
+  for (const progress of [...(user.dailyQuests ?? []), ...(user.weeklyQuests ?? [])]) {
+    if (isQuestClaimed(progress)) continue;
+    const quest = getQuestById(progress.questId);
+    if (!quest || progress.progress < quest.target) continue;
+
+    result.completed.push(quest);
+    result.lines.push(...claimQuest(db, jid, user, progress, quest, now));
+    claimed = true;
+  }
+  return claimed;
+}
+
+function persistQuests(db: Database, jid: string, user: UserRPG): void {
+  db.updateUser(jid, {
+    dailyQuests: user.dailyQuests,
+    weeklyQuests: user.weeklyQuests,
+    lastDailyReset: user.lastDailyReset,
+    lastWeeklyReset: user.lastWeeklyReset,
+    inventory: user.inventory
+  });
+}
+
+/**
  * Suma progreso a todas las misiones activas cuyo `objective` coincide y cobra
  * automáticamente las que se completan. Persiste con db.updateUser.
  */
@@ -172,7 +201,8 @@ export function updateQuestProgress(
   if (!Number.isFinite(amount) || amount <= 0) return result;
 
   const user = db.getUser(jid);
-  let changed = ensureQuestsFresh(user, now);
+  let changed = claimPendingQuests(db, jid, user, now, result);
+  if (ensureQuestsFresh(user, now)) changed = true;
 
   for (const progress of [...user.dailyQuests, ...user.weeklyQuests]) {
     if (isQuestClaimed(progress)) continue;

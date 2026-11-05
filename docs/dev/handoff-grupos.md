@@ -1,14 +1,28 @@
 # Handoff: área grupos y administración
 
-Estado al cierre: `npx tsc --noEmit` pasa en todos mis archivos (los únicos errores que quedan son de `src/plugins/game-trivia.ts`, en edición por otro agente) y `npm test` pasa (162 tests; 49 son míos en `tests/grupos-*.test.ts` y `tests/moderation.test.ts`).
+Estado al cierre de la ronda de corrección: `npx tsc --noEmit` pasa completo y `npm test` pasa en todo lo mío (`tests/grupos-*.test.ts` y `tests/moderation.test.ts`: 62 tests). Las dos fallas que quedan en la suite son de `tests/rpgprog-actions.test.ts` y `tests/rpgprog-robar.test.ts` (área RPG, en edición en paralelo).
 
 Regla que seguí: `plugins/index.ts`, `handler.ts`, `index.ts`, `anti-delete.ts`, `group-events.ts`, `types/*` y `logger.ts` no se tocaron. Todo lo que exportaba algo que `plugins/index.ts` importa sigue existiendo como wrapper `@deprecated` (ver "Para plugins/index.ts") para que compile en todo momento. Los archivos que la tarea pedía borrar quedaron como shims de una línea con `@deprecated`; se borran en el mismo cambio que migre `index.ts`.
 
 ## Hecho
 
+### Ronda de corrección (hallazgos de los revisores)
+Qué se corrigió y dónde; cada punto tiene test salvo que se diga lo contrario.
+- **`bot on|off` apuntaba al alias que se lleva la IA** (group-toggles.ts, 3 hallazgos): el alias principal es ahora `botgrupo` (`command: ['botgrupo', 'bot']`), así estado, ayuda, `offText` y el panel `/grupo` muestran el comando que sí funciona; `bot` queda como alias para cuando IA lo retire. El parche del handler (abajo) usa `parseToggle(arg) === 'on'` y la lista de alias del propio plugin, para que `botgrupo activar` también pase la puerta.
+- **`setpic` no veía la imagen en grupos con mensajes temporales** (group-tools.ts): usa `mediaInMessage`/`getQuotedOrOwnMedia` de `lib/media.ts` sobre `m.message` (ya desenvuelto) con tope de 5 MB; se borró la copia de `downloadMessageMedia` de group-tools y group-tagall importa la de `lib/media.ts`.
+- **`antilink all` marcaba correos, versiones y palabras pegadas a un punto** (moderation.ts, 2 hallazgos): el host sin esquema no puede ir pegado a `@`, `.`, `/`, `-` ni a otro carácter de palabra y su primera etiqueta lleva una letra (`soporte@empresa.com`, `2.0.es` ya no disparan). Los TLD se parten en dos listas: los que no son palabras (`com`, `net`, `org`, `io`, `app`, `online`...) cuentan sin ruta (`ejemplo.com`); los códigos de país que también son sílabas (`me`, `es`, `co`, `to`, `tv`, `mx`...) solo con ruta, `www.` o esquema (`ok.es verdad` y `compra.me algo` ya no disparan; `ejemplo.es` suelto tampoco, ver Decisiones).
+- **Números con espacios en args** (participants.ts): `numbersInArgs` (ahora exportada) une los grupos cortos consecutivos de dígitos (`+52 1 000 000 0003` llega en cinco args) y trata un grupo de 7 a 16 dígitos como número completo; una palabra (`10m`) cierra el grupo en curso. El test usa `split(/\s+/)` como el handler.
+- **unmute/listmute con entradas guardadas en el otro formato** (group-mute.ts): nueva `isSameParticipant(metadata, a, b)` en participants.ts (también la usa `assertCanModerate`) y `findStoredMute(ctx, settings, target)` exportada; unmute borra la entrada tal como está guardada y mute/tempmute la migran al id canónico en vez de duplicarla.
+- **mute sobre un tempmute** (group-mute.ts): `/mute` sobre un mute temporal lo vuelve permanente ("antes era temporal"), `/tempmute` sobre cualquier mute actualiza el vencimiento ("mute actualizado"), y solo `/mute` sobre un permanente avisa "ya está silenciado permanentemente" indicando `/unmute`.
+- **Confirmación falsa en kick/promote/demote** (group-admin.ts): `splitUpdateResults(sent, results, metadata)` exportada compara la respuesta de WhatsApp con `isSameParticipant` mirando `r.jid` y `content.attrs.{jid,lid,phone_number}`; si el servidor respondió por participante y alguno no aparece, cuenta como fallo.
+- **Pilas de llamadas y rutas en `/logs` y `botstats`** (runtime-stats.ts, admin-stats.ts): `sanitizeLogMessage` (exportada) quita las líneas `at ...`, aplana a una línea y recorta a 600 caracteres antes de guardar en el buffer; `botstats` muestra `basename(CONFIG.databasePath)`.
+- **`def.extra[word]` heredaba de Object.prototype** (group-toggles.ts, 2 hallazgos): `Object.hasOwn`; `/antilink constructor` o `__proto__` muestran el estado como cualquier argumento desconocido.
+- **`{p}` sin sustituir en la descripción de automute** (group-toggles.ts): texto sin marcador; test que ninguna `description`/`label` lleve `{p}`.
+- **Shims `@deprecated` en vez de borrar archivos** (hallazgo sobre group-protection.ts y compañía): no se cambia. `plugins/index.ts` (ajeno) sigue importándolos (comprobado: `registerGroup*`, `antiLinkPlugin` de group-protection, `notifyPlugin`...) y la regla es que `tsc` pase en todo momento; el borrado va en el mismo cambio que migre index.ts (lista exacta en "Para plugins/index.ts").
+
 ### src/lib/participants.ts (nuevo)
 Resolución de personas en grupos `pn` (ids `@s.whatsapp.net`) y `lid` (ids `@lid`). Todo compara con `areJidsSameUser` contra `p.id`, `p.jid` y `p.lid`, así que un sufijo de dispositivo (`:12`) o el formato contrario no rompen nada.
-- `findParticipant(metadata, ...jids)`, `isParticipantAdmin(p)`, `isParticipantSuperAdmin(p)`, `getAdmins(metadata)`, `findBotParticipant(metadata, botIds)`, `canonicalJid(metadata, jid)`.
+- `findParticipant(metadata, ...jids)`, `isParticipantAdmin(p)`, `isParticipantSuperAdmin(p)`, `getAdmins(metadata)`, `findBotParticipant(metadata, botIds)`, `canonicalJid(metadata, jid)`, `isSameParticipant(metadata, a, b)` (misma persona aunque uno sea número y otro LID), `numbersInArgs(args)`.
 - `getBotIds(ctx)`: usa `handler.botIds()` si existe (duck typing; hoy está en la clase y no en la interfaz) y si no deriva de `conn.user.id`/`conn.user.lid`.
 - `resolveTargets(ctx, { allowNumber?, allowSelf? })` y `resolveTarget(...)`: mención > cita > número en args; devuelve el `participant.id` del grupo; el número se busca también en `p.jid`; un número que no está en el grupo se devuelve como `@s.whatsapp.net` para que `assertCanModerate` explique "no está en el grupo"; descarta el jid del grupo (citas de mensajes de sistema) y a uno mismo salvo `allowSelf`; sin duplicados.
 - `assertCanModerate(ctx, targetId, 'kick'|'promote'|'demote'|'mute'|'warn') => string | null`: uno mismo (también cuando la mención llega en el formato contrario al del grupo), el bot, el owner del bot (mira todos los ids del participante, no solo el que llegó), no está en el grupo, creador del grupo para kick/demote (ni el owner puede), admin salvo que el ejecutor sea owner, "ya es admin"/"no es admin" para promote/demote.
@@ -30,15 +44,16 @@ Resolución de personas en grupos `pn` (ids `@s.whatsapp.net`) y `lid` (ids `@li
 - Todos los alias anteriores se conservan (`antieliminar`, `autostiker`, `as`, `autodl`, `autodescarga`, `autolimpiar`, `autoclean`, `compact`, `silencioso`, `quiet`, `autosilencio`, `antigroserias`, `antibadword`).
 
 ### src/plugins/group-tools.ts (nuevo)
-`grupoPlugin` (`grupo`, `config`, `ajustes`, `settings`: panel con miembros, admins, bot admin, silenciados, límite de warns, palabras prohibidas y cada interruptor con 🟢/🔴 y el comando exacto), `linkPlugin` (`link`, `enlace`, `invitacion`, `grouplink`), `revokePlugin` (`revoke`, `resetlink`, `revocar`), `setNamePlugin` (`setname`, `setsubject`, `nombregrupo`), `setDescPlugin` (`setdesc`, `setdescription`, `descripcion`; `setdesc borrar` la quita), `setPicPlugin` (`setpic`, `setppgroup`, `fotogrupo`, `setgrouppic`; imagen citada o con el comando de caption), `adminsPlugin` (`admins`, `administradores`, `listadmins`; marca 👑 creador y 🤖 bot), `leavePlugin` (`leave`, `salirgrupo`, `irse`; owner; `conn.groupLeave`). Todos `admin: true` salvo leave. También exporta `downloadMessageMedia(conn, {key, message})` que usa group-tagall.
+`grupoPlugin` (`grupo`, `config`, `ajustes`, `settings`: panel con miembros, admins, bot admin, silenciados, límite de warns, palabras prohibidas y cada interruptor con 🟢/🔴 y el comando exacto), `linkPlugin` (`link`, `enlace`, `invitacion`, `grouplink`), `revokePlugin` (`revoke`, `resetlink`, `revocar`), `setNamePlugin` (`setname`, `setsubject`, `nombregrupo`), `setDescPlugin` (`setdesc`, `setdescription`, `descripcion`; `setdesc borrar` la quita), `setPicPlugin` (`setpic`, `setppgroup`, `fotogrupo`, `setgrouppic`; imagen citada o con el comando de caption, vía `getQuotedOrOwnMedia` de lib/media.ts, tope 5 MB), `adminsPlugin` (`admins`, `administradores`, `listadmins`; marca 👑 creador y 🤖 bot), `leavePlugin` (`leave`, `salirgrupo`, `irse`; owner; `conn.groupLeave`). Todos `admin: true` salvo leave.
 
 ### src/plugins/group-admin.ts
-`promotePlugin`, `demotePlugin`, `kickPlugin` como `const`. Una sola función `moderate(ctx, action)`: acepta varias menciones, pasa cada una por `assertCanModerate`, hace un único `groupParticipantsUpdate` con el array, lee el `status` por jid y responde un único resumen con menciones reales. Promote/demote solo reaccionan (👑/📉) si todo salió bien (el aviso lo da group-events); kick responde `🚪 @a, @b expulsado(s)` salvo en modo compacto. Quitado el alias `remove` de kick (lo sombreaba `desequipar` de rpg-inventario, nunca funcionó). Se quitó el texto "Usa /leave" (habría sacado al bot, no al usuario). `registerGroupAdminPlugins` queda como wrapper `@deprecated`.
+`promotePlugin`, `demotePlugin`, `kickPlugin` como `const`. Una sola función `moderate(ctx, action)`: acepta varias menciones, pasa cada una por `assertCanModerate`, hace un único `groupParticipantsUpdate` con el array, reparte la respuesta con `splitUpdateResults` (exportada; compara ids vía metadata) y responde un único resumen con menciones reales. Promote/demote solo reaccionan (👑/📉) si todo salió bien (el aviso lo da group-events); kick responde `🚪 @a, @b expulsado(s)` salvo en modo compacto. Quitado el alias `remove` de kick (lo sombreaba `desequipar` de rpg-inventario, nunca funcionó). Se quitó el texto "Usa /leave" (habría sacado al bot, no al usuario). `registerGroupAdminPlugins` queda como wrapper `@deprecated`.
 
 ### src/plugins/group-mute.ts
 - Sin `handlerRef`; todo por `ctx.handler`.
 - `/mute` activa `autoMuteEnabled` solo si estaba apagado y lo dice; ya no exige `/automute on` previo. `automutePlugin` ahora está en group-toggles (re-registrado por el wrapper deprecated).
 - Nuevo `tempMutePlugin` (`tempmute`, `mutetemp`, `silenciartemp`): `/tempmute @u 10m|2h|1d` (1 minuto a 30 días; `parseMuteDuration` exportada). Guarda `ChatSettings.mutedUntil[jid] = timestamp` con cast local; `expireMutes(ctx)` quita los vencidos con `handler.unmuteUser` (así el registro en memoria del handler no se desincroniza) en mute/unmute/listmute.
+- `findStoredMute(ctx, settings, target)` localiza la entrada guardada aunque esté en el otro formato; mute/tempmute sobre alguien ya silenciado actualizan el vencimiento (y migran la entrada al id canónico) en vez de abortar.
 - `isMutedNow` y `getMutedUntil` se re-exportan desde `lib/moderation.ts` (ahí viven para que el handler las importe sin depender de un plugin).
 - Menciones reales en mute/tempmute/unmute/listmute; listmute muestra tiempo restante y el estado de automute.
 
@@ -77,7 +92,7 @@ Resolución de personas en grupos `pn` (ids `@s.whatsapp.net`) y `lid` (ids `@li
 `group-protection.ts`, `group-antidelete.ts`, `group-autosticker.ts`, `group-autodownload.ts` (re-export desde group-toggles), `group-compact.ts` (`registerGroupCompactPlugin` registra el toggle), `admin-notify.ts` (`notifyPlugin` = `hideTagPlugin`; mientras index.ts registre ambos, el mismo plugin aparece dos veces y `getAliasCollisions` lo listará: desaparece al quitar la entrada).
 
 ### Tests nuevos
-`tests/grupos-participants.test.ts` (metadata en modo `pn` y `lid`, 12 tests), `tests/grupos-toggles.test.ts` (parseToggle, cada toggle contra una `Database` temporal, antilink all, antibad default, bot on/off, welcome test), `tests/grupos-mute.test.ts`, `tests/grupos-tools.test.ts` (tagall, renderGroupMessage, pin, runtime-stats) y 6 tests más en `tests/moderation.test.ts` (isForbiddenLink, getMaxWarnings, applyAutoWarning).
+`tests/grupos-participants.test.ts` (metadata en modo `pn` y `lid`, isSameParticipant, numbersInArgs con args partidos como los parte el handler), `tests/grupos-toggles.test.ts` (parseToggle, cada toggle contra una `Database` temporal, antilink all, antibad default, botgrupo on/off, welcome test, argumentos del prototipo, descripciones sin `{p}`), `tests/grupos-mute.test.ts` (isMutedNow, parseMuteDuration y los comandos mute/tempmute/unmute contra una `Database` temporal con un handler mínimo: entrada antigua, tempmute -> mute permanente, actualización de vencimiento, migración), `tests/grupos-tools.test.ts` (tagall, renderGroupMessage, pin, runtime-stats, sanitizeLogMessage, splitUpdateResults, setpic con mensaje efímero) y `tests/moderation.test.ts` (isForbiddenLink en ambos modos con los falsos positivos de los revisores, getMaxWarnings, applyAutoWarning).
 
 ## Para otros agentes
 
@@ -171,10 +186,10 @@ grupos: [
 Después de ese cambio: borrar `src/plugins/group-protection.ts`, `group-antidelete.ts`, `group-autosticker.ts`, `group-autodownload.ts`, `group-compact.ts`, `admin-notify.ts`; quitar las funciones `register*` de group-admin/mute/delete/pin/lock y las líneas `export { ... } from './group-toggles.js'` de group-welcome.ts y group-antibad.ts (yo lo hago si me avisan; son borrados mecánicos).
 
 ### Para menu.ts (dueño: núcleo)
-Comandos nuevos a listar en la categoría de grupos: `grupo` (`config`, `ajustes`), `link`, `revoke`, `setname`, `setdesc`, `setpic`, `admins`, `tempmute @u 10m|2h|1d`, `setwarns <n>`, `warns [@usuario]`, `bot on|off` (por grupo), `welcome test`, `bye test`, `antilink all`. En owner: `leave`, `botstats` (ya no `stats`). `hidetag`/`n` ahora también `avisar`/`notify`. Quitar `remove` de kick y `stats` de adminstats si aparecen.
+Comandos nuevos a listar en la categoría de grupos: `grupo` (`config`, `ajustes`), `link`, `revoke`, `setname`, `setdesc`, `setpic`, `admins`, `tempmute @u 10m|2h|1d`, `setwarns <n>`, `warns [@usuario]`, `botgrupo on|off` (apaga el bot en el grupo; `bot` solo cuando IA lo suelte), `welcome test`, `bye test`, `antilink all`. En owner: `leave`, `botstats` (ya no `stats`). `hidetag`/`n` ahora también `avisar`/`notify`. Quitar `remove` de kick y `stats` de adminstats si aparecen.
 
 ### Para ai-chat.ts (dueño: IA)
-`aiPlugin` tiene el alias `bot` y la sección `ia` se registra antes que `grupos`, así que `/bot on|off` cae en la IA. Opciones: quitar `bot` de `aiPlugin.command` (recomendado; quedan `ia`, `ai`, `claude`, `pregunta`), o dejarlo y que la gente use `/botgrupo on|off`. Además `iachat` puede migrar a la tabla de group-toggles con `{ command: ['iachat', 'aichat', 'iamenciones'], field: 'aiChat', defaultOn: true, label: 'IA por menciones', emoji: '🤖', ... }` y así aparece en el panel `/grupo`.
+`aiPlugin` tiene el alias `bot` y la sección `ia` se registra antes que `grupos`, así que `/bot on|off` cae en la IA. Por eso el interruptor se anuncia como `botgrupo` en todos sus textos y `bot` es solo alias secundario. Si quitan `bot` de `aiPlugin.command` (recomendado; quedan `ia`, `ai`, `claude`, `pregunta`), `/bot on|off` empieza a funcionar sin tocar nada más; avísenme y pongo `bot` de nuevo como alias principal en `DEFS.bot`. Además `iachat` puede migrar a la tabla de group-toggles con `{ command: ['iachat', 'aichat', 'iamenciones'], field: 'aiChat', defaultOn: true, label: 'IA por menciones', emoji: '🤖', ... }` y así aparece en el panel `/grupo`.
 
 ## Para núcleo (handler/index/anti-delete/group-events)
 
@@ -207,15 +222,17 @@ isUserMuted(groupId: string, userId: string): boolean {
 ### handler.ts: bot apagado por grupo
 Tras el chequeo de `botMode`:
 ```ts
+import { isBotEnabled, parseToggle, botTogglePlugin } from './plugins/group-toggles.js';
+// ...
 const chatSettings = m.isGroup ? this.db.getChatSettings(m.chat) : null;
-if (chatSettings && chatSettings.enabled === false && !isOwner) {
-  // Solo se deja pasar "bot on" / "botgrupo on" para poder reactivarlo.
+if (chatSettings && !isBotEnabled(chatSettings) && !isOwner) {
+  // Solo se deja pasar "botgrupo on" (y sus sinónimos: activar, si, 1...) para poder reactivarlo.
   const prefixed = m.text.match(CONFIG.prefix);
   const [cmd, arg] = prefixed ? m.text.slice(prefixed[0].length).trim().toLowerCase().split(/\s+/) : [];
-  if (!(['bot', 'botgrupo'].includes(cmd ?? '') && arg === 'on')) return;
+  if (!(botTogglePlugin.command.includes(cmd ?? '') && parseToggle(arg) === 'on')) return;
 }
 ```
-(`isBotEnabled(settings)` de group-toggles.ts hace la misma lectura con default true mientras `enabled` no exista en el tipo.)
+`isBotEnabled` lee `enabled` con default true mientras no exista en el tipo; `parseToggle` acepta los mismos sinónimos que el plugin, así `/botgrupo activar` no se queda bloqueado en la puerta.
 
 ### handler.ts: antilink/antispam/antibad con advertencias reales
 Hoy antispam solo amenaza y antilink usa `CONFIG.protection.linkRegex` (`/gi`, `match` funciona pero `test` alternaría). Sustituir las tres ramas por:
@@ -314,7 +331,7 @@ En `write()`, antes del `if (LEVELS[level] < LEVELS[currentLevel]) return;` o ju
 import { recordLogLine } from './runtime-stats.js';
 if (level === 'warn' || level === 'error') recordLogLine(level, scope, parts.map(format).join(' '));
 ```
-(sin chalk: el buffer se manda por WhatsApp con `/logs`). runtime-stats.ts no importa logger.ts, así que no hay ciclo.
+(sin chalk: el buffer se manda por WhatsApp con `/logs`). `recordLogLine` ya pasa el texto por `sanitizeLogMessage` (quita las líneas `at ...` de `error.stack`, aplana y recorta a 600 caracteres), así que pueden pasar `format(error)` tal cual sin exponer rutas del servidor. runtime-stats.ts no importa logger.ts, así que no hay ciclo.
 
 ## Para datos (types/database.ts)
 
@@ -336,21 +353,25 @@ Campos nuevos de `ChatSettings` (hoy los leo/escribo con cast local; al añadirl
 - **Shims en vez de borrar archivos**: la tarea pedía borrar group-protection/antidelete/autosticker/autodownload/compact/admin-notify, pero `plugins/index.ts` (ajeno) los importa y la regla de "tsc pasa en todo momento" manda. Quedan como re-exports `@deprecated` de una línea; el borrado va con la migración de index.ts.
 - **Toggles de welcome/bye viven en group-toggles e importan `previewWelcome`/`previewBye` de group-welcome**; group-welcome re-exporta los toggles solo para index.ts. Es un ciclo de módulos temporal e inofensivo (ningún lado usa el binding del otro al evaluarse) que desaparece con el shim.
 - **`automute` pasa de owner a admin**: `/mute` ya lo activa solo, así que dejarlo en owner solo servía para bloquear a los admins. Como interruptor sirve para apagar el borrado sin perder la lista.
-- **`bot on|off`**: `admin: true` y no owner, porque el handler dejará pasar `bot on`; si solo el owner pudiera apagarlo, un admin que lo apagara se quedaría sin poder encenderlo. Alias de respaldo `botgrupo` por el choque con `/ia`.
+- **`botgrupo on|off`**: `admin: true` y no owner, porque el handler dejará pasar `botgrupo on`; si solo el owner pudiera apagarlo, un admin que lo apagara se quedaría sin poder encenderlo. `botgrupo` es el alias principal (el que ven estado, ayuda, `offText` y panel) porque `bot` lo gana `/ia`; anunciar un comando que responde la IA dejaba grupos apagados sin camino visible de vuelta.
 - **hidetag manda el texto tal cual** (sin el encabezado "📢 NOTIFICACIÓN" que ponía admin-notify): el sentido del comando es que el mensaje parezca escrito a mano; `/n` conserva el nombre pero no el adorno.
 - **`isMutedNow` es pura** (no borra vencidos): el handler consulta en cada mensaje y no debe escribir en la BD por leer; la limpieza la hacen los comandos de mute vía `handler.unmuteUser` para no desincronizar el `Set` en memoria del handler.
 - **`applyAutoWarning` recibe `maxWarnings` resuelto** en vez de leer la BD: así el handler decide la fuente (`getMaxWarnings(chatSettings)`) y las pruebas no necesitan una `Database`.
 - **Regex de enlaces propias en moderation.ts**: `CONFIG.protection.linkRegex` es `/gi`, y el núcleo está quitando `telegramRegex` de CONFIG en paralelo. `wa.me/` no se considera invitación (no es un enlace de grupo).
+- **Dominios de país sin ruta no cuentan en `antilink all`**: `compra.me algo` y `ejemplo.me` son sintácticamente idénticos; no hay forma de distinguirlos sin diccionario. Se prefiere dejar pasar `ejemplo.es` suelto a borrar y advertir por `ok.es verdad`. Con ruta, `www.` o esquema sí se detectan, y los TLD que no son palabras (`com`, `net`, `org`, `io`, `app`...) se detectan siempre.
+- **`numbersInArgs` une grupos cortos de dígitos**: el handler parte por espacios, así que un número con espacios llega troceado. Un grupo de 7 a 16 dígitos es un número por sí solo; los cortos consecutivos se unen; una palabra cierra el grupo. Un número corto suelto detrás de un número completo (`... 0003 10 m`) se pegaría al número, es ambiguo por naturaleza y no se intenta adivinar; `10m` (la forma normal de tempmute) sí se separa.
+- **mute sobre alguien ya silenciado actualiza en vez de abortar**: `/mute` convierte un temporal en permanente y `/tempmute` fija un nuevo vencimiento (también sobre un permanente); solo `/mute` sobre un permanente avisa. Así un admin extiende o fija un castigo sin pasar por `/unmute`.
+- **`splitUpdateResults` cuenta como fallo a quien no aparece en la respuesta** cuando WhatsApp respondió por participante; antes se asumía éxito y se confirmaba algo que no pasó. Lista vacía sigue siendo "aceptado" (comportamiento de `removeParticipant`).
 - **`/clear` marca como procesados también los que fallaron** (igual que `processAutoClear`): reintentarlos en el siguiente `/clear` no va a funcionar mejor y solo infla el contador de errores.
 - **Promote/demote sin texto propio** aunque group-events aún no condicione su aviso: hoy el usuario ve un único aviso (el de group-events), antes veía dos.
 - **`compacto`/`autoclear` sin argumento muestran estado** (antes alternaban), por coherencia con el resto de la tabla.
-- **downloadMessageMedia en group-tools.ts** y no en lib: el núcleo está creando `lib/wa-message.ts` con `downloadMedia(conn, msg)`; cuando se estabilice, group-tools y group-tagall pueden importar de ahí y borrar la copia (dos líneas).
+- **Media por `lib/media.ts`**: group-tools (setpic) y group-tagall (hidetag con imagen/video citados) usan `getQuotedOrOwnMedia`/`downloadMessageMedia` de ahí; la copia local que tenía group-tools se borró.
 - **`setwarns` tope 20**: por encima el sistema de warns deja de tener sentido y un admin despistado podría anularlo con un número enorme.
 
 ## Pendiente
 
 - Todo lo listado en "Para núcleo" y "Para datos": sin esos cambios, `tempmute` solo expira cuando alguien usa un comando de mute (el handler sigue mirando su `Set`), `bot off` no apaga nada, `antilink all`/`setwarns` no afectan al handler (que sigue con la regex y el máximo de CONFIG), anti-delete sigue reenviando lo que borra el bot, y `/logs` y `botstats` muestran 0 reconexiones/errores y buffer vacío hasta que logger.write e index.ts alimenten runtime-stats.
-- `/bot on|off` responde la IA mientras `aiPlugin` conserve el alias `bot`; usar `/botgrupo` entretanto.
+- `/bot on|off` responde la IA mientras `aiPlugin` conserve el alias `bot`; todos los textos anuncian `/botgrupo`, que es el que funciona.
 - Las entradas re-registradas (`/clear` tras `clear N`) pierden su marca de tiempo hasta que exista `removeTrackedMessages`.
 - No probé contra WhatsApp real (sin sesión en este entorno): `setpic`, `revoke`, `groupParticipantsUpdate` con arrays y el reenvío de media en `hidetag` están verificados solo por tipos; conviene una pasada manual en un grupo de prueba: `/grupo`, `/kick @a @b`, `/tempmute @x 1m` (esperar y escribir), `/warns @x`, `/n` respondiendo a una imagen, `/pin 2h` (debe listar opciones).
 - `menu.ts` no conoce los comandos nuevos (ver "Para menu.ts").

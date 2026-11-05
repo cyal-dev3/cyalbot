@@ -2,6 +2,7 @@ import { downloadMediaMessage, type proto, type WASocket } from 'baileys';
 import pino from 'pino';
 import type { MessageContext, SerializedMessage } from '../types/message.js';
 import { createLogger } from './logger.js';
+import { StickerTooLargeError } from './sticker.js';
 
 const log = createLogger('media');
 const silentLogger = pino({ level: 'silent' });
@@ -105,6 +106,7 @@ export async function replyMediaError(m: SerializedMessage, error: unknown, fall
   log.warn(fallback, message);
   let text = fallback;
   if (error instanceof MediaTooLargeError) text = `⚠️ ${error.message}.`;
+  else if (error instanceof StickerTooLargeError) text = `⚠️ ${error.message}`;
   else if (/no está instalado/i.test(message)) text = '❌ El servidor no tiene ffmpeg instalado; avisa al dueño del bot.';
   else if (/superó \d+ s/i.test(message)) text = '⏱️ La conversión tardó demasiado. Prueba con un archivo más corto.';
   else if (/media (?:message )?not found|empty media key|no se pudo descargar|reupload/i.test(message)) text = '❌ No pude descargar el archivo del mensaje. Reenvíalo e inténtalo otra vez.';

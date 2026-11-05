@@ -1,10 +1,45 @@
+import type { GroupMetadata } from 'baileys';
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { createLogger } from '../lib/logger.js';
 import { mentionTag } from '../lib/utils.js';
-import { resolveTargets, assertCanModerate, type ModerationAction } from '../lib/participants.js';
+import { resolveTargets, assertCanModerate, isSameParticipant, type ModerationAction } from '../lib/participants.js';
 
 const log = createLogger('grupos');
+
+/** Lo que devuelve conn.groupParticipantsUpdate por participante (el nodo puede traer jid, lid o phone_number). */
+export interface ParticipantUpdateResult {
+  status: string;
+  jid?: string | null;
+  content?: { attrs?: Record<string, string | undefined> } | null;
+}
+
+function resultIds(result: ParticipantUpdateResult): string[] {
+  const attrs = result.content?.attrs ?? {};
+  return [result.jid, attrs.jid, attrs.lid, attrs.phone_number]
+    .filter((id): id is string => typeof id === 'string' && id.includes('@'));
+}
+
+/**
+ * Reparte los participantes enviados entre aceptados y rechazados según la
+ * respuesta de WhatsApp. El servidor puede contestar con el id en el otro
+ * formato (número por LID o al revés), así que se compara vía metadata. Si
+ * contestó por participante y alguno no aparece, no se da por hecho.
+ */
+export function splitUpdateResults(
+  sent: readonly string[],
+  results: readonly ParticipantUpdateResult[],
+  metadata: Pick<GroupMetadata, 'participants'> | null | undefined,
+): { done: string[]; failed: string[] } {
+  const done: string[] = [];
+  const failed: string[] = [];
+  for (const jid of sent) {
+    const result = results.find((r) => resultIds(r).some((id) => isSameParticipant(metadata, id, jid)));
+    if (results.length === 0 || result?.status === '200') done.push(jid);
+    else failed.push(jid);
+  }
+  return { done, failed };
+}
 
 type GroupAction = Extract<ModerationAction, 'kick' | 'promote' | 'demote'>;
 
@@ -45,16 +80,12 @@ async function moderate(ctx: MessageContext, action: GroupAction): Promise<void>
     else allowed.push(jid);
   }
 
-  const failed: string[] = [];
-  const done: string[] = [];
+  let failed: string[] = [];
+  let done: string[] = [];
   if (allowed.length > 0) {
     try {
       const results = await conn.groupParticipantsUpdate(m.chat, allowed, texts.wa);
-      for (const jid of allowed) {
-        const result = results.find((r) => r.jid && r.jid.split('@')[0] === jid.split('@')[0]);
-        if (!result || result.status === '200') done.push(jid);
-        else failed.push(jid);
-      }
+      ({ done, failed } = splitUpdateResults(allowed, results, ctx.groupMetadata));
     } catch (error) {
       log.error(`${action} en ${m.chat}:`, error instanceof Error ? error.message : error);
       failed.push(...allowed);

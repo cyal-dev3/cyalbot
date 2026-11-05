@@ -1,4 +1,5 @@
 import { statSync } from 'node:fs';
+import { basename } from 'node:path';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { CONFIG } from '../config.js';
 import { formatNumber, msToTime, mentionTag } from '../lib/utils.js';
@@ -58,7 +59,7 @@ export const adminStatsPlugin: PluginHandler = {
       `📊 *${CONFIG.botName} — Dashboard*\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👥 Usuarios registrados: *${formatNumber(users.length)}*\n` +
-      `💾 ${CONFIG.databasePath}: *${formatBytes(dbSize)}*\n` +
+      `💾 ${basename(CONFIG.databasePath)}: *${formatBytes(dbSize)}*\n` +
       `🧠 RSS: *${formatBytes(mem.rss)}* · Heap: *${formatBytes(mem.heapUsed)}* / ${formatBytes(mem.heapTotal)}\n` +
       `⏱️ Uptime: *${msToTime(process.uptime() * 1000)}*\n` +
       `🔄 Reconexiones: *${runtimeStats.reconnects}* (intentos: ${runtimeStats.reconnectAttempts})\n` +

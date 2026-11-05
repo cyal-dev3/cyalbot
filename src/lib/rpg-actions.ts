@@ -18,12 +18,17 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/** Valor de passiveModeUntil que significa "sin caducidad" */
+export const PASSIVE_MODE_NO_EXPIRY = Number.MAX_SAFE_INTEGER;
+
 /**
- * Único criterio de modo pasivo: es un interruptor sin caducidad. El campo
- * passiveModeUntil ya no se consulta (caducaba en silencio a los 30 días).
+ * Único criterio de modo pasivo, el mismo que leen bombardear/duelo/items
+ * especiales (`passiveMode && passiveModeUntil > now`). /pasivo escribe
+ * PASSIVE_MODE_NO_EXPIRY al activar, así que no caduca en silencio; los pasivos
+ * anteriores a ese cambio conservan su fecha de 30 días.
  */
-export function isPassiveActive(user: UserRPG, _now: number = Date.now()): boolean {
-  return user.passiveMode === true;
+export function isPassiveActive(user: UserRPG, now: number = Date.now()): boolean {
+  return user.passiveMode === true && user.passiveModeUntil > now;
 }
 
 /** true si el usuario es esclavo de alguien en este momento */
@@ -217,7 +222,9 @@ export async function usageError(ctx: MessageContext, plugin: PluginHandler, rea
     return aliases.has(first) ? `• ${usedPrefix}${line.trim()}` : `• ${line.trim()}`;
   });
 
-  let text = `❌ *${reason ?? 'Uso incorrecto.'}*`;
+  // WhatsApp no aplica negrita a varias líneas: solo se resalta la primera del motivo
+  const [first, ...rest] = (reason ?? 'Uso incorrecto.').split('\n');
+  let text = `❌ *${first}*${rest.length ? `\n${rest.join('\n')}` : ''}`;
   if (lines.length > 0) text += `\n\n📝 *Uso:*\n${lines.join('\n')}`;
   await m.reply(text);
 }

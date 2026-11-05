@@ -8,16 +8,17 @@ import { formatDuration } from './media-play.js';
 const THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024;
 
 export const mediaInfoPlugin: PluginHandler = {
-  command: ['info', 'videoinfo'],
+  // 'info' lo tiene rpg-inventario (iteminfo), por eso el principal es videoinfo.
+  command: ['videoinfo', 'linkinfo', 'dlinfo'],
   description: 'Título, autor y duración de un enlace sin descargarlo',
   category: 'download',
-  usage: ['info <url>'],
+  usage: ['videoinfo <url>'],
 
   async handler(ctx: MessageContext) {
     const { m, text, send } = ctx;
     const url = extractUrl(text, getQuotedText(m), URL_REGEX);
     if (!url) {
-      await m.reply('ℹ️ *INFO*\n\n📝 Uso: /info <url>\nMuestra título, autor, duración y plataforma del enlace sin descargarlo.');
+      await m.reply('ℹ️ *INFO DE ENLACE*\n\n📝 Uso: /videoinfo <url>\nMuestra título, autor, duración y plataforma del enlace sin descargarlo.');
       return;
     }
     if (!isDownloaderConfigured()) {

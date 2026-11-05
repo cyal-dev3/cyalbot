@@ -25,11 +25,12 @@ export interface TtsInput {
 /**
  * Idioma solo cuando se pide explícitamente: "en: texto" o "-en texto" con un
  * código de LANGUAGES. Cualquier otra cosa es texto en español, así "la casa"
- * no se lee en latín.
+ * no se lee en latín. El código solo ("en:" respondiendo a un mensaje) deja el
+ * texto vacío para que el llamador use el citado en ese idioma.
  */
 export function parseTtsInput(raw: string): TtsInput {
   const text = raw.trim();
-  const match = text.match(/^(?:-([a-z]{2})\s+|([a-z]{2}):\s*)([\s\S]+)$/i);
+  const match = text.match(/^(?:-([a-z]{2})(?:\s+|$)|([a-z]{2}):\s*)([\s\S]*)$/i);
   if (match) {
     const code = (match[1] ?? match[2]).toLowerCase();
     if (code in LANGUAGES) return { lang: code, text: match[3].trim() };

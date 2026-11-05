@@ -3,7 +3,7 @@ import { getDatabase, type Database } from '../lib/database.js';
 import { EMOJI, formatNumber, randomInt, pickRandom, parseAmount, msToTime, mentionTag } from '../lib/utils.js';
 import type { UserRPG } from '../types/user.js';
 import { COOLDOWNS } from '../constants/rpg.js';
-import { isPassiveActive, isEnslaved, SLAVERY_CUT, usageError } from '../lib/rpg-actions.js';
+import { isPassiveActive, isEnslaved, SLAVERY_CUT, PASSIVE_MODE_NO_EXPIRY, usageError } from '../lib/rpg-actions.js';
 import { updateQuestProgress } from '../lib/quests.js';
 
 export { isPassiveActive, SLAVERY_CUT };
@@ -209,17 +209,20 @@ export const bancoPlugin: PluginHandler = {
       const resolved = resolveWithdrawAmount(user, rawAmount);
       if ('error' in resolved) return usageError(ctx, bancoPlugin, resolved.error);
 
+      // Saldos calculados antes de updateUser: `user` es la referencia viva de la BD
+      const newMoney = user.money + resolved.amount;
+      const newBank = user.bank - resolved.amount;
       db.updateUser(m.sender, {
-        money: user.money + resolved.amount,
-        bank: user.bank - resolved.amount,
-        bankDepositTime: user.bank - resolved.amount > 0 ? user.bankDepositTime : 0
+        money: newMoney,
+        bank: newBank,
+        bankDepositTime: newBank > 0 ? user.bankDepositTime : 0
       });
 
       await m.reply(
         `🏦 *RETIRO EXITOSO*\n\n` +
         `💵 Retiraste: *$${formatNumber(resolved.amount)}*\n` +
-        `💰 Efectivo: *$${formatNumber(user.money + resolved.amount)}*\n` +
-        `🏦 Queda en banco: *$${formatNumber(user.bank - resolved.amount)}*\n\n` +
+        `💰 Efectivo: *$${formatNumber(newMoney)}*\n` +
+        `🏦 Queda en banco: *$${formatNumber(newBank)}*\n\n` +
         `⚠️ _El efectivo no está protegido de robos_`
       );
       return m.react('💵');
@@ -229,17 +232,15 @@ export const bancoPlugin: PluginHandler = {
       const resolved = resolveDepositAmount(user, rawAmount);
       if ('error' in resolved) return usageError(ctx, bancoPlugin, resolved.error);
 
-      db.updateUser(m.sender, {
-        money: user.money - resolved.amount,
-        bank: user.bank + resolved.amount,
-        bankDepositTime: now
-      });
+      const newMoney = user.money - resolved.amount;
+      const newBank = user.bank + resolved.amount;
+      db.updateUser(m.sender, { money: newMoney, bank: newBank, bankDepositTime: now });
 
       await m.reply(
         `🏦 *DEPÓSITO EXITOSO*\n\n` +
         `💵 Depositaste: *$${formatNumber(resolved.amount)}*\n` +
-        `🏦 Saldo en banco: *$${formatNumber(user.bank + resolved.amount)}* / $${formatNumber(BANK_MAX_AMOUNT)}\n` +
-        `💰 Efectivo restante: *$${formatNumber(user.money - resolved.amount)}*\n\n` +
+        `🏦 Saldo en banco: *$${formatNumber(newBank)}* / $${formatNumber(BANK_MAX_AMOUNT)}\n` +
+        `💰 Efectivo restante: *$${formatNumber(newMoney)}*\n\n` +
         `🛡️ *Protegido de robos por ${BANK_DURATION / 3600000}h*`
       );
       return m.react('🏦');
@@ -282,7 +283,8 @@ export const transferirPlugin: PluginHandler = {
     const commission = Math.floor(resolved.amount * commissionRate / 100);
     const finalAmount = resolved.amount - commission;
 
-    db.updateUser(m.sender, { money: sender.money - resolved.amount });
+    const senderBalance = sender.money - resolved.amount;
+    db.updateUser(m.sender, { money: senderBalance });
     db.updateUser(targetJid, { money: receiver.money + finalAmount });
     const questLines = updateQuestProgress(db, m.sender, 'transfer', resolved.amount).lines;
 
@@ -297,7 +299,7 @@ export const transferirPlugin: PluginHandler = {
         `💵 Monto enviado: *$${formatNumber(resolved.amount)}*\n` +
         `📉 Comisión (${commissionRate}%): *-$${formatNumber(commission)}*\n` +
         `✅ Monto recibido: *$${formatNumber(finalAmount)}*\n\n` +
-        `💰 Tu nuevo saldo: *$${formatNumber(sender.money - resolved.amount)}*` +
+        `💰 Tu nuevo saldo: *$${formatNumber(senderBalance)}*` +
         (questLines.length ? `\n\n${questLines.join('\n')}` : ''),
       mentions: [targetJid]
     });
@@ -430,15 +432,17 @@ export const liberarPlugin: PluginHandler = {
     }
 
     const masterJid = user.slaveMaster;
-    db.updateUser(m.sender, { money: user.money - freedomCost, slaveMaster: null, slaveUntil: 0 });
+    const moneyLeft = user.money - freedomCost;
+    db.updateUser(m.sender, { money: moneyLeft, slaveMaster: null, slaveUntil: 0 });
     db.updateUser(masterJid, { slaves: master.slaves.filter(s => s !== m.sender) });
-    updateQuestProgress(db, m.sender, 'spend', freedomCost);
+    const questLines = updateQuestProgress(db, m.sender, 'spend', freedomCost).lines;
 
     await m.reply(
       `🕊️ *¡LIBERTAD!*\n\n` +
       `Has comprado tu libertad de *${master.name}*.\n\n` +
       `💵 Pagaste: *$${formatNumber(freedomCost)}*\n` +
-      `💰 Dinero restante: *$${formatNumber(user.money - freedomCost)}*`
+      `💰 Dinero restante: *$${formatNumber(moneyLeft)}*` +
+      (questLines.length ? `\n\n${questLines.join('\n')}` : '')
     );
     await m.react('🕊️');
   }
@@ -518,7 +522,12 @@ export const pasivoPlugin: PluginHandler = {
       );
     }
 
-    db.updateUser(m.sender, { passiveMode: newMode, passiveModeUntil: 0, passiveModeChangedAt: now });
+    // PASSIVE_MODE_NO_EXPIRY mantiene coherentes a los lectores que exigen passiveModeUntil > now
+    db.updateUser(m.sender, {
+      passiveMode: newMode,
+      passiveModeUntil: newMode ? PASSIVE_MODE_NO_EXPIRY : 0,
+      passiveModeChangedAt: now
+    });
 
     if (newMode) {
       await m.reply(
@@ -563,7 +572,12 @@ export const estadoEconomiaPlugin: PluginHandler = {
       text += `• ⚠️ Deuda IMSS: *$${formatNumber(user.debt)}* (+${DEBT_INTEREST_RATE * 100}% cada 24h)\n`;
     }
 
-    text += `\n🛡️ *ESTADO:*\n• Modo: *${isPassiveActive(user, now) ? '🕊️ Pasivo' : '⚔️ Activo'}*\n`;
+    const passive = isPassiveActive(user, now);
+    // Pasivos anteriores al cambio a "sin caducidad" conservan su fecha de 30 días
+    const passiveExpiry = passive && user.passiveModeUntil !== PASSIVE_MODE_NO_EXPIRY
+      ? ` (expira en ${msToTime(user.passiveModeUntil - now)})`
+      : '';
+    text += `\n🛡️ *ESTADO:*\n• Modo: *${passive ? '🕊️ Pasivo' : '⚔️ Activo'}*${passiveExpiry}\n`;
 
     if (isEnslaved(user, now) && user.slaveMaster) {
       const master = db.getUser(user.slaveMaster);

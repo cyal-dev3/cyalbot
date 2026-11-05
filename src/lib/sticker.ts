@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runFfmpeg, withTempDir, withTempFiles } from './ffmpeg.js';
+import { runFfmpeg, withTempDir } from './ffmpeg.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('sticker');
@@ -22,6 +22,17 @@ export const STICKER_SIZE = 512;
 export const MAX_STATIC_BYTES = 100 * 1024;
 export const MAX_ANIMATED_BYTES = 500 * 1024;
 export const MAX_ANIMATED_SECONDS = 8;
+
+/** Ningún reintento dejó el sticker bajo el tope de WhatsApp. */
+export class StickerTooLargeError extends Error {
+  constructor(readonly size: number, readonly max: number, readonly attempts: number, readonly animated: boolean) {
+    super(
+      `El sticker sigue pesando ${Math.ceil(size / 1024)} KB tras ${attempts} intentos (máximo ${Math.round(max / 1024)} KB). ` +
+        (animated ? 'Usa un video más corto o con menos movimiento.' : 'Usa una imagen más sencilla.'),
+    );
+    this.name = 'StickerTooLargeError';
+  }
+}
 
 export type MediaKind = 'image' | 'video' | 'unknown';
 
@@ -113,76 +124,83 @@ function scaleFilter(crop: boolean): string {
     : `scale=${STICKER_SIZE}:${STICKER_SIZE}:flags=lanczos:force_original_aspect_ratio=decrease,format=rgba,pad=${STICKER_SIZE}:${STICKER_SIZE}:(ow-iw)/2:(oh-ih)/2:color=#00000000,setsar=1`;
 }
 
-const STATIC_QUALITIES = [90, 75, 60, 45, 30];
-const ANIMATED_ATTEMPTS: { fps: number; quality: number }[] = [
-  { fps: 15, quality: 60 },
-  { fps: 12, quality: 45 },
-  { fps: 10, quality: 30 },
-  { fps: 8, quality: 20 },
+const STATIC_QUALITIES = [90, 75, 60, 45, 30, 15, 5];
+/** Los dos últimos escalones recortan la duración: la resolución no baja porque WhatsApp exige 512x512. */
+const ANIMATED_ATTEMPTS: { fps: number; quality: number; seconds: number }[] = [
+  { fps: 15, quality: 60, seconds: MAX_ANIMATED_SECONDS },
+  { fps: 12, quality: 45, seconds: MAX_ANIMATED_SECONDS },
+  { fps: 10, quality: 30, seconds: MAX_ANIMATED_SECONDS },
+  { fps: 8, quality: 20, seconds: MAX_ANIMATED_SECONDS },
+  { fps: 8, quality: 10, seconds: 5 },
+  { fps: 6, quality: 5, seconds: 3 },
 ];
 
+/** Codifica con cada intento hasta que el resultado cabe; si ninguno cabe, lanza StickerTooLargeError. */
 async function encodeUntilFits(
   attempts: number,
   maxBytes: number,
   encode: (attempt: number, output: string) => Promise<void>,
   output: string,
+  animated: boolean,
 ): Promise<Buffer> {
-  let last: Buffer | null = null;
+  let size = 0;
   for (let i = 0; i < attempts; i++) {
     await encode(i, output);
-    const size = (await stat(output)).size;
+    size = (await stat(output)).size;
     if (size <= maxBytes) return readFile(output);
     log.debug(`sticker de ${size} bytes supera ${maxBytes}, reintentando (${i + 1}/${attempts})`);
-    last = await readFile(output);
   }
-  return last ?? Buffer.alloc(0);
+  throw new StickerTooLargeError(size, maxBytes, attempts, animated);
 }
 
 /** Imagen a WebP estático de 512x512; baja la calidad hasta quedar bajo 100 KB. */
 export async function imageToSticker(buffer: Buffer, metadata: StickerMetadata = {}, options: StickerOptions = {}): Promise<Buffer> {
   const crop = options.crop ?? true;
-  const input = detectMedia(buffer);
-  const webp = await withTempFiles([input.ext, 'webp'], async ([inPath, outPath]) => {
-    await writeFile(inPath, buffer);
+  const webp = await withTempDir(async (dir) => {
+    const input = await mediaInputArgs(buffer, dir);
+    const outPath = join(dir, 'out.webp');
     return encodeUntilFits(STATIC_QUALITIES.length, MAX_STATIC_BYTES, (i, out) =>
       runFfmpeg([
-        '-i', inPath, '-frames:v', '1',
+        ...input, '-frames:v', '1',
         '-vf', scaleFilter(crop),
         '-c:v', 'libwebp', '-lossless', '0', '-quality', String(STATIC_QUALITIES[i]), '-compression_level', '6',
         out,
-      ]), outPath);
+      ]), outPath, false);
   });
   return addExif(webp, metadata.packname, metadata.author, metadata.categories);
 }
 
-/** Video o GIF a WebP animado (8 s máx.); baja fps y calidad hasta quedar bajo 500 KB. */
+/** Video, GIF o WebP animado a WebP animado (8 s máx.); baja fps, calidad y duración hasta quedar bajo 500 KB. */
 export async function videoToSticker(buffer: Buffer, metadata: StickerMetadata = {}, options: StickerOptions = {}): Promise<Buffer> {
   const crop = options.crop ?? true;
-  const input = detectMedia(buffer);
-  const webp = await withTempFiles([input.ext, 'webp'], async ([inPath, outPath]) => {
-    await writeFile(inPath, buffer);
+  const webp = await withTempDir(async (dir) => {
+    const input = await mediaInputArgs(buffer, dir);
+    const outPath = join(dir, 'out.webp');
     return encodeUntilFits(ANIMATED_ATTEMPTS.length, MAX_ANIMATED_BYTES, (i, out) => {
-      const { fps, quality } = ANIMATED_ATTEMPTS[i];
+      const { fps, quality, seconds } = ANIMATED_ATTEMPTS[i];
+      // El filtro fps deja la salida a ritmo constante, así que no hace falta -vsync/-fps_mode.
       return runFfmpeg([
-        '-i', inPath, '-t', String(MAX_ANIMATED_SECONDS), '-an',
+        ...input, '-t', String(seconds), '-an',
         '-vf', `${scaleFilter(crop)},fps=${fps}`,
-        '-c:v', 'libwebp', '-lossless', '0', '-quality', String(quality), '-compression_level', '6', '-loop', '0', '-fps_mode', 'passthrough',
+        '-c:v', 'libwebp', '-lossless', '0', '-quality', String(quality), '-compression_level', '6', '-loop', '0',
         out,
       ], { timeoutMs: 90_000 });
-    }, outPath);
+    }, outPath, true);
   });
   return addExif(webp, metadata.packname, metadata.author, metadata.categories);
 }
 
 /**
- * ffmpeg (hasta 7.0) no decodifica WebP animado. Para stickers animados se
- * separan los fotogramas con node-webpmux y se entregan como lista concat con
- * la duración real de cada uno; un WebP estático se pasa directo.
+ * Escribe el buffer en `dir` y devuelve los argumentos de entrada para ffmpeg.
+ * ffmpeg (hasta 7.0) no decodifica WebP animado: esos se separan en fotogramas
+ * con node-webpmux y se entregan como lista concat con la duración real de cada
+ * uno. Cualquier otro formato (incluido WebP estático) se pasa directo.
  */
-async function stickerInputArgs(buffer: Buffer, dir: string): Promise<string[]> {
-  const inPath = join(dir, 'in.webp');
+async function mediaInputArgs(buffer: Buffer, dir: string): Promise<string[]> {
+  const media = detectMedia(buffer);
+  const inPath = join(dir, `in.${media.ext}`);
   await writeFile(inPath, buffer);
-  if (!isAnimatedWebp(buffer)) return ['-i', inPath];
+  if (media.mime !== 'image/webp' || !media.animated) return ['-i', inPath];
 
   const img = await loadWebp(buffer);
   const frames = img.hasAnim ? await img.demux({ buffers: true }) : [];
@@ -206,7 +224,7 @@ async function stickerInputArgs(buffer: Buffer, dir: string): Promise<string[]> 
 /** Primer fotograma del sticker como PNG. */
 export function stickerToImage(buffer: Buffer): Promise<Buffer> {
   return withTempDir(async (dir) => {
-    const input = await stickerInputArgs(buffer, dir);
+    const input = await mediaInputArgs(buffer, dir);
     const outPath = join(dir, 'out.png');
     await runFfmpeg([...input, '-frames:v', '1', outPath]);
     return readFile(outPath);
@@ -216,12 +234,13 @@ export function stickerToImage(buffer: Buffer): Promise<Buffer> {
 /** Sticker animado a mp4 H.264 (fondo negro donde había transparencia). */
 export function stickerToVideo(buffer: Buffer): Promise<Buffer> {
   return withTempDir(async (dir) => {
-    const input = await stickerInputArgs(buffer, dir);
+    const input = await mediaInputArgs(buffer, dir);
     const outPath = join(dir, 'out.mp4');
+    // -vsync (y no -fps_mode, que es de ffmpeg >= 5.1) para que funcione también con ffmpeg 4.4.
     await runFfmpeg([
       ...input,
       '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p',
-      '-fps_mode', 'vfr', '-c:v', 'libx264', '-crf', '23', '-preset', 'fast', '-movflags', '+faststart',
+      '-vsync', 'vfr', '-c:v', 'libx264', '-crf', '23', '-preset', 'fast', '-movflags', '+faststart',
       outPath,
     ]);
     return readFile(outPath);
@@ -231,7 +250,7 @@ export function stickerToVideo(buffer: Buffer): Promise<Buffer> {
 /** Sticker animado a GIF con paleta propia. */
 export function stickerToGif(buffer: Buffer): Promise<Buffer> {
   return withTempDir(async (dir) => {
-    const input = await stickerInputArgs(buffer, dir);
+    const input = await mediaInputArgs(buffer, dir);
     const outPath = join(dir, 'out.gif');
     await runFfmpeg([...input, '-vf', 'split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse', '-loop', '0', outPath]);
     return readFile(outPath);

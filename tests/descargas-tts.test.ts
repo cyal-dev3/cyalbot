@@ -13,7 +13,11 @@ test('parseTtsInput solo cambia de idioma con un código explícito de LANGUAGES
   // Código fuera de la lista: se lee tal cual en español.
   assert.deepEqual(parseTtsInput('xx: algo'), { lang: 'es', text: 'xx: algo' });
   assert.deepEqual(parseTtsInput('-zz algo'), { lang: 'es', text: '-zz algo' });
-  assert.deepEqual(parseTtsInput('  en:   '), { lang: 'es', text: 'en:' });
+  // Código solo (respondiendo a un mensaje): idioma fijado y texto vacío para usar el citado.
+  assert.deepEqual(parseTtsInput('  en:   '), { lang: 'en', text: '' });
+  assert.deepEqual(parseTtsInput('-en'), { lang: 'en', text: '' });
+  assert.deepEqual(parseTtsInput('-entero'), { lang: 'es', text: '-entero' });
+  assert.deepEqual(parseTtsInput('xx:'), { lang: 'es', text: 'xx:' });
   assert.deepEqual(parseTtsInput(''), { lang: DEFAULT_LANG, text: '' });
   assert.ok('es' in LANGUAGES && 'en' in LANGUAGES);
 });

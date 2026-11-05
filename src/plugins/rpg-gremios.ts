@@ -9,6 +9,8 @@ import { updateQuestProgress } from '../lib/quests.js';
 
 const GUILDS_PER_PAGE = 10;
 const MAX_DESCRIPTION = 120;
+/** Monedas del tesoro que equivalen a 1 XP de gremio */
+export const GUILD_MONEY_PER_EXP = 100;
 
 export function findGuildByName(db: Database, name: string): Guild | null {
   const wanted = normalizeText(name.trim());
@@ -26,6 +28,11 @@ export function getUserGuild(db: Database, jid: string, user: UserRPG): Guild | 
   return guild;
 }
 
+/** XP de gremio que genera (o devuelve) una cantidad de dinero del tesoro */
+export function guildExpForMoney(amount: number): number {
+  return Math.max(0, Math.floor(amount / GUILD_MONEY_PER_EXP));
+}
+
 /** Suma XP al gremio y sube los niveles que correspondan; devuelve los niveles ganados */
 export function addGuildExp(guild: Guild, amount: number): number {
   let gained = 0;
@@ -36,6 +43,23 @@ export function addGuildExp(guild: Guild, amount: number): number {
     gained++;
   }
   return gained;
+}
+
+/**
+ * Resta XP al gremio bajando de nivel si hace falta (nunca por debajo de 1 / 0 XP);
+ * devuelve los niveles perdidos. Retirar del tesoro deshace la XP del depósito para
+ * que el ciclo depositar/retirar no farmee niveles.
+ */
+export function removeGuildExp(guild: Guild, amount: number): number {
+  let lost = 0;
+  guild.exp -= Math.max(0, Math.floor(amount));
+  while (guild.exp < 0 && guild.level > 1) {
+    guild.level--;
+    guild.exp += guild.level * GUILD.XP_PER_LEVEL;
+    lost++;
+  }
+  guild.exp = Math.max(0, guild.exp);
+  return lost;
 }
 
 function requireMember(ctx: MessageContext, db: Database, user: UserRPG): Guild | null {
@@ -71,8 +95,8 @@ export const gremioPlugin: PluginHandler = {
     'gremio crear <nombre> - Fundar un gremio',
     'gremio unirse <nombre> - Unirte a un gremio',
     'gremio salir - Abandonar tu gremio',
-    'gremio depositar <cantidad> - Aportar al tesoro (da XP al gremio)',
-    'gremio retirar <cantidad> - Sacar del tesoro (líder)',
+    `gremio depositar <cantidad> - Aportar al tesoro (1 XP de gremio por cada ${GUILD_MONEY_PER_EXP} monedas)`,
+    'gremio retirar <cantidad> - Sacar del tesoro (líder; el gremio devuelve la XP de ese dinero)',
     'gremio expulsar @usuario - Expulsar a un miembro (líder)',
     'gremio lider @usuario - Ceder el liderazgo (líder)',
     'gremio descripcion <texto> - Cambiar la descripción (líder)',
@@ -164,7 +188,7 @@ export const gremioPlugin: PluginHandler = {
         if (user.money < amount) return m.reply(`${EMOJI.warning} No tienes tanto dinero (tienes ${formatNumber(user.money)}).`);
 
         guild.treasury += amount;
-        const levels = addGuildExp(guild, Math.floor(amount / 100));
+        const levels = addGuildExp(guild, guildExpForMoney(amount));
         db.saveGuild(guild);
         db.updateUser(m.sender, { money: user.money - amount });
 
@@ -183,9 +207,14 @@ export const gremioPlugin: PluginHandler = {
         if (amount > guild.treasury) return m.reply(`${EMOJI.warning} El tesoro solo tiene ${formatNumber(guild.treasury)}.`);
 
         guild.treasury -= amount;
+        const lostLevels = removeGuildExp(guild, guildExpForMoney(amount));
         db.saveGuild(guild);
         db.updateUser(m.sender, { money: user.money + amount });
-        return m.reply(`💸 Retiraste ${formatNumber(amount)} del tesoro de *${guild.name}* (quedan ${formatNumber(guild.treasury)}).`);
+        return m.reply(
+          `💸 Retiraste ${formatNumber(amount)} del tesoro de *${guild.name}* (quedan ${formatNumber(guild.treasury)}).\n` +
+          `📉 El gremio devuelve ${formatNumber(guildExpForMoney(amount))} XP.` +
+          (lostLevels > 0 ? ` Bajó al nivel *${guild.level}*.` : '')
+        );
       }
 
       case 'expulsar':

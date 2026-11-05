@@ -40,14 +40,15 @@ const HELP =
   '• /s <url de imagen>\n' +
   '• /s full → sin recortar (bordes transparentes)\n' +
   '• /s Mi pack|Mi nombre → pack y autor\n' +
-  '• Responde a un sticker con /steal para hacerlo tuyo\n\n' +
+  '• Responde a un sticker con /s (o /stealsticker) para hacerlo tuyo\n\n' +
   `📷 JPG, PNG, WEBP, GIF · 🎬 videos de hasta ${MAX_ANIMATED_SECONDS} s (máx 5 MB)`;
 
 export const stickerPlugin: PluginHandler = {
-  command: ['s', 'sticker', 'stiker', 'stick', 'steal', 'robar'],
+  // 'steal' y 'robar' pertenecen a rpg-robar (el primer plugin registrado se queda el alias).
+  command: ['s', 'sticker', 'stiker', 'stick', 'stealsticker'],
   description: 'Crear sticker a partir de una imagen, video o URL',
   category: 'media',
-  usage: ['s (respondiendo a imagen/video)', 's full', 's <pack>|<autor>', 's <url>', 'steal (respondiendo a sticker)'],
+  usage: ['s (respondiendo a imagen/video)', 's full', 's <pack>|<autor>', 's <url>', 'stealsticker (respondiendo a sticker)'],
 
   async handler(ctx: MessageContext) {
     const { m, text, send } = ctx;

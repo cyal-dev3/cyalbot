@@ -5,7 +5,7 @@ import { EMOJI, formatNumber, randomInt, pickRandom, checkCooldown, mentionTag, 
 import { getRankBenefits, getRoleByLevel, type UserRPG } from '../types/user.js';
 import { globalModes, checkExpiredModes } from '../lib/global-modes.js';
 import { ROB, PVP } from '../constants/rpg.js';
-import { grantExp, loseExp } from '../lib/levelling.js';
+import { grantExp, loseExp, xpRange } from '../lib/levelling.js';
 import { calculateTotalStats } from '../lib/rpg-utils.js';
 import { clamp, isPassiveActive, replyCooldown, usageError } from '../lib/rpg-actions.js';
 import { updateQuestProgress } from '../lib/quests.js';
@@ -67,17 +67,36 @@ export interface RobAttemptOptions {
   rand?: (min: number, max: number) => number;
 }
 
-/** true si la víctima tiene algo que valga la pena robar según ROB.MIN_VICTIM_RESOURCES */
-export function hasStealableResources(victim: UserRPG): boolean {
-  return victim.money >= ROB.MIN_VICTIM_RESOURCES.MONEY
-    || victim.exp >= ROB.MIN_VICTIM_RESOURCES.EXP
-    || victim.mana >= ROB.MIN_VICTIM_RESOURCES.MANA;
+/**
+ * Recursos que realmente pueden cambiar de manos: la XP por encima del mínimo
+ * del nivel de la víctima (loseExp no baja de ahí) y el maná que además cabe en
+ * el ladrón. Sin `thief`, el maná solo se limita por la víctima.
+ */
+export function getStealableResources(victim: UserRPG, thief?: UserRPG): Record<RobbableResource, number> {
+  const victimMana = Math.max(0, Math.floor(victim.mana));
+  const thiefRoom = thief ? Math.max(0, calculateTotalStats(thief).maxMana - thief.mana) : victimMana;
+  return {
+    money: Math.max(0, Math.floor(victim.money)),
+    exp: Math.max(0, Math.floor(victim.exp) - xpRange(Math.max(0, Math.floor(victim.level || 0))).min),
+    mana: Math.min(victimMana, thiefRoom)
+  };
 }
+
+/** true si la víctima tiene algo que valga la pena robar según ROB.MIN_VICTIM_RESOURCES */
+export function hasStealableResources(victim: UserRPG, thief?: UserRPG): boolean {
+  const available = getStealableResources(victim, thief);
+  return available.money >= ROB.MIN_VICTIM_RESOURCES.MONEY
+    || available.exp >= ROB.MIN_VICTIM_RESOURCES.EXP
+    || available.mana >= ROB.MIN_VICTIM_RESOURCES.MANA;
+}
+
+const RESOURCE_ORDER: RobbableResource[] = ['money', 'exp', 'mana'];
 
 /**
  * Decide el resultado de un robo con las constantes ROB.*. La cantidad nunca
- * supera el recurso real de la víctima, así el ladrón gana exactamente lo que
- * la víctima pierde (ver applyRobTransfer).
+ * supera lo que la víctima puede perder de verdad (getStealableResources), así
+ * el ladrón gana exactamente lo que la víctima pierde (ver applyRobTransfer) y
+ * un robo exitoso nunca transfiere 0.
  */
 export function calculateRobAttempt(thief: UserRPG, victim: UserRPG, opts: RobAttemptOptions = {}): RobResult {
   const rand = opts.rand ?? randomInt;
@@ -101,35 +120,47 @@ export function calculateRobAttempt(thief: UserRPG, victim: UserRPG, opts: RobAt
   }
 
   const amountMultiplier = 1 + (opts.amountBonus ?? 0) / 100;
-  const roll = rand(1, 100);
-  const min = ROB.MIN_VICTIM_RESOURCES;
-  let resource: RobbableResource;
-  let amount: number;
+  const available = getStealableResources(victim, thief);
+  const minimums: Record<RobbableResource, number> = {
+    money: ROB.MIN_VICTIM_RESOURCES.MONEY,
+    exp: ROB.MIN_VICTIM_RESOURCES.EXP,
+    mana: ROB.MIN_VICTIM_RESOURCES.MANA
+  };
+  const worthIt = (r: RobbableResource) => available[r] >= minimums[r];
 
-  if (roll <= ROB.RESOURCE_CHANCES.MONEY && victim.money >= min.MONEY) {
-    resource = 'money';
-    amount = rand(
-      Math.floor(victim.money * ROB.MONEY_STEAL_PERCENT.MIN * amountMultiplier),
-      Math.floor(victim.money * ROB.MONEY_STEAL_PERCENT.MAX * amountMultiplier)
-    );
-    amount = clamp(amount, 1, victim.money);
-  } else if (roll <= ROB.RESOURCE_CHANCES.MONEY + ROB.RESOURCE_CHANCES.EXP && victim.exp >= min.EXP) {
-    resource = 'exp';
-    amount = rand(
-      Math.floor(victim.exp * ROB.EXP_STEAL_PERCENT.MIN * amountMultiplier),
-      Math.floor(victim.exp * ROB.EXP_STEAL_PERCENT.MAX * amountMultiplier)
-    );
-    amount = clamp(amount, 1, victim.exp);
-  } else if (victim.mana >= min.MANA) {
-    resource = 'mana';
-    amount = rand(Math.floor(ROB.MANA_STEAL.MIN * amountMultiplier), Math.floor(ROB.MANA_STEAL.MAX * amountMultiplier));
-    amount = clamp(amount, 1, victim.mana);
-  } else if (victim.money > 0) {
-    resource = 'money';
-    amount = clamp(Math.floor(victim.money * ROB.MONEY_STEAL_PERCENT.MIN * amountMultiplier), 1, victim.money);
-  } else {
+  const roll = rand(1, 100);
+  const rolled: RobbableResource = roll <= ROB.RESOURCE_CHANCES.MONEY ? 'money'
+    : roll <= ROB.RESOURCE_CHANCES.MONEY + ROB.RESOURCE_CHANCES.EXP ? 'exp'
+    : 'mana';
+
+  // Si el recurso sorteado no alcanza el mínimo, se cae al primero que sí; como
+  // último recurso, calderilla de dinero
+  const resource = worthIt(rolled) ? rolled : RESOURCE_ORDER.find(worthIt) ?? (available.money > 0 ? 'money' : null);
+  if (!resource) {
     return { success: false, resource: 'money', amount: 0, message: EMPTY_POCKETS, successChance };
   }
+
+  let amount: number;
+  switch (resource) {
+    case 'money':
+      amount = worthIt('money')
+        ? rand(
+          Math.floor(available.money * ROB.MONEY_STEAL_PERCENT.MIN * amountMultiplier),
+          Math.floor(available.money * ROB.MONEY_STEAL_PERCENT.MAX * amountMultiplier)
+        )
+        : Math.floor(available.money * ROB.MONEY_STEAL_PERCENT.MIN * amountMultiplier);
+      break;
+    case 'exp':
+      amount = rand(
+        Math.floor(available.exp * ROB.EXP_STEAL_PERCENT.MIN * amountMultiplier),
+        Math.floor(available.exp * ROB.EXP_STEAL_PERCENT.MAX * amountMultiplier)
+      );
+      break;
+    case 'mana':
+      amount = rand(Math.floor(ROB.MANA_STEAL.MIN * amountMultiplier), Math.floor(ROB.MANA_STEAL.MAX * amountMultiplier));
+      break;
+  }
+  amount = clamp(amount, 1, available[resource]);
 
   return { success: true, resource, amount, message: pickRandom(SUCCESS_MESSAGES[resource]), successChance };
 }
@@ -231,8 +262,8 @@ export const robarPlugin: PluginHandler = {
       );
     }
 
-    if (!hasStealableResources(victim)) {
-      return m.reply(`${EMOJI.warning} *${victim.name}* está en la pobreza total. Busca una víctima más jugosa. 💀`);
+    if (!hasStealableResources(victim, thief)) {
+      return m.reply(`${EMOJI.warning} *${victim.name}* no tiene nada que puedas llevarte ahora. Busca una víctima más jugosa. 💀`);
     }
 
     if (thief.money < 50) {
@@ -249,7 +280,6 @@ export const robarPlugin: PluginHandler = {
     }
 
     const result = calculateRobAttempt(thief, victim, { successBonus, amountBonus });
-    thief.lastRob = now;
 
     const modeLines: string[] = [];
     if (freeRob) modeLines.push('🦹 *MODO ROBO LIBRE* - sin cooldown');
@@ -259,6 +289,11 @@ export const robarPlugin: PluginHandler = {
 
     if (result.success) {
       const taken = applyRobTransfer(thief, victim, result.resource, result.amount);
+      // getStealableResources ya acota la cantidad; esta guarda evita anunciar "+0" si algo cambiara entre medias
+      if (taken <= 0) {
+        return m.reply(`${EMOJI.warning} *${victim.name}* no tiene nada que puedas llevarte ahora. No gastaste el cooldown.`);
+      }
+      thief.lastRob = now;
       db.updateUser(m.sender, thief);
       db.updateUser(victimJid, victim);
 
@@ -286,6 +321,7 @@ export const robarPlugin: PluginHandler = {
 
     const penalty = Math.min(result.amount, thief.money);
     thief.money -= penalty;
+    thief.lastRob = now;
     db.updateUser(m.sender, thief);
     const questLines = updateQuestProgress(db, m.sender, 'rob', 1, now).lines;
 

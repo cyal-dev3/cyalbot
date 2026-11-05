@@ -59,6 +59,24 @@ test('isForbiddenLink: modo all detecta cualquier URL pero no texto normal', () 
   assert.equal(isForbiddenLink('te lo mando por t.me/canal', 'all'), true);
   assert.equal(isForbiddenLink('hola, ¿cómo estás? 3.5 puntos', 'all'), false);
   assert.equal(isForbiddenLink('ver el archivo.txt y el main.ts', 'all'), false);
+  assert.equal(isForbiddenLink('ejemplo.com', 'all'), true);
+  assert.equal(isForbiddenLink('visita ejemplo.com.', 'all'), true);
+  assert.equal(isForbiddenLink('mi-tienda.online', 'all'), true);
+});
+
+test('isForbiddenLink: modo all no confunde correos, versiones ni palabras pegadas a un punto', () => {
+  assert.equal(isForbiddenLink('escribe a soporte@empresa.com', 'all'), false);
+  assert.equal(isForbiddenLink('actualicé a la 2.0.es', 'all'), false);
+  assert.equal(isForbiddenLink('nos vemos en casa.me esperas', 'all'), false);
+  assert.equal(isForbiddenLink('Hola.Me gusta', 'all'), false);
+  assert.equal(isForbiddenLink('ok.es verdad', 'all'), false);
+  assert.equal(isForbiddenLink('ya.to do', 'all'), false);
+  assert.equal(isForbiddenLink('compra.me algo', 'all'), false);
+  // Un dominio de país sin ruta no se puede distinguir de una palabra; con ruta, www. o esquema sí.
+  assert.equal(isForbiddenLink('ejemplo.es', 'all'), false);
+  assert.equal(isForbiddenLink('ejemplo.es/ruta', 'all'), true);
+  assert.equal(isForbiddenLink('www.ejemplo.es', 'all'), true);
+  assert.equal(isForbiddenLink('http://ejemplo.es', 'all'), true);
 });
 
 test('getMaxWarnings usa el campo del chat si es válido y si no CONFIG', () => {

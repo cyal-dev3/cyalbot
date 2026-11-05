@@ -50,6 +50,17 @@ export function canonicalJid(metadata: Metadata, jid: string): string {
   return findParticipant(metadata, jid)?.id ?? jid;
 }
 
+/**
+ * true si los dos jids son la misma persona: iguales salvo dispositivo, o el
+ * mismo participante del grupo aunque uno llegue como número y otro como LID.
+ */
+export function isSameParticipant(metadata: Metadata, a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  if (areJidsSameUser(a, b)) return true;
+  const pa = findParticipant(metadata, a);
+  return pa !== undefined && pa === findParticipant(metadata, b);
+}
+
 /** Ids del bot (número y LID). botIds() vive en la clase MessageHandler, no en la interfaz. */
 export function getBotIds(ctx: Pick<MessageContext, 'conn' | 'handler'>): string[] {
   const fromHandler = (ctx.handler as unknown as { botIds?: () => string[] }).botIds?.();
@@ -67,10 +78,37 @@ export interface ResolveTargetOptions {
 
 type TargetContext = Pick<MessageContext, 'm' | 'args' | 'groupMetadata'>;
 
-function numbersInArgs(args: readonly string[]): string[] {
-  return args
-    .map((a) => a.replace(/[\s()+-]/g, ''))
-    .filter((a) => /^\d{7,16}$/.test(a));
+const MIN_NUMBER_DIGITS = 7;
+const MAX_NUMBER_DIGITS = 16;
+
+/**
+ * Números de teléfono escritos en los argumentos. El handler parte el texto
+ * por espacios, así que "+52 1 000 000 0003" llega en cinco trozos: los grupos
+ * cortos consecutivos se unen en un número; un trozo largo es un número por sí
+ * solo, y cualquier palabra (p. ej. "10m") cierra el grupo en curso.
+ */
+export function numbersInArgs(args: readonly string[]): string[] {
+  const numbers: string[] = [];
+  let pending = '';
+  const flush = () => {
+    if (pending.length >= MIN_NUMBER_DIGITS && pending.length <= MAX_NUMBER_DIGITS) numbers.push(pending);
+    pending = '';
+  };
+  for (const raw of args.join(' ').replace(/[()+-]/g, ' ').split(/\s+/)) {
+    if (!/^\d+$/.test(raw)) {
+      flush();
+      continue;
+    }
+    if (raw.length >= MIN_NUMBER_DIGITS) {
+      flush();
+      pending = raw;
+      flush();
+      continue;
+    }
+    pending += raw;
+  }
+  flush();
+  return numbers;
 }
 
 /** Participante cuyo número coincide con los dígitos dados (en p.id o p.jid). */
@@ -144,8 +182,7 @@ export function assertCanModerate(ctx: ModerationContext, targetId: string, acti
   const participant = findParticipant(groupMetadata, targetId);
 
   // El objetivo puede llegar como LID y el remitente como número (o al revés): se comparan vía metadata.
-  const isSelf = areJidsSameUser(targetId, m.sender) || (participant !== undefined && participant === findParticipant(groupMetadata, m.sender));
-  if (isSelf) return SELF_TEXT[action];
+  if (isSameParticipant(groupMetadata, targetId, m.sender)) return SELF_TEXT[action];
 
   const botIds = getBotIds(ctx);
   if (botIds.some((id) => areJidsSameUser(id, targetId)) || (participant && findBotParticipant(groupMetadata, botIds) === participant)) {

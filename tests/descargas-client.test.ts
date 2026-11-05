@@ -71,6 +71,12 @@ before(async () => {
       json(res, 200, { success: true, data: { results: [{ id: 'id1', title: 'Resultado', url: 'https://www.youtube.com/watch?v=id1', duration: 120, author: 'Canal', thumbnail: null }] } });
       return;
     }
+    if (req.url === '/hang') {
+      // Cabeceras y medio JSON sin cerrar: el timeout debe cubrir la lectura del cuerpo.
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"success":true,"data":{');
+      return;
+    }
     if (req.url === '/health') {
       json(res, 200, { status: 'ok', version: '1.0.0', ytdlp: '2026.10.26', uptimeSeconds: 42, queue: { active: 1, waiting: 2 } });
       return;
@@ -141,6 +147,17 @@ test('401 UNAUTHORIZED y 413 TOO_LARGE', async () => {
     assert.equal(client.describeFailure(big), 'El archivo pesa 95 MB, el máximo es 60 MB.');
   }
   assert.equal(client.describeDownloadError('TOO_LARGE', { sizeBytes: 70 * 1024 * 1024 }), 'El archivo pesa 70 MB, el máximo es 60 MB.');
+  // Mensajes del servicio que traen el tope y no el tamaño real: texto genérico.
+  assert.equal(client.describeDownloadError('TOO_LARGE', { message: 'El archivo supera el maximo de 60 MB' }), 'El archivo supera el máximo de 60 MB.');
+  assert.equal(client.describeDownloadError('TOO_LARGE', { message: 'El body supera 64 KB' }), 'El archivo supera el máximo de 60 MB.');
+  assert.equal(client.describeDownloadError('TOO_LARGE', { message: 'El archivo pesa unos 80 MB y el maximo es 60 MB' }), 'El archivo pesa 80 MB, el máximo es 60 MB.');
+});
+
+test('el timeout cubre también la lectura del cuerpo (servidor colgado a mitad del JSON)', async () => {
+  const { fetchTextWithTimeout } = await import('../src/lib/http.js');
+  const started = Date.now();
+  await assert.rejects(fetchTextWithTimeout(`${baseUrl}/hang`, { timeoutMs: 300 }));
+  assert.ok(Date.now() - started < 5_000, 'la lectura colgada no se abortó');
 });
 
 test('502 con HTML no rompe: INTERNAL con el status', async () => {

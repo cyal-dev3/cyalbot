@@ -124,7 +124,7 @@ function connectionFailure(path: string, error: unknown, timeoutMs: number): Cli
     : { success: false, code: 'INTERNAL', message: 'No se pudo conectar con el servicio de descargas' };
 }
 
-/** undici señala el abort con AbortError o, si corta a mitad del cuerpo, con un TypeError cuya causa es AbortError. */
+/** undici señala el abort con AbortError, a veces envuelto como `cause` de otro error. */
 function isAbortError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (error.name === 'AbortError') return true;

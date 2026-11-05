@@ -54,9 +54,25 @@ export const LOG_BUFFER_SIZE = 200;
 
 const logBuffer: LogLine[] = [];
 
+const MAX_LINE_LENGTH = 600;
+
+/**
+ * Deja el mensaje apto para mandarlo por WhatsApp con /logs: sin pilas de
+ * llamadas (traen rutas absolutas del servidor), en una sola línea y acotado.
+ */
+export function sanitizeLogMessage(message: string): string {
+  const flat = message
+    .split('\n')
+    .filter((line) => !/^\s+at\s/.test(line))
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' | ');
+  return flat.length > MAX_LINE_LENGTH ? `${flat.slice(0, MAX_LINE_LENGTH - 3)}...` : flat;
+}
+
 /** Buffer circular con las últimas líneas warn/error; logger.write debe llamarlo. */
 export function recordLogLine(level: BufferedLevel, scope: string, message: string): void {
-  logBuffer.push({ at: Date.now(), level, scope, message });
+  logBuffer.push({ at: Date.now(), level, scope, message: sanitizeLogMessage(message) });
   if (logBuffer.length > LOG_BUFFER_SIZE) logBuffer.splice(0, logBuffer.length - LOG_BUFFER_SIZE);
 }
 

@@ -98,7 +98,8 @@ export function createTogglePlugin(def: ToggleDefinition): PluginHandler {
       const settings = db.getChatSettings(m.chat);
       const word = text.trim().toLowerCase().split(/\s+/)[0] ?? '';
 
-      const extra = def.extra?.[word];
+      // Object.hasOwn: "constructor" o "__proto__" como argumento no deben caer en el prototipo.
+      const extra = def.extra && Object.hasOwn(def.extra, word) ? def.extra[word] : undefined;
       if (extra) {
         await extra(ctx, settings);
         return;
@@ -246,20 +247,21 @@ const DEFS = {
     field: 'autoMuteEnabled',
     label: 'Automute',
     emoji: '🔇',
-    description: 'Borra los mensajes de los usuarios silenciados con {p}mute',
+    description: 'Borra los mensajes de los usuarios silenciados (mute)',
     onText: '✅ *Automute activado*\n\n🔇 Los mensajes de los usuarios silenciados se eliminarán. {p}mute lo activa solo si hace falta.',
     offText: '✅ *Automute desactivado*\n\n🔊 Los silenciados vuelven a poder escribir (la lista se conserva).',
     botAdmin: true,
   },
   bot: {
-    // "bot" también es alias de /ia; mientras no se retire de ahí, usar botgrupo (ver handoff).
-    command: ['bot', 'botgrupo'],
+    // "bot" también es alias de /ia, que se registra antes y se lo queda. El alias principal
+    // (el que ven estado, ayuda y panel) es botgrupo hasta que IA retire "bot" (ver handoff).
+    command: ['botgrupo', 'bot'],
     field: 'enabled',
     label: 'Bot en este grupo',
     emoji: '🤖',
-    description: 'Apaga el bot en el grupo; solo el owner y "bot on" siguen funcionando',
+    description: 'Apaga el bot en el grupo; solo el owner y "botgrupo on" siguen funcionando',
     onText: '✅ *Bot activado en este grupo*',
-    offText: '😴 *Bot desactivado en este grupo*\n\nSolo el owner puede usarlo. Un admin lo reactiva con {p}bot on.',
+    offText: '😴 *Bot desactivado en este grupo*\n\nSolo el owner puede usarlo. Un admin lo reactiva con {p}botgrupo on.',
     defaultOn: true,
   },
 } satisfies Record<string, ToggleDefinition>;

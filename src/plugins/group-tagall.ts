@@ -2,7 +2,7 @@ import type { PluginHandler, MessageContext } from '../types/message.js';
 import { createLogger } from '../lib/logger.js';
 import { mentionTag } from '../lib/utils.js';
 import { findBotParticipant, getBotIds } from '../lib/participants.js';
-import { downloadMessageMedia } from './group-tools.js';
+import { downloadMessageMedia } from '../lib/media.js';
 
 const log = createLogger('grupos');
 

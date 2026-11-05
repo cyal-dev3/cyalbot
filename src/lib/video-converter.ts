@@ -60,8 +60,9 @@ export interface ConvertOptions {
 }
 
 function conversionArgs(input: string, output: string, options: ConvertOptions): string[] {
+  // libx264 con yuv420p exige dimensiones pares: -2 redondea el ancho y el alto se trunca a par.
   const scale = options.maxHeight
-    ? `scale=-2:'min(${options.maxHeight},ih)'`
+    ? `scale=-2:'trunc(min(${options.maxHeight},ih)/2)*2'`
     : 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
   return [
     '-i', input,

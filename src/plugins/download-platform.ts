@@ -7,7 +7,7 @@ import { sendMedias } from '../lib/media-send.js';
 export interface DownloadPluginSpec {
   commands: string[];
   platform: Platform;
-  /** Debe casar la URL completa (con https) para extraerla del texto o del citado. */
+  /** Casa la URL en el texto o el citado; el esquema es opcional y extractUrl lo completa. */
   urlRegex: RegExp;
   /** Formatos aceptados, se muestran en la ayuda. */
   help: string;
@@ -31,7 +31,7 @@ export function createDownloadPlugin(spec: DownloadPluginSpec): PluginHandler {
       const { conn, m, text, handler } = ctx;
       const url = extractUrl(text, getQuotedText(m), spec.urlRegex);
       if (!url) {
-        const looksLikeUrl = /https?:\/\//i.test(text);
+        const looksLikeUrl = /https?:\/\/|\w\.\w+\//i.test(text);
         await m.reply(
           looksLikeUrl
             ? `❌ Ese enlace no parece de ${name}.\n\n📌 Formatos aceptados:\n${spec.help}`
@@ -72,60 +72,60 @@ export function createDownloadPlugin(spec: DownloadPluginSpec): PluginHandler {
   };
 }
 
-export const tiktokPlugin = createDownloadPlugin({
-  commands: ['tiktok', 'tt', 'ttdl'],
-  platform: 'tiktok',
-  urlRegex: /https?:\/\/(?:[\w-]+\.)?tiktok\.com\/[^\s<>"']+/i,
-  help: '• tiktok.com/@usuario/video/123\n• vm.tiktok.com/xxx o vt.tiktok.com/xxx',
-  maxMedias: 10,
-});
+/** Tabla de plataformas; las regex se prueban en tests/descargas-url.test.ts desde aquí. */
+export const PLATFORM_SPECS: DownloadPluginSpec[] = [
+  {
+    commands: ['tiktok', 'tt', 'ttdl'],
+    platform: 'tiktok',
+    urlRegex: /(?:https?:\/\/)?(?:[\w-]+\.)?tiktok\.com\/[^\s<>"']+/i,
+    help: '• tiktok.com/@usuario/video/123\n• vm.tiktok.com/xxx o vt.tiktok.com/xxx',
+    maxMedias: 10,
+  },
+  {
+    commands: ['ig', 'instagram', 'igdl'],
+    platform: 'instagram',
+    urlRegex: /(?:https?:\/\/)?(?:www\.)?instagram\.com\/(?:[\w.]+\/)?(?:p|reel|reels|tv|stories|share)\/[^\s<>"']+/i,
+    help: '• instagram.com/p/xxx (post o carrusel)\n• instagram.com/reel/xxx o instagram.com/usuario/reel/xxx\n• instagram.com/share/xxx\n• instagram.com/stories/usuario/123',
+    maxMedias: 10,
+  },
+  {
+    commands: ['fb', 'facebook', 'fbdl'],
+    platform: 'facebook',
+    urlRegex: /(?:https?:\/\/)?(?:[\w-]+\.)?(?:facebook\.com|fb\.watch|fb\.com)\/[^\s<>"']+/i,
+    help: '• facebook.com/watch?v=123\n• facebook.com/usuario/videos/123\n• fb.watch/xxx o fb.com/xxx',
+    maxMedias: 5,
+  },
+  {
+    commands: ['twitter', 'tw', 'twdl', 'x'],
+    platform: 'twitter',
+    urlRegex: /(?:https?:\/\/)?(?:www\.|mobile\.)?(?:twitter\.com|x\.com)\/(?:i\/|\w+\/)status\/\d+[^\s<>"']*/i,
+    help: '• x.com/usuario/status/123\n• twitter.com/usuario/status/123\n• x.com/i/status/123',
+    maxMedias: 4,
+  },
+  {
+    commands: ['pinterest'],
+    platform: 'pinterest',
+    urlRegex: /(?:https?:\/\/)?(?:(?:[\w-]+\.)?pinterest\.(?:com|[a-z]{2}|com?\.[a-z]{2})\/pin\/[^\s<>"']+|pin\.it\/[^\s<>"']+)/i,
+    help: '• pinterest.com/pin/123\n• pin.it/xxx',
+    maxMedias: 5,
+  },
+  {
+    commands: ['threads', 'th', 'thdl'],
+    platform: 'threads',
+    urlRegex: /(?:https?:\/\/)?(?:www\.)?threads\.(?:net|com)\/(?:@[\w.]+\/)?post\/[^\s<>"']+/i,
+    help: '• threads.net/@usuario/post/xxx\n• threads.com/@usuario/post/xxx',
+    maxMedias: 10,
+  },
+];
 
-export const instagramPlugin = createDownloadPlugin({
-  commands: ['ig', 'instagram', 'igdl'],
-  platform: 'instagram',
-  urlRegex: /https?:\/\/(?:www\.)?instagram\.com\/(?:[\w.]+\/)?(?:p|reel|reels|tv|stories|share)\/[^\s<>"']+/i,
-  help: '• instagram.com/p/xxx (post o carrusel)\n• instagram.com/reel/xxx o instagram.com/usuario/reel/xxx\n• instagram.com/share/xxx\n• instagram.com/stories/usuario/123',
-  maxMedias: 10,
-});
+const byPlatform = Object.fromEntries(PLATFORM_SPECS.map((spec) => [spec.platform, createDownloadPlugin(spec)])) as Record<Platform, PluginHandler>;
 
-export const facebookPlugin = createDownloadPlugin({
-  commands: ['fb', 'facebook', 'fbdl'],
-  platform: 'facebook',
-  urlRegex: /https?:\/\/(?:[\w-]+\.)?(?:facebook\.com|fb\.watch|fb\.com)\/[^\s<>"']+/i,
-  help: '• facebook.com/watch?v=123\n• facebook.com/usuario/videos/123\n• fb.watch/xxx o fb.com/xxx',
-  maxMedias: 5,
-});
-
-export const twitterPlugin = createDownloadPlugin({
-  commands: ['twitter', 'tw', 'twdl', 'x'],
-  platform: 'twitter',
-  urlRegex: /https?:\/\/(?:www\.|mobile\.)?(?:twitter\.com|x\.com)\/(?:i\/|\w+\/)status\/\d+[^\s<>"']*/i,
-  help: '• x.com/usuario/status/123\n• twitter.com/usuario/status/123\n• x.com/i/status/123',
-  maxMedias: 4,
-});
-
-export const pinterestPlugin = createDownloadPlugin({
-  commands: ['pinterest'],
-  platform: 'pinterest',
-  urlRegex: /https?:\/\/(?:(?:[\w-]+\.)?pinterest\.[a-z.]+\/pin\/[^\s<>"']+|pin\.it\/[^\s<>"']+)/i,
-  help: '• pinterest.com/pin/123\n• pin.it/xxx',
-  maxMedias: 5,
-});
-
-export const threadsPlugin = createDownloadPlugin({
-  commands: ['threads', 'th', 'thdl'],
-  platform: 'threads',
-  urlRegex: /https?:\/\/(?:www\.)?threads\.(?:net|com)\/(?:@[\w.]+\/)?post\/[^\s<>"']+/i,
-  help: '• threads.net/@usuario/post/xxx\n• threads.com/@usuario/post/xxx',
-  maxMedias: 10,
-});
+export const tiktokPlugin = byPlatform.tiktok;
+export const instagramPlugin = byPlatform.instagram;
+export const facebookPlugin = byPlatform.facebook;
+export const twitterPlugin = byPlatform.twitter;
+export const pinterestPlugin = byPlatform.pinterest;
+export const threadsPlugin = byPlatform.threads;
 
 /** Entradas listas para plugins/index.ts: [nombre, plugin]. */
-export const platformDownloadPlugins: [string, PluginHandler][] = [
-  ['download-tiktok', tiktokPlugin],
-  ['download-instagram', instagramPlugin],
-  ['download-facebook', facebookPlugin],
-  ['download-twitter', twitterPlugin],
-  ['download-pinterest', pinterestPlugin],
-  ['download-threads', threadsPlugin],
-];
+export const platformDownloadPlugins: [string, PluginHandler][] = PLATFORM_SPECS.map((spec) => [`download-${spec.platform}`, byPlatform[spec.platform]]);

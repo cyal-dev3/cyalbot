@@ -54,7 +54,21 @@ export type AntiLinkMode = 'wa' | 'all';
 
 const WHATSAPP_INVITE = /chat\.whatsapp\.com\/[a-zA-Z0-9]{15,}/i;
 const TELEGRAM_LINK = /(?:^|[^a-z0-9.])t\.me\/[a-zA-Z0-9_+]+/i;
-const ANY_URL = /(?:https?:\/\/|www\.)[^\s]+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|me|co|gg|tv|app|xyz|info|link|ly|es|mx|ar|cl|pe|ve|ec|uy|py|bo|do|gt|hn|sv|ni|cr|pa|cu|us|uk|de|fr|it|br|pt|ru|cn|jp|kr|in|site|online|store|club|live|video|download|stream|fun|top|pro|dev|ai|to|cc|biz|tk|ml|ga|cf|gq)(?:[/?#][^\s]*)?(?=$|[\s,;!?)])/i;
+
+// TLD que no son palabras en español: "ejemplo.com" cuenta como enlace aunque no lleve ruta.
+const TLD_UNAMBIGUOUS = 'com|net|org|io|gg|app|xyz|info|link|ly|site|online|store|club|live|video|download|stream|fun|top|pro|dev|ai|cc|biz|tk|ml|ga|cf|gq';
+// Códigos de país que también son sílabas o palabras ("ok.es verdad", "compra.me algo"): solo con ruta, www. o esquema.
+const TLD_AMBIGUOUS = 'me|co|tv|es|mx|ar|cl|pe|ve|ec|uy|py|bo|do|gt|hn|sv|ni|cr|pa|cu|us|uk|de|fr|it|br|pt|ru|cn|jp|kr|in|to';
+// Host sin esquema: no va pegado a @ (correo), a otro punto ni a un dígito o letra, y su primera etiqueta lleva alguna letra ("2.0.es" no es un host).
+const BARE_HOST = '(?<![\\w.@/-])[a-z0-9-]*[a-z][a-z0-9-]*(?:\\.[a-z0-9-]+)*';
+const URL_PATH = '(?:[/?#][^\\s]*)';
+const URL_END = '(?=$|[\\s,;!?)]|\\.(?:\\s|$))';
+const ANY_URL = new RegExp(
+  `(?:https?:\\/\\/|www\\.)[^\\s]+` +
+  `|${BARE_HOST}\\.(?:${TLD_UNAMBIGUOUS})${URL_PATH}?${URL_END}` +
+  `|${BARE_HOST}\\.(?:${TLD_AMBIGUOUS})${URL_PATH}${URL_END}`,
+  'i',
+);
 
 export function isForbiddenLink(text: string, mode: AntiLinkMode = 'wa'): boolean {
   if (!text) return false;

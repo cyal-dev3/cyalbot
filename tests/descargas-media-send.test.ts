@@ -39,6 +39,21 @@ before(async () => {
       res.end(Buffer.alloc(16));
       return;
     }
+    if (req.url === '/redir-private') {
+      res.writeHead(302, { location: 'http://10.0.0.5/secreto.jpg' });
+      res.end();
+      return;
+    }
+    if (req.url === '/redir-mapped') {
+      res.writeHead(302, { location: 'http://[::ffff:a9fe:a9fe]/latest/meta-data' });
+      res.end();
+      return;
+    }
+    if (req.url === '/redir-ok') {
+      res.writeHead(302, { location: '/ok.jpg' });
+      res.end();
+      return;
+    }
     if (req.url === '/ok.jpg') {
       res.writeHead(200, { 'content-type': 'image/jpeg' });
       res.end(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]));
@@ -88,6 +103,21 @@ test('fetchMedia rechaza destinos internos que no son el servicio (SSRF)', async
   assert.equal(isPrivateHost('192.168.1.1'), true);
   assert.equal(isPrivateHost('metadata.internal'), true);
   assert.equal(isPrivateHost('example.com'), false);
+  // IPv4 mapeada en IPv6: el parser de URL la deja en hexadecimal.
+  assert.equal(new URL('http://[::ffff:127.0.0.1]/').hostname, '[::ffff:7f00:1]');
+  assert.equal(isPrivateHost('[::ffff:7f00:1]'), true);
+  assert.equal(isPrivateHost('[::ffff:a9fe:a9fe]'), true);
+  assert.equal(await fetchMedia('http://[::ffff:7f00:1]:9/x', { maxBytes: 1024 }), null);
+  assert.equal(await fetchMedia('http://[::ffff:a9fe:a9fe]/latest/meta-data', { maxBytes: 1024 }), null);
+});
+
+test('fetchMedia valida cada redirección: a un host privado se rechaza, a una ruta válida se sigue', async () => {
+  const { fetchMedia } = await import('../src/lib/media-send.js');
+  assert.equal(await fetchMedia(`${baseUrl}/redir-private`, { maxBytes: 1024 }), null);
+  assert.equal(await fetchMedia(`${baseUrl}/redir-mapped`, { maxBytes: 1024 }), null);
+  const ok = await fetchMedia(`${baseUrl}/redir-ok`, { maxBytes: 1024 });
+  assert.ok(ok);
+  assert.equal(ok.mimetype, 'image/jpeg');
 });
 
 test('mimetypeFor y LIMITS', async () => {

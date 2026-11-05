@@ -144,3 +144,34 @@ test('welcome test envía una vista previa mencionando a quien lo pide', async (
   assert.match(fake.sent[0].text ?? '', /Hola @5210000000002 \(Ana\) en Grupo de prueba, somos 1/);
   assert.deepEqual(fake.sent[0].mentions, [SENDER]);
 });
+
+test('el interruptor del bot muestra botgrupo (bot lo tiene la IA) y acepta bot como alias', async () => {
+  const def = TOGGLES.find((d) => d.field === 'enabled');
+  assert.ok(def);
+  assert.equal(def.command[0], 'botgrupo');
+  assert.ok(def.command.includes('bot'));
+  const chat = 'bot-alias@g.us';
+  const off = await run(botTogglePlugin, chat, 'off');
+  assert.match(off.replies[0], /\/botgrupo on/);
+  assert.doesNotMatch(off.replies[0], /\/bot on/);
+  const status = await run(botTogglePlugin, chat, '');
+  assert.match(status.replies[0], /\/botgrupo on/);
+});
+
+test('las descripciones no llevan marcadores sin sustituir', () => {
+  for (const def of TOGGLES) {
+    assert.doesNotMatch(def.description, /\{p\}/, def.command[0]);
+    assert.doesNotMatch(def.label, /\{p\}/, def.command[0]);
+  }
+});
+
+test('un argumento heredado de Object.prototype no es un subcomando', async () => {
+  const chat = 'proto@g.us';
+  for (const word of ['constructor', '__proto__', 'hasOwnProperty', 'toString']) {
+    const fake = await run(antiLinkPlugin, chat, word);
+    assert.equal(fake.replies.length, 1, word);
+    assert.match(fake.replies[0], /Estado:/, word);
+  }
+  const welcome = await run(welcomeTogglePlugin, chat, '__proto__');
+  assert.match(welcome.replies[0], /Estado:/);
+});

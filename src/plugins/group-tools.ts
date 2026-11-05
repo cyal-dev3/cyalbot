@@ -1,27 +1,19 @@
-import { downloadMediaMessage, type WASocket, type proto } from 'baileys';
-import pino from 'pino';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { createLogger } from '../lib/logger.js';
 import { mentionTag } from '../lib/utils.js';
+import { getQuotedOrOwnMedia, mediaInMessage, MediaTooLargeError } from '../lib/media.js';
 import { getAdmins, findBotParticipant, getBotIds, isParticipantSuperAdmin } from '../lib/participants.js';
 import { getMaxWarnings, getAntiLinkMode } from '../lib/moderation.js';
 import { invalidateGroupMetadata } from '../lib/group-events.js';
 import { TOGGLES, readToggle, statusIcon } from './group-toggles.js';
 
 const log = createLogger('grupos');
-const silentLogger = pino({ level: 'silent' });
 
 const MAX_SUBJECT_LENGTH = 100;
 const MAX_DESCRIPTION_LENGTH = 2048;
-
-/** Descarga el adjunto de un mensaje (citado o actual) como Buffer. */
-export async function downloadMessageMedia(conn: WASocket, msg: { key: proto.IMessageKey; message: proto.IMessage }): Promise<Buffer> {
-  return (await downloadMediaMessage(msg as proto.IWebMessageInfo, 'buffer', {}, {
-    logger: silentLogger,
-    reuploadRequest: conn.updateMediaMessage,
-  })) as Buffer;
-}
+// WhatsApp rechaza fotos de perfil grandes; por encima de esto ni se descarga.
+const MAX_PIC_BYTES = 5 * 1024 * 1024;
 
 async function sendMention(ctx: MessageContext, text: string, mentions: string[]): Promise<void> {
   const sent = await ctx.conn.sendMessage(ctx.m.chat, { text, mentions }, { quoted: ctx.m.rawMessage });
@@ -172,23 +164,26 @@ export const setPicPlugin: PluginHandler = {
 
   async handler(ctx: MessageContext) {
     const { m, conn, usedPrefix } = ctx;
-    const quoted = m.quoted?.message?.imageMessage ? { key: m.quoted.key, message: m.quoted.message } : null;
-    const own = m.rawMessage?.message?.imageMessage ? { key: m.key, message: m.rawMessage.message } : null;
-    const source = quoted ?? own;
-    if (!source) {
+    // m.message ya viene desenvuelto (mensajes temporales, ver una vez); rawMessage.message no.
+    const hasImage = [m.quoted?.message, m.message ?? m.rawMessage?.message]
+      .some((message) => mediaInMessage(message)?.kind === 'image');
+    if (!hasImage) {
       await m.reply(`❌ Responde a una imagen con ${usedPrefix}setpic, o envía la imagen con el comando de pie de foto.`);
       return;
     }
+    await m.react('⏳');
     try {
-      await m.react('⏳');
-      const buffer = await downloadMessageMedia(conn, source);
-      await conn.updateProfilePicture(m.chat, buffer);
+      const media = await getQuotedOrOwnMedia(ctx, ['image'], { maxBytes: MAX_PIC_BYTES });
+      if (!media) throw new Error('no se pudo leer la imagen del mensaje');
+      await conn.updateProfilePicture(m.chat, media.buffer);
       invalidateGroupMetadata(m.chat);
       await m.react('✅');
     } catch (error) {
       log.warn(`setpic en ${m.chat}:`, error instanceof Error ? error.message : error);
       await m.react('❌');
-      await m.reply('❌ No pude cambiar la foto del grupo. Prueba con una imagen más pequeña.');
+      await m.reply(error instanceof MediaTooLargeError
+        ? `⚠️ ${error.message}.`
+        : '❌ No pude cambiar la foto del grupo. Prueba con una imagen más pequeña.');
     }
   },
 };
