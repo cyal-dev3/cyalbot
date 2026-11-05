@@ -1,180 +1,278 @@
-/**
- * Plugin Gremios
- * Permite formar, unirse y gestionar gremios con tesorería compartida.
- * Comandos: /gremio crear|unirse|salir|tesoro|depositar|info|listar
- */
-
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { EMOJI, formatNumber, randomInt } from '../lib/utils.js';
-import { getDatabase } from '../lib/database.js';
-import { CONFIG } from '../config.js';
+import { EMOJI, formatNumber, parseAmount, mentionTag, normalizeText } from '../lib/utils.js';
+import { getDatabase, type Database } from '../lib/database.js';
+import { GUILD } from '../constants/rpg.js';
 import type { Guild } from '../types/database.js';
+import type { UserRPG } from '../types/user.js';
+import { GUILD_XP_BONUS_PER_LEVEL, usageError } from '../lib/rpg-actions.js';
+import { updateQuestProgress } from '../lib/quests.js';
 
-const CREATE_COST = 10000;
-const MAX_MEMBERS = 50;
+const GUILDS_PER_PAGE = 10;
+const MAX_DESCRIPTION = 120;
 
-function getGuilds(): Record<string, Guild> {
-  const db = getDatabase();
-  if (!db.data.guilds) db.data.guilds = {};
-  return db.data.guilds;
+export function findGuildByName(db: Database, name: string): Guild | null {
+  const wanted = normalizeText(name.trim());
+  return db.listGuilds().find(g => normalizeText(g.name) === wanted) ?? null;
 }
 
-function findGuildByName(name: string): Guild | null {
-  const guilds = getGuilds();
-  const normalized = name.trim().toLowerCase();
-  for (const g of Object.values(guilds)) {
-    if (g.name.toLowerCase() === normalized) return g;
+/** Gremio del usuario; limpia un guildId huérfano (gremio disuelto) */
+export function getUserGuild(db: Database, jid: string, user: UserRPG): Guild | null {
+  if (!user.guildId) return null;
+  const guild = db.getGuild(user.guildId);
+  if (!guild || !guild.members.includes(jid)) {
+    db.updateUser(jid, { guildId: null });
+    return null;
   }
-  return null;
+  return guild;
+}
+
+/** Suma XP al gremio y sube los niveles que correspondan; devuelve los niveles ganados */
+export function addGuildExp(guild: Guild, amount: number): number {
+  let gained = 0;
+  guild.exp += Math.max(0, Math.floor(amount));
+  while (guild.exp >= guild.level * GUILD.XP_PER_LEVEL) {
+    guild.exp -= guild.level * GUILD.XP_PER_LEVEL;
+    guild.level++;
+    gained++;
+  }
+  return gained;
+}
+
+function requireMember(ctx: MessageContext, db: Database, user: UserRPG): Guild | null {
+  const guild = getUserGuild(db, ctx.m.sender, user);
+  if (!guild) void ctx.m.reply(`❌ No perteneces a ningún gremio. Usa *${ctx.usedPrefix}gremio listar*.`);
+  return guild;
+}
+
+function requireLeader(ctx: MessageContext, db: Database, user: UserRPG): Guild | null {
+  const guild = requireMember(ctx, db, user);
+  if (!guild) return null;
+  if (guild.leader !== ctx.m.sender) {
+    void ctx.m.reply('👑 Solo el líder del gremio puede hacer eso.');
+    return null;
+  }
+  return guild;
+}
+
+/** Miembro del gremio por mención/cita/número, o por nombre registrado */
+function resolveMember(ctx: MessageContext, db: Database, guild: Guild, rest: string): string | null {
+  const target = ctx.target({ args: ctx.args });
+  if (target) return guild.members.includes(target) ? target : null;
+  const wanted = normalizeText(rest);
+  if (!wanted) return null;
+  return guild.members.find(jid => normalizeText(db.getUser(jid).name) === wanted) ?? null;
 }
 
 export const gremioPlugin: PluginHandler = {
   command: /^(gremio|guild)$/i,
   tags: ['rpg', 'gremio'],
   help: [
-    'gremio crear <nombre>',
-    'gremio unirse <nombre>',
-    'gremio salir',
-    'gremio tesoro',
-    'gremio depositar <cantidad>',
-    'gremio info',
-    'gremio listar'
+    'gremio - Info de tu gremio',
+    'gremio crear <nombre> - Fundar un gremio',
+    'gremio unirse <nombre> - Unirte a un gremio',
+    'gremio salir - Abandonar tu gremio',
+    'gremio depositar <cantidad> - Aportar al tesoro (da XP al gremio)',
+    'gremio retirar <cantidad> - Sacar del tesoro (líder)',
+    'gremio expulsar @usuario - Expulsar a un miembro (líder)',
+    'gremio lider @usuario - Ceder el liderazgo (líder)',
+    'gremio descripcion <texto> - Cambiar la descripción (líder)',
+    'gremio listar [página] - Ver todos los gremios'
+  ],
+  usage: [
+    'gremio', 'gremio crear <nombre>', 'gremio unirse <nombre>', 'gremio salir',
+    'gremio depositar <cantidad>', 'gremio retirar <cantidad>', 'gremio expulsar @usuario',
+    'gremio lider @usuario', 'gremio descripcion <texto>', 'gremio listar [página]'
   ],
   register: true,
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
-    if (!user.registered) return m.reply(CONFIG.messages.notRegistered);
-
-    const sub = (args[0] || '').toLowerCase();
+    const sub = (args[0] ?? '').toLowerCase();
     const rest = args.slice(1).join(' ').trim();
 
     switch (sub) {
       case 'crear':
       case 'create': {
-        if (user.guildId) return m.reply('🏰 Ya perteneces a un gremio. Sal primero con */gremio salir*.');
-        if (!rest) return m.reply('Uso: /gremio crear <nombre>');
+        if (getUserGuild(db, m.sender, user)) return m.reply(`🏰 Ya perteneces a un gremio. Sal primero con *${usedPrefix}gremio salir*.`);
+        if (!rest) return usageError(ctx, gremioPlugin, 'Indica el nombre del gremio.');
         if (rest.length < 3 || rest.length > 24) return m.reply('❌ El nombre debe tener entre 3 y 24 caracteres.');
-        if (findGuildByName(rest)) return m.reply('❌ Ya existe un gremio con ese nombre.');
-        if (user.money < CREATE_COST) return m.reply(`${EMOJI.warning} Crear un gremio cuesta *${formatNumber(CREATE_COST)} 💰*.`);
+        if (findGuildByName(db, rest)) return m.reply('❌ Ya existe un gremio con ese nombre.');
+        if (user.money < GUILD.CREATE_COST) return m.reply(`${EMOJI.warning} Crear un gremio cuesta *${formatNumber(GUILD.CREATE_COST)} 💰*.`);
 
-        const id = `g_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const now = Date.now();
         const guild: Guild = {
-          id,
+          id: `g_${now}_${Math.random().toString(36).slice(2, 8)}`,
           name: rest,
-          tag: rest.slice(0, 3).toUpperCase(),
+          tag: normalizeText(rest).replace(/[^a-z0-9]/g, '').slice(0, 3).toUpperCase() || 'GRM',
           leader: m.sender,
           members: [m.sender],
           treasury: 0,
           level: 1,
           exp: 0,
-          createdAt: Date.now(),
+          createdAt: now,
           description: ''
         };
-        getGuilds()[id] = guild;
-        user.money -= CREATE_COST;
-        db.updateUser(m.sender, { money: user.money, guildId: id });
-        return m.reply(`🏰 Gremio *${guild.name}* [${guild.tag}] creado. Costo: ${formatNumber(CREATE_COST)} 💰.`);
+        db.saveGuild(guild);
+        db.updateUser(m.sender, { money: user.money - GUILD.CREATE_COST, guildId: guild.id });
+        const questLines = updateQuestProgress(db, m.sender, 'spend', GUILD.CREATE_COST).lines;
+
+        return m.reply(
+          `🏰 Gremio *${guild.name}* [${guild.tag}] creado por ${formatNumber(GUILD.CREATE_COST)} 💰.\n` +
+          `💡 Tus miembros ganan *+${GUILD_XP_BONUS_PER_LEVEL}% XP por nivel del gremio*; sube de nivel depositando en el tesoro.` +
+          (questLines.length ? `\n\n${questLines.join('\n')}` : '')
+        );
       }
 
       case 'unirse':
       case 'join': {
-        if (user.guildId) return m.reply('🏰 Ya perteneces a un gremio.');
-        if (!rest) return m.reply('Uso: /gremio unirse <nombre>');
-        const guild = findGuildByName(rest);
+        if (getUserGuild(db, m.sender, user)) return m.reply('🏰 Ya perteneces a un gremio.');
+        if (!rest) return usageError(ctx, gremioPlugin, 'Indica el nombre del gremio.');
+        const guild = findGuildByName(db, rest);
         if (!guild) return m.reply('❌ No se encontró ese gremio.');
-        if (guild.members.length >= MAX_MEMBERS) return m.reply('❌ El gremio está lleno.');
+        if (guild.members.length >= GUILD.MAX_MEMBERS) return m.reply(`❌ El gremio está lleno (${GUILD.MAX_MEMBERS} miembros).`);
+
         guild.members.push(m.sender);
+        db.saveGuild(guild);
         db.updateUser(m.sender, { guildId: guild.id });
-        return m.reply(`🎉 Te uniste al gremio *${guild.name}* [${guild.tag}].`);
+        return m.reply(`🎉 Te uniste al gremio *${guild.name}* [${guild.tag}]. Bonus de XP: *+${guild.level * GUILD_XP_BONUS_PER_LEVEL}%*.`);
       }
 
       case 'salir':
       case 'leave': {
-        if (!user.guildId) return m.reply('❌ No perteneces a un gremio.');
-        const guild = getGuilds()[user.guildId];
-        if (!guild) {
-          db.updateUser(m.sender, { guildId: null });
-          return m.reply('🏰 Saliste del gremio (el gremio ya no existía).');
-        }
+        const guild = requireMember(ctx, db, user);
+        if (!guild) return;
+
         guild.members = guild.members.filter(jid => jid !== m.sender);
         db.updateUser(m.sender, { guildId: null });
-        // Si se queda vacío o sale el líder sin miembros, disolver
-        if (guild.members.length === 0) {
-          delete getGuilds()[guild.id];
-          return m.reply(`🏰 Saliste de *${guild.name}*. El gremio fue disuelto.`);
-        }
-        if (guild.leader === m.sender) {
-          guild.leader = guild.members[0];
-        }
-        return m.reply(`🏰 Saliste de *${guild.name}*.`);
-      }
 
-      case 'tesoro':
-      case 'treasury': {
-        if (!user.guildId) return m.reply('❌ No perteneces a un gremio.');
-        const guild = getGuilds()[user.guildId];
-        if (!guild) return m.reply('❌ Tu gremio no existe.');
-        return m.reply(`💰 Tesoro de *${guild.name}*: *${formatNumber(guild.treasury)}* monedas.`);
+        if (guild.members.length === 0) {
+          db.deleteGuild(guild.id);
+          return m.reply(`🏰 Saliste de *${guild.name}*. El gremio quedó vacío y fue disuelto.`);
+        }
+        if (guild.leader === m.sender) guild.leader = guild.members[0];
+        db.saveGuild(guild);
+        return m.reply(`🏰 Saliste de *${guild.name}*.`);
       }
 
       case 'depositar':
       case 'deposit': {
-        if (!user.guildId) return m.reply('❌ No perteneces a un gremio.');
-        const guild = getGuilds()[user.guildId];
-        if (!guild) return m.reply('❌ Tu gremio no existe.');
-        const amount = parseInt(rest, 10);
-        if (!Number.isFinite(amount) || amount <= 0) return m.reply('Uso: /gremio depositar <cantidad>');
-        if (user.money < amount) return m.reply(`${EMOJI.warning} No tienes tanto dinero.`);
-        user.money -= amount;
+        const guild = requireMember(ctx, db, user);
+        if (!guild) return;
+        const amount = parseAmount(rest, user.money);
+        if (amount === null || amount <= 0) return usageError(ctx, gremioPlugin, 'Cantidad inválida (ej. 5000, 1k, todo).');
+        if (user.money < amount) return m.reply(`${EMOJI.warning} No tienes tanto dinero (tienes ${formatNumber(user.money)}).`);
+
         guild.treasury += amount;
-        guild.exp += Math.floor(amount / 100);
-        while (guild.exp >= guild.level * 5000) {
-          guild.exp -= guild.level * 5000;
-          guild.level++;
-        }
-        db.updateUser(m.sender, { money: user.money });
-        return m.reply(`💰 Depositaste ${formatNumber(amount)} al tesoro de *${guild.name}*.`);
+        const levels = addGuildExp(guild, Math.floor(amount / 100));
+        db.saveGuild(guild);
+        db.updateUser(m.sender, { money: user.money - amount });
+
+        return m.reply(
+          `💰 Depositaste ${formatNumber(amount)} al tesoro de *${guild.name}* (ahora ${formatNumber(guild.treasury)}).` +
+          (levels > 0 ? `\n⭐ ¡El gremio subió al nivel *${guild.level}*! Bonus de XP: +${guild.level * GUILD_XP_BONUS_PER_LEVEL}%.` : '')
+        );
       }
 
-      case 'info':
-      case '': {
-        if (!user.guildId) return m.reply('❌ No perteneces a un gremio. Usa */gremio listar*.');
-        const guild = getGuilds()[user.guildId];
-        if (!guild) return m.reply('❌ Tu gremio no existe.');
-        const leaderNum = guild.leader.split('@')[0];
-        return m.reply(
-          `🏰 *${guild.name}* [${guild.tag}]\n` +
-          `━━━━━━━━━━━━━━\n` +
-          `👑 Líder: @${leaderNum}\n` +
-          `👥 Miembros: ${guild.members.length}/${MAX_MEMBERS}\n` +
-          `⭐ Nivel: ${guild.level} (XP ${guild.exp}/${guild.level * 5000})\n` +
-          `💰 Tesoro: ${formatNumber(guild.treasury)}`
-        );
+      case 'retirar':
+      case 'withdraw': {
+        const guild = requireLeader(ctx, db, user);
+        if (!guild) return;
+        const amount = parseAmount(rest, guild.treasury);
+        if (amount === null || amount <= 0) return usageError(ctx, gremioPlugin, 'Cantidad inválida (ej. 5000, 1k, todo).');
+        if (amount > guild.treasury) return m.reply(`${EMOJI.warning} El tesoro solo tiene ${formatNumber(guild.treasury)}.`);
+
+        guild.treasury -= amount;
+        db.saveGuild(guild);
+        db.updateUser(m.sender, { money: user.money + amount });
+        return m.reply(`💸 Retiraste ${formatNumber(amount)} del tesoro de *${guild.name}* (quedan ${formatNumber(guild.treasury)}).`);
+      }
+
+      case 'expulsar':
+      case 'kick': {
+        const guild = requireLeader(ctx, db, user);
+        if (!guild) return;
+        const target = resolveMember(ctx, db, guild, rest);
+        if (!target) return m.reply('❌ Menciona a un miembro del gremio (o escribe su nombre).');
+        if (target === m.sender) return m.reply(`❌ No puedes expulsarte; usa *${usedPrefix}gremio salir*.`);
+
+        guild.members = guild.members.filter(jid => jid !== target);
+        db.saveGuild(guild);
+        db.updateUser(target, { guildId: null });
+        return ctx.send({ text: `👢 ${mentionTag(target)} fue expulsado de *${guild.name}*.`, mentions: [target] });
+      }
+
+      case 'lider':
+      case 'líder':
+      case 'leader': {
+        const guild = requireLeader(ctx, db, user);
+        if (!guild) return;
+        const target = resolveMember(ctx, db, guild, rest);
+        if (!target) return m.reply('❌ Menciona a un miembro del gremio (o escribe su nombre).');
+        if (target === m.sender) return m.reply('👑 Ya eres el líder.');
+
+        guild.leader = target;
+        db.saveGuild(guild);
+        return ctx.send({ text: `👑 ${mentionTag(target)} es el nuevo líder de *${guild.name}*.`, mentions: [target] });
+      }
+
+      case 'descripcion':
+      case 'descripción':
+      case 'desc': {
+        const guild = requireLeader(ctx, db, user);
+        if (!guild) return;
+        if (!rest) return usageError(ctx, gremioPlugin, 'Escribe la nueva descripción.');
+        if (rest.length > MAX_DESCRIPTION) return m.reply(`❌ Máximo ${MAX_DESCRIPTION} caracteres.`);
+
+        guild.description = rest;
+        db.saveGuild(guild);
+        return m.reply(`📝 Descripción de *${guild.name}* actualizada.`);
+      }
+
+      case 'tesoro':
+      case 'treasury': {
+        const guild = requireMember(ctx, db, user);
+        if (!guild) return;
+        return m.reply(`💰 Tesoro de *${guild.name}*: *${formatNumber(guild.treasury)}* monedas.`);
       }
 
       case 'listar':
       case 'list': {
-        const guilds = Object.values(getGuilds()).sort((a, b) => b.level - a.level).slice(0, 10);
-        if (guilds.length === 0) return m.reply('🏰 No hay gremios creados.');
+        const guilds = db.listGuilds().sort((a, b) => b.level - a.level || b.members.length - a.members.length);
+        if (guilds.length === 0) return m.reply(`🏰 No hay gremios creados. Funda uno con *${usedPrefix}gremio crear <nombre>*.`);
+
+        const pages = Math.ceil(guilds.length / GUILDS_PER_PAGE);
+        const page = Math.min(pages, Math.max(1, parseInt(rest, 10) || 1));
+        const start = (page - 1) * GUILDS_PER_PAGE;
         const body = guilds
-          .map((g, i) => `${i + 1}. *${g.name}* [${g.tag}] — Nv.${g.level} · ${g.members.length} miembros`)
+          .slice(start, start + GUILDS_PER_PAGE)
+          .map((g, i) => `${start + i + 1}. *${g.name}* [${g.tag}] — Nv.${g.level} · ${g.members.length}/${GUILD.MAX_MEMBERS} miembros`)
           .join('\n');
-        return m.reply(`🏰 *Top 10 Gremios*\n━━━━━━━━━━━━━━\n${body}`);
+
+        return m.reply(
+          `🏰 *Gremios (página ${page}/${pages})*\n━━━━━━━━━━━━━━\n${body}` +
+          (pages > 1 ? `\n\n💡 *${usedPrefix}gremio listar ${page + 1 > pages ? 1 : page + 1}* para ver más` : '')
+        );
+      }
+
+      case 'info':
+      case '': {
+        const guild = requireMember(ctx, db, user);
+        if (!guild) return;
+        return ctx.send({
+          text: `🏰 *${guild.name}* [${guild.tag}]\n━━━━━━━━━━━━━━\n` +
+            (guild.description ? `📝 _${guild.description}_\n` : '') +
+            `👑 Líder: ${mentionTag(guild.leader)}\n` +
+            `👥 Miembros: ${guild.members.length}/${GUILD.MAX_MEMBERS}\n` +
+            `⭐ Nivel: ${guild.level} (XP ${formatNumber(guild.exp)}/${formatNumber(guild.level * GUILD.XP_PER_LEVEL)})\n` +
+            `✨ Bonus de XP para miembros: +${guild.level * GUILD_XP_BONUS_PER_LEVEL}%\n` +
+            `💰 Tesoro: ${formatNumber(guild.treasury)}`,
+          mentions: [guild.leader]
+        });
       }
 
       default:
-        return m.reply(
-          `🏰 *Gremios*\n\n` +
-          `• /gremio crear <nombre>\n` +
-          `• /gremio unirse <nombre>\n` +
-          `• /gremio salir\n` +
-          `• /gremio tesoro\n` +
-          `• /gremio depositar <cantidad>\n` +
-          `• /gremio info\n` +
-          `• /gremio listar`
-        );
+        return usageError(ctx, gremioPlugin, `Subcomando desconocido: ${sub}`);
     }
   }
 };

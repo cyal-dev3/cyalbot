@@ -136,11 +136,13 @@ for (const mode of ['pn', 'lid'] as Mode[]) {
     assert.equal(assertCanModerate(ctx(mode, { sender: idOf(mode, USER) }), ADMIN.pn, 'warn'), 'No puedes advertir a un administrador.');
     assert.equal(assertCanModerate(ctx(mode, { sender: owner, isOwner: true }), ADMIN.pn, 'kick'), null);
     // Promote/demote miran el estado actual.
-    assert.equal(assertCanModerate(ctx(mode, { sender: admin }), ADMIN.pn === admin ? OTHER.pn : ADMIN.pn, 'promote'), ADMIN.pn === admin ? null : 'Ese usuario ya es administrador.');
-    assert.equal(assertCanModerate(ctx(mode, { sender: idOf(mode, CREATOR) }), ADMIN.lid, 'promote'), 'Ese usuario ya es administrador.');
+    const creator = idOf(mode, CREATOR);
+    assert.equal(assertCanModerate(ctx(mode, { sender: creator }), ADMIN.lid, 'promote'), 'Ese usuario ya es administrador.');
+    assert.equal(assertCanModerate(ctx(mode, { sender: creator }), ADMIN.pn, 'demote'), null);
     assert.equal(assertCanModerate(ctx(mode, { sender: admin }), USER.lid, 'demote'), 'Ese usuario no es administrador.');
-    assert.equal(assertCanModerate(ctx(mode, { sender: admin }), ADMIN.pn === admin ? OTHER.pn : ADMIN.pn, 'demote'), ADMIN.pn === admin ? 'Ese usuario no es administrador.' : null);
-    assert.equal(assertCanModerate(ctx(mode, { sender: idOf(mode, CREATOR) }), ADMIN.lid, 'demote'), null);
+    assert.equal(assertCanModerate(ctx(mode, { sender: admin }), OTHER.pn, 'promote'), null);
+    // El propio admin mencionado en el formato contrario sigue siendo "uno mismo".
+    assert.equal(assertCanModerate(ctx(mode, { sender: admin }), mode === 'pn' ? ADMIN.lid : ADMIN.pn, 'promote'), 'No puedes hacerte admin a ti mismo.');
     // Usuario normal: todo permitido.
     for (const action of ['kick', 'mute', 'warn', 'promote'] as const) {
       assert.equal(assertCanModerate(ctx(mode, { sender: admin }), USER.lid, action), null, action);

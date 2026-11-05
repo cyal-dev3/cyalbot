@@ -76,12 +76,11 @@ async function moderate(ctx: MessageContext, action: GroupAction): Promise<void>
     lines.push(`❌ No pude ${texts.verb} a ${failed.map(mentionTag).join(', ')}. ¿Tengo permisos y sigue en el grupo?`);
   }
 
-  await conn.sendMessage(m.chat, {
+  const sent = await conn.sendMessage(m.chat, {
     text: lines.join('\n'),
     mentions: [...done, ...rejected.map((r) => r.jid), ...failed],
-  }, { quoted: m.rawMessage }).then((sent) => {
-    if (sent?.key) ctx.handler.trackMessage(m.chat, sent.key);
-  });
+  }, { quoted: m.rawMessage });
+  if (sent?.key) ctx.handler.trackMessage(m.chat, sent.key);
 }
 
 export const promotePlugin: PluginHandler = {

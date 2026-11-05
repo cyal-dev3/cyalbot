@@ -1,66 +1,59 @@
-/**
- * Plugin de Tienda - RPG
- * Comandos: tienda, comprar, vender
- */
-
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { EMOJI, formatNumber, matchesIgnoreAccents } from '../lib/utils.js';
-import { ITEMS, RARITY_COLORS, type Item, type ItemType } from '../types/rpg.js';
+import { EMOJI, formatNumber } from '../lib/utils.js';
+import { ITEMS, RARITY_COLORS, FORGE_MATERIALS, type ItemRarity, type ItemType } from '../types/rpg.js';
+import { ITEM_TYPE_ALIASES, ITEM_TYPE_EMOJI, ITEM_TYPE_NAMES, LIMITS, SHOP } from '../constants/rpg.js';
+import {
+  addItem, addMaterial, countItem, formatAmbiguous, freeInventorySpace, inventoryItems, isEquipable, isEquipped,
+  listMaterials, migrateLegacyMaterials, removeItem, removeMaterial, resolveItem
+} from '../lib/rpg-inventory.js';
+import { updateQuestProgress } from './rpg-misiones.js';
+import { SPECIAL_ITEM_USAGE } from './rpg-items-especiales.js';
 
-/**
- * Items disponibles en la tienda (categorizados) - Con monedas
- */
+/** Items de ITEMS que se venden por monedas, por categoría */
 const SHOP_ITEMS: Record<string, string[]> = {
   armas: [
-    // Nivel bajo (1-10)
     'palo_madera', 'daga_oxidada', 'espada_madera',
-    // Nivel medio (10-25)
     'espada_hierro', 'hacha_batalla', 'baston_aprendiz',
-    // Nivel alto (25+)
-    'espada_acero', 'baston_arcano', 'daga_sombras', 'arco_cazador'
+    'espada_acero', 'baston_arcano', 'daga_sombras', 'arco_cazador', 'martillo_guerra'
   ],
   armaduras: [
-    // Nivel bajo (1-10)
     'ropa_andrajos', 'chaleco_tela',
-    // Nivel medio (10-25)
     'armadura_cuero', 'armadura_cuero_reforzado', 'cota_malla',
-    // Nivel alto (25+)
-    'armadura_hierro', 'tunica_mago'
+    'armadura_hierro', 'tunica_mago', 'capa_cazador'
   ],
   accesorios: [
-    // Nivel bajo (1-10)
     'cuerda_vieja', 'pulsera_cuero', 'amuleto_principiante',
-    // Nivel medio (10-25)
     'anillo_cobre', 'collar_plata',
-    // Nivel alto (25+)
     'anillo_fuerza', 'amuleto_vida', 'collar_suerte'
   ],
   consumibles: [
-    // Nivel bajo
     'vendaje', 'pocion_salud_menor',
-    // Nivel medio-alto
-    'pocion_salud', 'pocion_salud_mayor', 'pocion_mana', 'pocion_energia', 'elixir_exp'
-  ],
-  materiales: ['hierro', 'oro_material', 'cristal_mana']
+    'pocion_salud', 'pocion_salud_mayor', 'pocion_mana', 'pocion_energia', 'elixir_exp', 'pocion_forja'
+  ]
 };
 
+/** Materiales básicos de forja que la tienda vende directamente a forgeMaterials */
+const SHOP_MATERIALS: string[] = Object.values(FORGE_MATERIALS).filter(m => m.price && m.price > 0).map(m => m.id);
+
+interface DiamondOffer {
+  itemId: string;
+  diamonds: number;
+  description: string;
+}
+
 /**
- * Items especiales comprables SOLO con diamantes
- * Precios equilibrados respecto a beneficios:
- * - Items ofensivos: mas caros por su impacto en otros
- * - Items defensivos: precio moderado, duran 24h
- * - Items de utilidad: precio bajo-medio
- * - Equipamiento legendario: muy caro pero permanente
+ * Items solo por diamantes. Los ofensivos son más caros por su impacto en otros;
+ * las protecciones duran 24 h; el equipo legendario es caro pero permanente.
  */
-const DIAMOND_SHOP: Record<string, { itemId: string; diamonds: number; description: string }[]> = {
+const DIAMOND_SHOP: Record<string, DiamondOffer[]> = {
   especiales: [
     { itemId: 'ticket_muteo', diamonds: 1500, description: 'Mutea a alguien por 24h' },
     { itemId: 'ticket_kick', diamonds: 2500, description: 'Expulsa a alguien del grupo' },
     { itemId: 'bomba_dinero', diamonds: 800, description: 'Roba 500-2000 monedas a todos' },
     { itemId: 'cambio_nombre', diamonds: 200, description: 'Cambia tu nombre RPG' },
-    { itemId: 'reset_clase', diamonds: 1500, description: 'Reinicia tu clase y stats' }
+    { itemId: 'reset_clase', diamonds: 1500, description: 'Reinicia tu clase sin costo' }
   ],
   proteccion: [
     { itemId: 'escudo_robo', diamonds: 600, description: 'Protege de robos por 24h' },
@@ -68,14 +61,14 @@ const DIAMOND_SHOP: Record<string, { itemId: string; diamonds: number; descripti
     { itemId: 'seguro_vida', diamonds: 1200, description: 'Sin cuotas IMSS por 48h' }
   ],
   consumibles: [
-    { itemId: 'pocion_resurrecion', diamonds: 500, description: 'Revive con 100% HP/MP/ST' },
-    { itemId: 'caja_misteriosa', diamonds: 800, description: 'Item aleatorio raro+' },
+    { itemId: 'pocion_resurrecion', diamonds: 500, description: 'Restaura 100% HP/MP/ST' },
+    { itemId: 'caja_misteriosa', diamonds: 800, description: 'Equipo aleatorio raro+' },
     { itemId: 'cofre_oro', diamonds: 400, description: '5,000-15,000 monedas' },
-    { itemId: 'pocion_suerte', diamonds: 350, description: '+20% drops raros por 1h' }
+    { itemId: 'pocion_suerte', diamonds: 350, description: '+20% drops por 1h' }
   ],
   boosts: [
-    { itemId: 'boost_exp_24h', diamonds: 1000, description: '+50% EXP por 24 horas' },
-    { itemId: 'doble_exp_permanente', diamonds: 3000, description: '+25% EXP permanente (max 3)' }
+    { itemId: 'boost_exp_24h', diamonds: 1000, description: 'XP x2 por 24 horas' },
+    { itemId: 'doble_exp_permanente', diamonds: 3000, description: '+25% XP permanente (max 3)' }
   ],
   legendarios: [
     { itemId: 'espada_celestial', diamonds: 4000, description: 'Arma legendaria +100 ATK' },
@@ -84,590 +77,430 @@ const DIAMOND_SHOP: Record<string, { itemId: string; diamonds: number; descripti
   ]
 };
 
-/**
- * Obtiene el emoji de tipo de item
- */
-function getTypeEmoji(type: ItemType): string {
-  const emojis: Record<ItemType, string> = {
-    weapon: '⚔️',
-    armor: '🛡️',
-    accessory: '💍',
-    consumable: '🧪',
-    material: '📦'
-  };
-  return emojis[type];
+const DIAMOND_CATEGORY_EMOJI: Record<string, string> = {
+  especiales: '🎫', proteccion: '🛡️', consumibles: '🧪', boosts: '⚡', legendarios: '👑'
+};
+
+const COIN_CATEGORY_TYPE: Record<string, ItemType> = {
+  armas: 'weapon', armaduras: 'armor', accesorios: 'accessory', consumibles: 'consumable', materiales: 'material'
+};
+
+type OfferKind = 'coin' | 'diamond' | 'material';
+
+interface ShopOffer {
+  id: string;
+  name: string;
+  emoji: string;
+  rarity: ItemRarity;
+  kind: OfferKind;
+  /** Monedas o diamantes según kind */
+  price: number;
+  requiredLevel?: number;
+  description?: string;
 }
 
-/**
- * Plugin: Tienda - Ver items disponibles
- */
+function coinOffer(itemId: string): ShopOffer | null {
+  const item = ITEMS[itemId];
+  if (!item) return null;
+  return { id: item.id, name: item.name, emoji: item.emoji, rarity: item.rarity, kind: 'coin', price: item.price, requiredLevel: item.requiredLevel };
+}
+
+function materialOffer(materialId: string): ShopOffer | null {
+  const material = FORGE_MATERIALS[materialId];
+  if (!material || !material.price) return null;
+  return { id: material.id, name: material.name, emoji: material.emoji, rarity: material.rarity, kind: 'material', price: material.price, description: material.description };
+}
+
+function diamondOffer(offer: DiamondOffer): ShopOffer | null {
+  const item = ITEMS[offer.itemId];
+  if (!item) return null;
+  return { id: item.id, name: item.name, emoji: item.emoji, rarity: item.rarity, kind: 'diamond', price: offer.diamonds, requiredLevel: item.requiredLevel, description: offer.description };
+}
+
+function allOffers(): ShopOffer[] {
+  const offers: ShopOffer[] = [];
+  for (const ids of Object.values(SHOP_ITEMS)) for (const id of ids) {
+    const offer = coinOffer(id);
+    if (offer) offers.push(offer);
+  }
+  for (const id of SHOP_MATERIALS) {
+    const offer = materialOffer(id);
+    if (offer) offers.push(offer);
+  }
+  for (const list of Object.values(DIAMOND_SHOP)) for (const entry of list) {
+    const offer = diamondOffer(entry);
+    if (offer) offers.push(offer);
+  }
+  return offers;
+}
+
+function statsSummary(itemId: string): string {
+  const stats = ITEMS[itemId]?.stats;
+  if (!stats) return '';
+  const parts: string[] = [];
+  if (stats.attack) parts.push(`+${stats.attack} ATK`);
+  if (stats.defense) parts.push(`+${stats.defense} DEF`);
+  if (stats.health) parts.push(`+${stats.health} HP`);
+  if (stats.mana) parts.push(`+${stats.mana} MP`);
+  if (stats.critChance) parts.push(`+${stats.critChance}% CRIT`);
+  return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+function formatOffer(offer: ShopOffer, userLevel: number): string {
+  const price = offer.kind === 'diamond' ? `💎 ${formatNumber(offer.price)}` : `${formatNumber(offer.price)}💰`;
+  const level = offer.requiredLevel ? (userLevel >= offer.requiredLevel ? ` Nv.${offer.requiredLevel}` : ` 🔒Nv.${offer.requiredLevel}`) : '';
+  let line = `${RARITY_COLORS[offer.rarity]} ${offer.emoji} *${offer.name}* - ${price}${statsSummary(offer.id)}${level}\n`;
+  line += `      \`${offer.id}\`${offer.description ? ` · _${offer.description}_` : ''}\n`;
+  return line;
+}
+
+function paginate<T>(items: T[], page: number): { slice: T[]; page: number; pages: number } {
+  const pages = Math.max(1, Math.ceil(items.length / SHOP.PAGE_SIZE));
+  const safePage = Math.min(pages, Math.max(1, page));
+  const start = (safePage - 1) * SHOP.PAGE_SIZE;
+  return { slice: items.slice(start, start + SHOP.PAGE_SIZE), page: safePage, pages };
+}
+
+function parseCategoryArgs(args: string[]): { category: string; page: number } {
+  const words = [...args];
+  let page = 1;
+  const last = words[words.length - 1];
+  if (words.length > 0 && /^\d+$/.test(last)) {
+    page = parseInt(words.pop() as string, 10);
+  }
+  return { category: words.join(' ').toLowerCase().trim(), page };
+}
+
 const tiendaPlugin: PluginHandler = {
   command: ['tienda', 'shop', 'store', 'mercado'],
   tags: ['rpg'],
   help: [
-    'tienda - Ver todos los items en venta',
-    'tienda armas - Ver solo armas',
-    'tienda diamantes - Ver tienda de diamantes'
+    'tienda - Ver las categorías de la tienda',
+    'tienda armas [página] - Ver una categoría',
+    'tienda materiales - Materiales de forja básicos',
+    'tienda diamantes [página] - Tienda de diamantes'
   ],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
+    const { category, page } = parseCategoryArgs(args);
 
-    const category = text.toLowerCase().trim();
+    const header = `💰 Tu dinero: *${formatNumber(user.money)}* monedas\n💎 Tus diamantes: *${formatNumber(user.limit)}*\n\n`;
 
-    // Si pide la tienda de diamantes
-    if (category === 'diamantes' || category === 'diamonds' || category === 'premium') {
-      let response = `💎 *TIENDA DE DIAMANTES*\n`;
-      response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-      response += `💎 Tus diamantes: *${formatNumber(user.limit)}*\n\n`;
-
-      const diamondCategories = ['especiales', 'proteccion', 'consumibles', 'boosts', 'legendarios'];
-      const diamondEmojis: Record<string, string> = {
-        especiales: '🎫',
-        proteccion: '🛡️',
-        consumibles: '🧪',
-        boosts: '⚡',
-        legendarios: '👑'
-      };
-
-      for (const cat of diamondCategories) {
-        response += `${diamondEmojis[cat]} *${cat.charAt(0).toUpperCase() + cat.slice(1)}:*\n`;
-
-        const items = DIAMOND_SHOP[cat];
-        for (const { itemId, diamonds, description } of items) {
-          const item = ITEMS[itemId];
-          if (item) {
-            response += `   ${item.emoji} *${item.name}* - 💎 ${formatNumber(diamonds)}\n`;
-            response += `      _${description}_\n`;
-          }
+    if (['diamantes', 'diamonds', 'premium'].includes(category)) {
+      const offers: ShopOffer[] = [];
+      for (const [cat, list] of Object.entries(DIAMOND_SHOP)) {
+        for (const entry of list) {
+          const offer = diamondOffer(entry);
+          if (offer) offers.push({ ...offer, description: `${DIAMOND_CATEGORY_EMOJI[cat]} ${offer.description}` });
         }
-        response += '\n';
       }
-
-      response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-      response += `📝 */comprard [item]* - Comprar con diamantes\n`;
-      response += `💡 Gana diamantes con */daily*, */misiones* y */ranking*`;
-
+      const result = paginate(offers, page);
+      let response = `💎 *TIENDA DE DIAMANTES* (${result.page}/${result.pages})\n━━━━━━━━━━━━━━━━━━━━━\n${header}`;
+      for (const offer of result.slice) response += formatOffer(offer, user.level);
+      response += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
+      if (result.pages > 1) response += `📄 *${usedPrefix}tienda diamantes ${result.page + 1}* para la siguiente página\n`;
+      response += `📝 *${usedPrefix}comprar [item o id] [cantidad]* - Se cobra en diamantes\n`;
+      response += `💡 Gana diamantes con *${usedPrefix}daily*, *${usedPrefix}misiones* y *${usedPrefix}ranking*`;
       await m.reply(response);
       return;
     }
 
-    let response = `🏪 *TIENDA*\n`;
-    response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `💰 Tu dinero: *${formatNumber(user.money)}* monedas\n`;
-    response += `💎 Tus diamantes: *${formatNumber(user.limit)}*\n\n`;
+    const type = ITEM_TYPE_ALIASES[category];
+    const categoryKey = type ? Object.keys(COIN_CATEGORY_TYPE).find(k => COIN_CATEGORY_TYPE[k] === type) : undefined;
 
-    const categoryMap: Record<string, string> = {
-      'armas': 'armas',
-      'arma': 'armas',
-      'weapons': 'armas',
-      'armaduras': 'armaduras',
-      'armadura': 'armaduras',
-      'armor': 'armaduras',
-      'accesorios': 'accesorios',
-      'accesorio': 'accesorios',
-      'accessory': 'accesorios',
-      'consumibles': 'consumibles',
-      'consumible': 'consumibles',
-      'pociones': 'consumibles',
-      'potions': 'consumibles',
-      'materiales': 'materiales',
-      'material': 'materiales'
-    };
-
-    const targetCategory = categoryMap[category];
-
-    if (targetCategory) {
-      // Mostrar solo una categoría
-      const itemIds = SHOP_ITEMS[targetCategory];
-      const categoryNames: Record<string, string> = {
-        armas: '⚔️ Armas',
-        armaduras: '🛡️ Armaduras',
-        accesorios: '💍 Accesorios',
-        consumibles: '🧪 Consumibles',
-        materiales: '📦 Materiales'
-      };
-
-      response += `${categoryNames[targetCategory]}\n\n`;
-
-      for (const itemId of itemIds) {
-        const item = ITEMS[itemId];
-        if (item) {
-          const rarity = RARITY_COLORS[item.rarity];
-          const stats: string[] = [];
-          if (item.stats) {
-            if (item.stats.attack) stats.push(`+${item.stats.attack} ATK`);
-            if (item.stats.defense) stats.push(`+${item.stats.defense} DEF`);
-            if (item.stats.health) stats.push(`+${item.stats.health} HP`);
-            if (item.stats.mana) stats.push(`+${item.stats.mana} MP`);
-          }
-          const statsStr = stats.length > 0 ? ` (${stats.join(', ')})` : '';
-          const levelStr = item.requiredLevel ? ` Nv.${item.requiredLevel}` : '';
-          response += `${rarity} ${item.emoji} *${item.name}* - ${formatNumber(item.price)}💰${statsStr}${levelStr}\n`;
-        }
-      }
-
-    } else {
-      // Mostrar todas las categorías con todos los items
-      const categories = ['armas', 'armaduras', 'accesorios', 'consumibles', 'materiales'];
-      const categoryEmojis: Record<string, string> = {
-        armas: '⚔️',
-        armaduras: '🛡️',
-        accesorios: '💍',
-        consumibles: '🧪',
-        materiales: '📦'
-      };
-
-      for (const cat of categories) {
-        response += `${categoryEmojis[cat]} *${cat.charAt(0).toUpperCase() + cat.slice(1)}:*\n`;
-
-        const itemIds = SHOP_ITEMS[cat];
-        for (const itemId of itemIds) {
-          const item = ITEMS[itemId];
-          if (item) {
-            const rarity = RARITY_COLORS[item.rarity];
-            response += `   ${rarity} ${item.emoji} ${item.name} - ${formatNumber(item.price)}💰\n`;
-          }
-        }
-        response += '\n';
-      }
-
-      // Mostrar preview de tienda de diamantes
-      response += `💎 *Tienda Premium:* usa */tienda diamantes*\n\n`;
+    if (categoryKey) {
+      const offers = categoryKey === 'materiales'
+        ? SHOP_MATERIALS.map(materialOffer).filter((o): o is ShopOffer => o !== null)
+        : SHOP_ITEMS[categoryKey].map(coinOffer).filter((o): o is ShopOffer => o !== null);
+      const result = paginate(offers, page);
+      const typeKey = COIN_CATEGORY_TYPE[categoryKey];
+      let response = `🏪 *TIENDA - ${ITEM_TYPE_EMOJI[typeKey]} ${ITEM_TYPE_NAMES[typeKey].toUpperCase()}* (${result.page}/${result.pages})\n━━━━━━━━━━━━━━━━━━━━━\n${header}`;
+      for (const offer of result.slice) response += formatOffer(offer, user.level);
+      if (categoryKey === 'materiales') response += `\n_Los materiales van directo a tu almacén de forja (${usedPrefix}inventario materiales)._\n`;
+      response += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
+      if (result.pages > 1) response += `📄 *${usedPrefix}tienda ${categoryKey} ${result.page + 1}* para la siguiente página\n`;
+      response += `📝 *${usedPrefix}comprar [item o id] [cantidad]*\n`;
+      response += `📝 *${usedPrefix}iteminfo [item]* para ver detalles`;
+      await m.reply(response);
+      return;
     }
 
+    let response = `🏪 *TIENDA*\n━━━━━━━━━━━━━━━━━━━━━\n${header}`;
+    response += `📂 *Categorías:*\n`;
+    for (const [key, ids] of Object.entries(SHOP_ITEMS)) {
+      const typeKey = COIN_CATEGORY_TYPE[key];
+      response += `   ${ITEM_TYPE_EMOJI[typeKey]} *${usedPrefix}tienda ${key}* (${ids.length} items)\n`;
+    }
+    response += `   📦 *${usedPrefix}tienda materiales* (${SHOP_MATERIALS.length} materiales de forja)\n`;
+    const diamondCount = Object.values(DIAMOND_SHOP).reduce((sum, list) => sum + list.length, 0);
+    response += `   💎 *${usedPrefix}tienda diamantes* (${diamondCount} items premium)\n\n`;
     response += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    response += `📝 */comprar [item]* - Comprar con monedas\n`;
-    response += `📝 */comprard [item]* - Comprar con diamantes\n`;
-    response += `📝 */vender [item]* - Vender\n`;
-    response += `📝 */tienda [categoría]* - Ver categoría`;
+    response += `📝 *${usedPrefix}comprar [item o id] [cantidad]*\n`;
+    response += `📝 *${usedPrefix}vender [item] [cantidad]* | *${usedPrefix}vender todo consumibles*\n`;
+    response += `💡 Cada item muestra su \`id\`: también puedes comprar con él`;
 
     await m.reply(response);
   }
 };
 
-/**
- * Plugin: Comprar - Comprar un item
- */
 const comprarPlugin: PluginHandler = {
-  command: ['comprar', 'buy', 'purchase'],
+  command: ['comprar', 'buy', 'purchase', 'comprard', 'buyd', 'comprardiamantes', 'buydiamonds'],
   tags: ['rpg'],
   help: [
-    'comprar [item] - Compra un item de la tienda',
-    'comprar [item] [cantidad] - Comprar varios'
+    'comprar [item o id] - Compra un item (monedas o diamantes según la tienda)',
+    'comprar [item] [cantidad] - Comprar varios',
+    'comprar hierro 10 - Materiales de forja'
   ],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
-    if (!text.trim()) {
+    if (args.length === 0) {
       await m.reply(
         `${EMOJI.error} Especifica qué quieres comprar.\n\n` +
-        `📝 *Uso:* /comprar espada de hierro\n` +
-        `📝 *Uso:* /comprar pocion de salud 5`
+        `📝 *Uso:* ${usedPrefix}comprar espada de hierro\n` +
+        `📝 *Uso:* ${usedPrefix}comprar pocion_salud 5\n` +
+        `📝 *Uso:* ${usedPrefix}comprar ticket muteo (se cobra en diamantes)`
       );
       return;
     }
 
-    // Parsear cantidad (último argumento si es número)
+    const words = [...args];
     let quantity = 1;
-    let searchTerm = text.toLowerCase().trim();
-
-    const lastArg = args[args.length - 1];
-    if (/^\d+$/.test(lastArg)) {
-      quantity = Math.min(99, Math.max(1, parseInt(lastArg)));
-      searchTerm = args.slice(0, -1).join(' ').toLowerCase().trim();
+    if (words.length > 1 && /^\d+$/.test(words[words.length - 1])) {
+      quantity = Math.min(SHOP.MAX_PER_PURCHASE, Math.max(1, parseInt(words.pop() as string, 10)));
     }
 
-    // Buscar item en la tienda (sin importar tildes)
-    let foundItem: Item | null = null;
+    const result = resolveItem(words.join(' '), allOffers());
+    if (result.status === 'none') {
+      await m.reply(`${EMOJI.error} Ese item no está en la tienda.\n\n💡 Usa *${usedPrefix}tienda* para ver las categorías.`);
+      return;
+    }
+    if (result.status === 'ambiguous') {
+      await m.reply(formatAmbiguous(result.candidates));
+      return;
+    }
+    const offer = result.item;
 
-    for (const itemIds of Object.values(SHOP_ITEMS)) {
-      for (const itemId of itemIds) {
-        const item = ITEMS[itemId];
-        if (item && matchesIgnoreAccents(item.name, searchTerm)) {
-          foundItem = item;
-          break;
+    if (offer.requiredLevel && user.level < offer.requiredLevel) {
+      await m.reply(`${EMOJI.error} Necesitas nivel *${offer.requiredLevel}* para comprar esto.\n\n📊 Tu nivel: *${user.level}*`);
+      return;
+    }
+
+    if (offer.kind !== 'material') {
+      const maxStack = SHOP.MAX_STACK[offer.id];
+      const owned = countItem(user, offer.id);
+      if (maxStack !== undefined) {
+        if (owned >= maxStack) {
+          await m.reply(`${EMOJI.error} Solo puedes tener *${maxStack}* de *${offer.name}* y ya tienes ${owned}.`);
+          return;
         }
+        quantity = Math.min(quantity, maxStack - owned);
       }
-      if (foundItem) break;
+      const space = freeInventorySpace(user);
+      if (space <= 0) {
+        await m.reply(`${EMOJI.error} Tu inventario está lleno (${LIMITS.MAX_INVENTORY_SIZE}). Vende o usa algo antes de comprar.`);
+        return;
+      }
+      quantity = Math.min(quantity, space);
     }
 
-    if (!foundItem) {
+    const totalCost = offer.price * quantity;
+    const wallet = offer.kind === 'diamond' ? user.limit : user.money;
+    const currency = offer.kind === 'diamond' ? 'diamantes' : 'monedas';
+    if (wallet < totalCost) {
       await m.reply(
-        `${EMOJI.error} Ese item no está en la tienda.\n\n` +
-        `💡 Usa */tienda* para ver los items disponibles.`
+        `${EMOJI.error} No tienes suficientes ${currency}.\n\n` +
+        `💰 Costo: *${formatNumber(totalCost)}* ${currency}${quantity > 1 ? ` (x${quantity})` : ''}\n` +
+        `💵 Tienes: *${formatNumber(wallet)}* ${currency}\n` +
+        `❌ Te faltan: *${formatNumber(totalCost - wallet)}* ${currency}` +
+        (offer.kind === 'diamond' ? `\n\n💡 Gana diamantes con *${usedPrefix}daily*, *${usedPrefix}misiones* y *${usedPrefix}ranking*` : '')
       );
       return;
     }
 
-    // Verificar nivel requerido
-    if (foundItem.requiredLevel && user.level < foundItem.requiredLevel) {
-      await m.reply(
-        `${EMOJI.error} Necesitas nivel *${foundItem.requiredLevel}* para comprar esto.\n\n` +
-        `📊 Tu nivel: *${user.level}*`
-      );
-      return;
-    }
-
-    // Calcular costo total
-    const totalCost = foundItem.price * quantity;
-
-    if (user.money < totalCost) {
-      await m.reply(
-        `${EMOJI.error} No tienes suficiente dinero.\n\n` +
-        `💰 Costo: *${formatNumber(totalCost)}* monedas\n` +
-        `💵 Tu dinero: *${formatNumber(user.money)}* monedas\n` +
-        `❌ Te faltan: *${formatNumber(totalCost - user.money)}* monedas`
-      );
-      return;
-    }
-
-    // Realizar compra
-    user.money -= totalCost;
-
-    // Agregar al inventario
-    const existingItem = user.inventory.find(i => i.itemId === foundItem!.id);
-    if (existingItem) {
-      existingItem.quantity += quantity;
+    if (offer.kind === 'material') {
+      addMaterial(user, offer.id, quantity);
     } else {
-      user.inventory.push({ itemId: foundItem.id, quantity });
+      addItem(user, offer.id, quantity);
     }
 
-    db.updateUser(m.sender, {
-      money: user.money,
-      inventory: user.inventory
-    });
+    if (offer.kind === 'diamond') {
+      db.updateUser(m.sender, { limit: user.limit - totalCost, inventory: user.inventory });
+    } else {
+      db.updateUser(m.sender, { money: user.money - totalCost, inventory: user.inventory, forgeMaterials: user.forgeMaterials });
+      updateQuestProgress(db, m.sender, 'spend', totalCost);
+    }
 
-    let response = `${EMOJI.success} ¡Compra exitosa!\n\n`;
-    response += `🛒 Compraste: ${foundItem.emoji} *${foundItem.name}*`;
-    if (quantity > 1) response += ` x${quantity}`;
-    response += `\n💰 Pagaste: *${formatNumber(totalCost)}* monedas\n`;
-    response += `💵 Te quedan: *${formatNumber(user.money)}* monedas`;
+    const left = offer.kind === 'diamond' ? user.limit - totalCost : user.money - totalCost;
+    let response = offer.kind === 'diamond' ? `💎 ¡Compra con diamantes exitosa!\n\n` : `${EMOJI.success} ¡Compra exitosa!\n\n`;
+    response += `🛒 Compraste: ${offer.emoji} *${offer.name}*${quantity > 1 ? ` x${quantity}` : ''}\n`;
+    response += `💰 Pagaste: *${formatNumber(totalCost)}* ${currency}\n`;
+    response += `💵 Te quedan: *${formatNumber(left)}* ${currency}`;
+
+    if (offer.kind === 'material') {
+      response += `\n\n📦 Guardado en tu almacén de forja (*${usedPrefix}inventario materiales*).`;
+    } else if (SPECIAL_ITEM_USAGE[offer.id]) {
+      response += `\n\n💡 *Uso:* ${usedPrefix}${SPECIAL_ITEM_USAGE[offer.id].slice(1)}`;
+    } else if (ITEMS[offer.id] && isEquipable(ITEMS[offer.id])) {
+      response += `\n\n💡 *Uso:* ${usedPrefix}equipar ${offer.name.toLowerCase()}`;
+    } else if (ITEMS[offer.id]?.type === 'consumable') {
+      response += `\n\n💡 *Uso:* ${usedPrefix}usar ${offer.name.toLowerCase()}`;
+    }
 
     await m.reply(response);
-    await m.react('✅');
+    await m.react(offer.kind === 'diamond' ? '💎' : '✅');
   }
 };
 
-/**
- * Plugin: Vender - Vender un item
- */
 const venderPlugin: PluginHandler = {
   command: ['vender', 'sell', 'vendedor'],
   tags: ['rpg'],
   help: [
     'vender [item] - Vende un item de tu inventario',
     'vender [item] [cantidad] - Vender varios',
-    'vender todo [tipo] - Vender todos de un tipo'
+    'vender [material] [cantidad] - Vender materiales de forja',
+    'vender todo [consumibles|materiales] - Vender todos de un tipo'
   ],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, text, args } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
+    migrateLegacyMaterials(user);
 
-    if (!text.trim()) {
+    if (args.length === 0) {
       await m.reply(
         `${EMOJI.error} Especifica qué quieres vender.\n\n` +
-        `📝 *Uso:* /vender espada de hierro\n` +
-        `📝 *Uso:* /vender hierro 10\n` +
-        `📝 *Uso:* /vender todo materiales`
+        `📝 *Uso:* ${usedPrefix}vender espada de hierro\n` +
+        `📝 *Uso:* ${usedPrefix}vender hierro 10\n` +
+        `📝 *Uso:* ${usedPrefix}vender todo consumibles`
       );
       return;
     }
 
-    // Verificar si quiere vender todo de una categoría
-    if (args[0]?.toLowerCase() === 'todo') {
-      const typeArg = args[1]?.toLowerCase();
-      const typeMap: Record<string, ItemType> = {
-        'materiales': 'material',
-        'material': 'material',
-        'consumibles': 'consumable',
-        'consumible': 'consumable'
-      };
-
-      const targetType = typeMap[typeArg];
-
-      if (!targetType) {
-        await m.reply(
-          `${EMOJI.error} Especifica el tipo a vender.\n\n` +
-          `📝 *Uso:* /vender todo materiales\n` +
-          `📝 *Uso:* /vender todo consumibles`
-        );
-        return;
-      }
-
-      // Calcular items a vender
-      let totalValue = 0;
-      let totalItems = 0;
-      const newInventory = user.inventory.filter(inv => {
-        const item = ITEMS[inv.itemId];
-        if (item && item.type === targetType) {
-          totalValue += item.sellPrice * inv.quantity;
-          totalItems += inv.quantity;
-          return false; // Remover del inventario
+    if (['todo', 'all'].includes(args[0].toLowerCase())) {
+      const type = ITEM_TYPE_ALIASES[args[1]?.toLowerCase() ?? ''];
+      if (type === 'material') {
+        const materials = listMaterials(user);
+        if (materials.length === 0) {
+          await m.reply(`${EMOJI.warning} No tienes materiales para vender.`);
+          return;
         }
-        return true; // Mantener
-      });
-
-      if (totalItems === 0) {
-        await m.reply(`${EMOJI.warning} No tienes items de ese tipo para vender.`);
+        let total = 0;
+        let count = 0;
+        for (const { material, quantity } of materials) {
+          total += material.sellPrice * quantity;
+          count += quantity;
+          removeMaterial(user, material.id, quantity);
+        }
+        db.updateUser(m.sender, { money: user.money + total, totalEarned: user.totalEarned + total, forgeMaterials: user.forgeMaterials });
+        updateQuestProgress(db, m.sender, 'earn', total);
+        await m.reply(`${EMOJI.success} ¡Vendiste todos tus materiales!\n\n📦 Unidades: *${count}*\n💰 Ganaste: *${formatNumber(total)}* monedas\n💵 Total: *${formatNumber(user.money + total)}* monedas`);
+        await m.react('💰');
         return;
       }
-
-      user.money += totalValue;
-      user.inventory = newInventory;
-
-      db.updateUser(m.sender, {
-        money: user.money,
-        inventory: user.inventory
+      if (type !== 'consumable') {
+        await m.reply(`${EMOJI.error} Especifica el tipo a vender.\n\n📝 *Uso:* ${usedPrefix}vender todo consumibles\n📝 *Uso:* ${usedPrefix}vender todo materiales`);
+        return;
+      }
+      let total = 0;
+      let count = 0;
+      user.inventory = user.inventory.filter(entry => {
+        const item = ITEMS[entry.itemId];
+        if (!item || item.type !== 'consumable') return true;
+        total += item.sellPrice * entry.quantity;
+        count += entry.quantity;
+        return false;
       });
-
-      await m.reply(
-        `${EMOJI.success} ¡Vendiste todo!\n\n` +
-        `📦 Items vendidos: *${totalItems}*\n` +
-        `💰 Ganaste: *${formatNumber(totalValue)}* monedas\n` +
-        `💵 Total: *${formatNumber(user.money)}* monedas`
-      );
+      if (count === 0) {
+        await m.reply(`${EMOJI.warning} No tienes consumibles para vender.`);
+        return;
+      }
+      db.updateUser(m.sender, { money: user.money + total, totalEarned: user.totalEarned + total, inventory: user.inventory });
+      updateQuestProgress(db, m.sender, 'earn', total);
+      await m.reply(`${EMOJI.success} ¡Vendiste todo!\n\n📦 Items vendidos: *${count}*\n💰 Ganaste: *${formatNumber(total)}* monedas\n💵 Total: *${formatNumber(user.money + total)}* monedas`);
       await m.react('💰');
       return;
     }
 
-    // Venta individual
+    const words = [...args];
     let quantity = 1;
-    let searchTerm = text.toLowerCase().trim();
+    if (words.length > 1 && /^\d+$/.test(words[words.length - 1])) {
+      quantity = Math.max(1, parseInt(words.pop() as string, 10));
+    }
+    const term = words.join(' ');
 
-    const lastArg = args[args.length - 1];
-    if (/^\d+$/.test(lastArg)) {
-      quantity = Math.max(1, parseInt(lastArg));
-      searchTerm = args.slice(0, -1).join(' ').toLowerCase().trim();
+    const result = resolveItem(term, inventoryItems(user));
+    if (result.status === 'ambiguous') {
+      await m.reply(formatAmbiguous(result.candidates));
+      return;
     }
 
-    // Buscar item en inventario
-    let foundItem: Item | null = null;
-    let foundInvIndex = -1;
-
-    for (let i = 0; i < user.inventory.length; i++) {
-      const invItem = user.inventory[i];
-      const item = ITEMS[invItem.itemId];
-      if (item && matchesIgnoreAccents(item.name, searchTerm)) {
-        foundItem = item;
-        foundInvIndex = i;
-        break;
+    if (result.status === 'none') {
+      const owned = listMaterials(user).map(entry => entry.material);
+      const material = resolveItem(term, owned);
+      if (material.status === 'ambiguous') {
+        await m.reply(formatAmbiguous(material.candidates));
+        return;
       }
-    }
-
-    if (!foundItem || foundInvIndex === -1) {
-      await m.reply(
-        `${EMOJI.error} No tienes ese item en tu inventario.\n\n` +
-        `💡 Usa */inventario* para ver tus items.`
-      );
+      if (material.status === 'none') {
+        await m.reply(`${EMOJI.error} No tienes ese item ni ese material.\n\n💡 Usa *${usedPrefix}inventario* para ver tus items.`);
+        return;
+      }
+      const mat = material.item;
+      if (!removeMaterial(user, mat.id, quantity)) {
+        await m.reply(`${EMOJI.error} No tienes tantos.\n\n📦 Tienes: *${user.forgeMaterials[mat.id] ?? 0}* ${mat.name}`);
+        return;
+      }
+      const total = mat.sellPrice * quantity;
+      db.updateUser(m.sender, { money: user.money + total, totalEarned: user.totalEarned + total, forgeMaterials: user.forgeMaterials });
+      updateQuestProgress(db, m.sender, 'earn', total);
+      await m.reply(`${EMOJI.success} ¡Venta exitosa!\n\n📦 Vendiste: ${mat.emoji} *${mat.name}* x${quantity}\n💰 Ganaste: *${formatNumber(total)}* monedas\n💵 Total: *${formatNumber(user.money + total)}* monedas`);
+      await m.react('💰');
       return;
     }
 
-    // Verificar cantidad
-    const available = user.inventory[foundInvIndex].quantity;
+    const item = result.item;
+    const available = countItem(user, item.id);
     if (quantity > available) {
-      await m.reply(
-        `${EMOJI.error} No tienes tantos.\n\n` +
-        `📦 Tienes: *${available}* ${foundItem.name}`
-      );
+      await m.reply(`${EMOJI.error} No tienes tantos.\n\n📦 Tienes: *${available}* ${item.name}`);
+      return;
+    }
+    if (isEquipped(user, item.id)) {
+      await m.reply(`${EMOJI.error} No puedes vender un item equipado.\n\n💡 Usa *${usedPrefix}desequipar* primero.`);
       return;
     }
 
-    // Verificar que no esté equipado
-    if (user.equipment.weapon === foundItem.id ||
-        user.equipment.armor === foundItem.id ||
-        user.equipment.accessory === foundItem.id) {
-      await m.reply(
-        `${EMOJI.error} No puedes vender un item equipado.\n\n` +
-        `💡 Usa */desequipar* primero.`
-      );
-      return;
-    }
+    const total = item.sellPrice * quantity;
+    removeItem(user, item.id, quantity);
+    db.updateUser(m.sender, { money: user.money + total, totalEarned: user.totalEarned + total, inventory: user.inventory });
+    updateQuestProgress(db, m.sender, 'earn', total);
 
-    // Realizar venta
-    const totalValue = foundItem.sellPrice * quantity;
-    user.money += totalValue;
-
-    user.inventory[foundInvIndex].quantity -= quantity;
-    if (user.inventory[foundInvIndex].quantity <= 0) {
-      user.inventory.splice(foundInvIndex, 1);
-    }
-
-    db.updateUser(m.sender, {
-      money: user.money,
-      inventory: user.inventory
-    });
-
-    let response = `${EMOJI.success} ¡Venta exitosa!\n\n`;
-    response += `📦 Vendiste: ${foundItem.emoji} *${foundItem.name}*`;
-    if (quantity > 1) response += ` x${quantity}`;
-    response += `\n💰 Ganaste: *${formatNumber(totalValue)}* monedas\n`;
-    response += `💵 Total: *${formatNumber(user.money)}* monedas`;
-
-    await m.reply(response);
+    await m.reply(
+      `${EMOJI.success} ¡Venta exitosa!\n\n` +
+      `📦 Vendiste: ${item.emoji} *${item.name}*${quantity > 1 ? ` x${quantity}` : ''}\n` +
+      `💰 Ganaste: *${formatNumber(total)}* monedas\n` +
+      `💵 Total: *${formatNumber(user.money + total)}* monedas`
+    );
     await m.react('💰');
   }
 };
 
-/**
- * Plugin: Comprar con Diamantes - Comprar items premium
- */
-const comprarDiamantesPlugin: PluginHandler = {
-  command: ['comprard', 'buyd', 'comprardiamantes', 'buydiamonds'],
-  tags: ['rpg'],
-  help: [
-    'comprard [item] - Compra un item con diamantes',
-    'comprard [item] [cantidad] - Comprar varios',
-    'comprard ticket muteo - Comprar ticket de muteo'
-  ],
-  register: true,
+export const shopPlugins: [string, PluginHandler][] = [
+  ['rpg-tienda', tiendaPlugin],
+  ['rpg-comprar', comprarPlugin],
+  ['rpg-vender', venderPlugin]
+];
 
-  handler: async (ctx: MessageContext) => {
-    const { m, text, args } = ctx;
-    const db = getDatabase();
-    const user = db.getUser(m.sender);
-
-    if (!text.trim()) {
-      await m.reply(
-        `${EMOJI.error} Especifica qué quieres comprar.\n\n` +
-        `📝 *Uso:* /comprard ticket muteo\n` +
-        `📝 *Uso:* /comprard pocion resurrecion 3\n\n` +
-        `💎 Tus diamantes: *${formatNumber(user.limit)}*\n` +
-        `💡 Usa */tienda diamantes* para ver items disponibles.`
-      );
-      return;
-    }
-
-    // Parsear cantidad (último argumento si es número)
-    let quantity = 1;
-    let searchTerm = text.toLowerCase().trim();
-
-    const lastArg = args[args.length - 1];
-    if (/^\d+$/.test(lastArg)) {
-      quantity = Math.min(99, Math.max(1, parseInt(lastArg)));
-      searchTerm = args.slice(0, -1).join(' ').toLowerCase().trim();
-    }
-
-    // Buscar item en la tienda de diamantes (sin importar tildes)
-    let foundItem: Item | null = null;
-    let foundDiamondCost = 0;
-
-    for (const items of Object.values(DIAMOND_SHOP)) {
-      for (const { itemId, diamonds } of items) {
-        const item = ITEMS[itemId];
-        if (item && matchesIgnoreAccents(item.name, searchTerm)) {
-          foundItem = item;
-          foundDiamondCost = diamonds;
-          break;
-        }
-      }
-      if (foundItem) break;
-    }
-
-    if (!foundItem) {
-      await m.reply(
-        `${EMOJI.error} Ese item no está en la tienda de diamantes.\n\n` +
-        `💡 Usa */tienda diamantes* para ver los items disponibles.`
-      );
-      return;
-    }
-
-    // Verificar nivel requerido
-    if (foundItem.requiredLevel && user.level < foundItem.requiredLevel) {
-      await m.reply(
-        `${EMOJI.error} Necesitas nivel *${foundItem.requiredLevel}* para comprar esto.\n\n` +
-        `📊 Tu nivel: *${user.level}*`
-      );
-      return;
-    }
-
-    // Calcular costo total
-    const totalCost = foundDiamondCost * quantity;
-
-    // Verificar diamantes
-    if (user.limit < totalCost) {
-      await m.reply(
-        `${EMOJI.error} No tienes suficientes diamantes.\n\n` +
-        `💎 Costo: *${formatNumber(totalCost)}* diamantes\n` +
-        `💎 Tus diamantes: *${formatNumber(user.limit)}*\n` +
-        `❌ Te faltan: *${formatNumber(totalCost - user.limit)}* diamantes\n\n` +
-        `💡 Gana diamantes con */daily*, */misiones* y */ranking*`
-      );
-      return;
-    }
-
-    // Realizar compra
-    user.limit -= totalCost;
-
-    // Agregar al inventario
-    const existingItem = user.inventory.find(i => i.itemId === foundItem!.id);
-    if (existingItem) {
-      existingItem.quantity += quantity;
-    } else {
-      user.inventory.push({ itemId: foundItem.id, quantity });
-    }
-
-    db.updateUser(m.sender, {
-      limit: user.limit,
-      inventory: user.inventory
-    });
-
-    let response = `💎 ¡Compra con diamantes exitosa!\n\n`;
-    response += `🛒 Compraste: ${foundItem.emoji} *${foundItem.name}*`;
-    if (quantity > 1) response += ` x${quantity}`;
-    response += `\n💎 Pagaste: *${formatNumber(totalCost)}* diamantes\n`;
-    response += `💎 Te quedan: *${formatNumber(user.limit)}* diamantes\n\n`;
-
-    // Instrucciones de uso para items especiales
-    if (foundItem.id === 'ticket_muteo') {
-      response += `💡 *Uso:* /usar ticket muteo @usuario`;
-    } else if (foundItem.id === 'ticket_kick') {
-      response += `💡 *Uso:* /usar ticket kick @usuario`;
-    } else if (foundItem.id === 'bomba_dinero') {
-      response += `💡 *Uso:* /usar bomba dinero`;
-    } else if (foundItem.id === 'escudo_robo') {
-      response += `💡 *Uso:* /usar escudo robo`;
-    } else if (foundItem.id === 'escudo_antibombas') {
-      response += `💡 *Uso:* /usar escudo antibombas`;
-    } else if (foundItem.id === 'seguro_vida') {
-      response += `💡 *Uso:* /usar seguro vida`;
-    } else if (foundItem.id === 'boost_exp_24h') {
-      response += `💡 *Uso:* /usar boost exp`;
-    } else if (foundItem.id === 'doble_exp_permanente') {
-      response += `💡 *Uso:* /usar runa exp`;
-    } else if (foundItem.id === 'cofre_oro') {
-      response += `💡 *Uso:* /usar cofre oro`;
-    } else if (foundItem.id === 'pocion_suerte') {
-      response += `💡 *Uso:* /usar pocion suerte`;
-    } else if (foundItem.id === 'cambio_nombre') {
-      response += `💡 *Uso:* /usar cambio nombre [nuevo nombre]`;
-    } else if (foundItem.id === 'reset_clase') {
-      response += `💡 *Uso:* /usar reset clase`;
-    } else if (foundItem.type === 'weapon' || foundItem.type === 'armor' || foundItem.type === 'accessory') {
-      response += `💡 *Uso:* /equipar ${foundItem.name.toLowerCase()}`;
-    }
-
-    await m.reply(response);
-    await m.react('💎');
-  }
-};
-
-/**
- * Registra los plugins de tienda
- */
 export function registerShopPlugins(handler: MessageHandler): void {
-  handler.registerPlugin('tienda', tiendaPlugin);
-  handler.registerPlugin('comprar', comprarPlugin);
-  handler.registerPlugin('comprard', comprarDiamantesPlugin);
-  handler.registerPlugin('vender', venderPlugin);
+  for (const [name, plugin] of shopPlugins) handler.registerPlugin(name, plugin);
 }

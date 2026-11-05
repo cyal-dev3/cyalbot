@@ -141,16 +141,19 @@ type ModerationContext = Pick<MessageContext, 'm' | 'conn' | 'handler' | 'groupM
  */
 export function assertCanModerate(ctx: ModerationContext, targetId: string, action: ModerationAction): string | null {
   const { m, groupMetadata } = ctx;
-
-  if (areJidsSameUser(targetId, m.sender)) return SELF_TEXT[action];
-
   const participant = findParticipant(groupMetadata, targetId);
+
+  // El objetivo puede llegar como LID y el remitente como número (o al revés): se comparan vía metadata.
+  const isSelf = areJidsSameUser(targetId, m.sender) || (participant !== undefined && participant === findParticipant(groupMetadata, m.sender));
+  if (isSelf) return SELF_TEXT[action];
+
   const botIds = getBotIds(ctx);
   if (botIds.some((id) => areJidsSameUser(id, targetId)) || (participant && findBotParticipant(groupMetadata, botIds) === participant)) {
     return 'No puedo hacer eso conmigo mismo.';
   }
 
-  if (isOwnerId(targetId) || (participant?.jid && isOwnerId(participant.jid))) {
+  // El owner se configura por número; si el objetivo llegó como LID se mira el número del participante.
+  if (isOwnerId(targetId) || (participant && participantIds(participant).some(isOwnerId))) {
     return 'Ese usuario es el dueño del bot.';
   }
 

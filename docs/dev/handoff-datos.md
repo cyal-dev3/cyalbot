@@ -1,8 +1,25 @@
 # Handoff: área datos (capa de datos y utilidades RPG)
 
-Estado al cierre: `npx tsc --noEmit` pasa y `npm test` pasa (43 tests, 28 nuevos en `tests/datos-*.test.ts`).
+Estado al cierre de la ronda de corrección: `npm test` pasa (96 tests, 37 en `tests/datos-*.test.ts`). `npx tsc --noEmit` no da errores en los archivos del área datos; los errores que quedan son de archivos ajenos en edición (download-*.ts, media-play.ts, rpg-fumar.ts).
 
 ## Hecho
+
+### Ronda de corrección (hallazgos de los revisores)
+Todos los hallazgos eran correctos; ninguno se descartó. Por archivo:
+
+- **database.ts, `save()`/`stop()` (pérdida de datos en el apagado)**: `save()` con una escritura en curso ya no devuelve esa promesa (lowdb serializa el JSON al llamar a `write()` y el disco se escribe después, así que lo mutado entre medias quedaba fuera): encadena otra escritura al terminar si la BD volvió a quedar sucia. `stop()` espera la escritura en curso y repite `save()` mientras `dirty` (tope `MAX_STOP_SAVE_ATTEMPTS = 3` por si el disco falla de forma persistente; en ese caso loguea error). Test con un `write` que serializa y escribe 50 ms después.
+- **database.ts, `migrateUser` e inventario corrupto**: `sanitizeInventory` descarta entradas que no sean `{ itemId: string, quantity: número finito }` antes de fundir items renombrados; antes un `null` en el inventario hacía que `getUser` lanzara para siempre. Test.
+- **database.ts, `migrateUser` y `health > maxHealth`**: un stat actual (`health/mana/stamina`) corrupto se repone con el máximo del propio usuario (`CURRENT_STAT_MAX`), no con el default absoluto. Test.
+- **database.ts, `migrateUser` y `user.betting`**: `migrateBetting` repara la estructura de `betting` solo si existe (clona el default si no es objeto; `applyDefaults` sobre `betting` y `betting.stats`), sin crearlo y marcando dirty solo si reparó algo. Antes `followPick`/`resolvePick` lanzaban `TypeError` con un betting persistido sin `stats`. Tests (unitario y con BD sembrada).
+- **database.ts, `runMigrations`**: llama a `migrateUser(user)` antes de `removeClassBaseStats(user)` (sobre campos ausentes la resta daba NaN y el siguiente `getUser` los reponía al default perdiendo el bonus de nivel). `removeClassBaseStats` además trata valores no finitos como el default. Test con `{ playerClass: 'guerrero' }`.
+- **database.ts, `updateUser`**: los valores objeto de `updates` que no sean ya la referencia del propio usuario se clonan con `structuredClone`. Cierra el agujero de `db.updateUser(jid, { ...DEFAULT_USER })` (owner-rpg.ts:1576), que dejaba `inventory`, `combatStats`, etc. compartidos con `DEFAULT_USER` y contaminaba a todos los usuarios creados después. Pasar `user.inventory` del propio usuario no lo sustituye por una copia (los plugins siguen con la misma referencia). Test.
+- **database.ts, `load()`**: solo un `SyntaxError` (JSON inválido) dispara la recuperación desde `.bak` y el renombrado a `.corrupt-*`; cualquier otro error (EACCES, EBUSY, EISDIR...) se propaga desde `init()` para no apartar un archivo sano ni arrancar con datos viejos. Test con un directorio en lugar de archivo (EISDIR).
+- **auto-regen.ts, barrido**: `applyRegenToAllUsers` (ahora exportada para poder testearla) visita a todos los registrados; `regenUser` devuelve `updates` vacío cuando no hay nada que hacer. Así los usuarios al máximo con timestamps en 0 se inicializan en el barrido, como pedía la especificación. Cada usuario va en su propio `try/catch` para que uno corrupto no aborte al resto. Test con `initDatabase` y un usuario corrupto.
+- **auto-regen.ts, acumulación con el stat al máximo**: `regenStat` avanza el timestamp aunque el stat esté lleno (solo en múltiplos del intervalo por punto, para no marcar dirty cada minuto). Antes 10 h al máximo + un golpe a 1 HP daban +99 HP un minuto después. Test.
+- **levelling.ts, `setLevel` hacia abajo**: los máximos no bajan de `DEFAULT_USER` (piso antes: 1) y el dinero no se toca; subir sigue sumando el bonus completo. Un usuario subido con el `setnivel` antiguo (sin bonus) ya no acaba con `maxHealth 85` y `money 0` al bajarlo a 0. Tests actualizados y nuevo.
+- **database.ts, `CLASS_STATS_MIGRATION_ENABLED = true`** (cambio que el agente RPG hizo en el árbol de trabajo): se mantiene en `true` porque rpg-clase.ts ya no suma/resta `baseStats` (verificado al cierre: la única referencia que queda es de texto). Queda pendiente owner-rpg.ts `setclase` (ver "Para otros agentes" 6).
+- **Dualidad de `globalModes`**: no se puede cerrar desde el área datos (owner-rpg.ts es ajeno); se añadió a "Pendiente" con sus consecuencias funcionales y a "Para otros agentes" como requisito del mismo commit.
+
 
 ### src/lib/database.ts
 - **Copias independientes**: creación y reset de usuarios/chats usan `structuredClone(DEFAULT_USER)` / `structuredClone(DEFAULT_CHAT_SETTINGS)`. Antes `{ ...DEFAULT_USER }` compartía `inventory`, `equipment`, `achievements`, `titles`, `activeBuffs`, `dailyQuests`, `weeklyQuests`, `combatStats`, `kissStats`, `hugStats`, `slaves`, `forgeMaterials` (y `warnings`, `mutedUsers`, `badWords` en chats) entre todos los creados en el mismo proceso.
@@ -58,7 +75,7 @@ Estado al cierre: `npx tsc --noEmit` pasa y `npm test` pasa (43 tests, 28 nuevos
 
 ### src/lib/auto-regen.ts
 - `regenUser(user, now)` puro (no toca BD ni muta `user`): devuelve `{ healthRegen, staminaRegen, updates }`. Inicializa `lastHealthRegen`/`lastStaminaRegen` a `now` cuando valen 0 aunque el stat esté al máximo. Lo usan `applyRegenToAllUsers` y `applyRegenToUser`.
-- El barrido periódico solo procesa usuarios con `health < max` o `stamina < max` (máximo real de `calculateTotalStats`).
+- El barrido periódico visita a todos los registrados (ver ronda de corrección); `regenUser` decide si hay algo que actualizar.
 - Regeneración por puntos: intervalo por punto = `3600000 / regenPerHour`; el timestamp avanza solo lo consumido.
 - `getRegenInfo` usa `msUntilNextPoint(last, perHour, now)` = `intervalo - ((now - last) % intervalo)` (exportada y testeada).
 - Eliminados `setRegenValues` y `getAutoRegenStatus` (0 usos). `stopAutoRegen` sigue exportado.
@@ -81,7 +98,7 @@ Estado al cierre: `npx tsc --noEmit` pasa y `npm test` pasa (43 tests, 28 nuevos
 - `datos-database.test.ts`: aislamiento de usuarios y chats, getUser repetido no marca dirty, migrateUser, fusión de `elixir_experiencia`, carga desde disco, resetUser, recuperación desde .bak y renombrado del corrupto, validación de secciones raíz, save con .bak y fallo de escritura, gremios, `removeClassBaseStats`, betting (favoritos y maxHistory). Usa un directorio temporal por test.
 - `datos-levelling.test.ts`: progreso acotado, grantExp (bonus, multiplicador, inválidos, no baja nivel), setLevel, loseExp.
 - `datos-rpg-utils.test.ts`: stats con clase y forja, multiplicador de forja, wrapper deprecado, daño mínimo/multiplicador/crítico.
-- `datos-auto-regen.test.ts`: regenUser puro, topes, `msUntilNextPoint`.
+- `datos-auto-regen.test.ts`: regenUser puro, topes, `msUntilNextPoint`, avance de timestamps al máximo, barrido con BD temporal y usuario corrupto.
 
 ## Para otros agentes
 
@@ -92,7 +109,7 @@ Estado al cierre: `npx tsc --noEmit` pasa y `npm test` pasa (43 tests, 28 nuevos
 const { DEFAULT_USER } = await import('../types/user.js');
 db.updateUser(targetJid, { ...DEFAULT_USER });
 ```
-por `db.resetUser(targetJid);`. El `updateUser` con spread compartía los objetos anidados de `DEFAULT_USER` con el usuario reseteado.
+por `db.resetUser(targetJid);`. Desde la ronda de corrección `updateUser` clona los objetos que no son del propio usuario, así que el spread ya no contamina `DEFAULT_USER`, pero `resetUser` es más claro y no pasa por el filtro de campos numéricos.
 
 **2. Modos globales → lib/global-modes.ts**
 - owner-rpg.ts: borrar la `interface GlobalModes` (líneas 30-69), `export const globalModes` (71-104) y `export function checkExpiredModes` (111-128). Añadir al bloque de imports:
@@ -101,6 +118,7 @@ por `db.resetUser(targetJid);`. El `updateUser` con spread compartía los objeto
   `export { globalModes, checkExpiredModes } from '../lib/global-modes.js';`
 - Plugins que importan `{ globalModes, checkExpiredModes } from './owner-rpg.js'` y deben pasar a `from '../lib/global-modes.js'`: rpg-atacar.ts:12, rpg-dungeon.ts:12, rpg-duelo.ts:12, rpg-dungeon-interactivo.ts:12, rpg-minar.ts:11, rpg-robar.ts:12, rpg-daily.ts:11, rpg-work.ts:13.
 - Al activar modos manualmente (owner-rpg.ts 717, 768, 820, 870, 919) se sigue usando `activatedBy: m.sender`; los eventos automáticos ya respetan cualquier `activatedBy` distinto de `'SISTEMA_AUTO'`.
+- **Debe ir en el mismo commit que este cambio de datos**: mientras owner-rpg.ts conserve su propio `globalModes`, hay dos estados distintos en el proceso (`ownerRpg.globalModes !== lib.globalModes`): los eventos automáticos y `forceRandomEvent()` activan modos que ningún plugin lee, `canAutoOverride` no ve los modos del owner y `rpgdesactivar` no puede apagar un evento automático. El re-export de dos líneas en owner-rpg.ts basta para cerrar la ventana sin tocar los demás plugins. Comprobación rápida en la integración: `npx tsx -e "Promise.all([import('./src/lib/global-modes.ts'), import('./src/plugins/owner-rpg.ts')]).then(([a, b]) => console.log(a.globalModes === b.globalModes))"` debe imprimir `true`.
 
 **3. Comando público `/eventos`** (nuevo plugin, p. ej. `src/plugins/rpg-eventos.ts`, registrar en `src/plugins/index.ts` y en menu.ts): el anuncio de eventos automáticos ya lo menciona. Debe listar los modos activos y su tiempo restante usando `getActiveModes()` de `lib/global-modes.ts` (devuelve `[{ key, remainingMs, activatedBy }]`; formatear con `msToTime(remainingMs)`), con detalle por modo leyendo `globalModes[key]` (multiplicadores, `eventName`), e indicar "No hay eventos activos" si está vacío. Opcional: mostrar `getAutoEventStatus().nextEventIn` cuando `enabled`.
 
@@ -126,7 +144,7 @@ por `db.resetUser(targetJid);`. El `updateUser` con spread compartía los objeto
 - rpg-clase.ts:209-224: borrar el bloque que resta `prevClassInfo.baseStats` y suma `classInfo.baseStats` a `user.maxHealth/maxMana/maxStamina/attack/defense`. Mantener solo `playerClass`, `money` y el recorte de `health/mana/stamina` al máximo real (`calculateTotalStats(user)` de lib/rpg-utils.ts).
 - owner-rpg.ts:1192-1199 (`setclase`): quitar los `100 + classInfo.baseStats.healthBonus` etc.; solo asignar `playerClass`.
 - rpg-perfil.ts:20-30 y rpg-inventario.ts:34-42 suman baseStats a mano: usar `calculateTotalStats(user)`.
-- **En el mismo cambio**, poner `CLASS_STATS_MIGRATION_ENABLED = true` en src/lib/database.ts. En el siguiente arranque la BD restará una sola vez los baseStats a los usuarios con clase y fijará `settings.schemaVersion = 2`. No activar antes (se restaría dos veces) ni después (los usuarios con clase tendrían el bonus doble hasta entonces).
+- `CLASS_STATS_MIGRATION_ENABLED` ya está en `true` (lo puso el agente RPG al cambiar rpg-clase.ts). En el siguiente arranque la BD restará una sola vez los baseStats a los usuarios con clase y fijará `settings.schemaVersion = 2`. El cambio de owner-rpg.ts `setclase` debe entrar en el mismo commit.
 
 **7. `calculateTotalStats`**: migrar los imports de `calculateTotalStats` desde `../types/user.js` a `../lib/rpg-utils.js` y llamar `calculateTotalStats(user)` (sin `ITEMS`/`CLASSES`): auto-regen ya lo hace; quedan owner-rpg.ts:16,344,1333; rpg-atacar.ts:11,173; rpg-dungeon.ts:10,74,372; rpg-duelo.ts:11,141-142,928-929; rpg-dungeon-interactivo.ts:10,33,884; rpg-nivel.ts:9,74; rpg-bombardear.ts:10,215,329; rpg-inventario.ts:11,271. `ReturnType<typeof calculateTotalStats>` puede sustituirse por el tipo `TotalStats`.
 
@@ -164,6 +182,16 @@ por `db.resetUser(targetJid);`. El `updateUser` con spread compartía los objeto
 
 ## Decisiones
 
+### Ronda de corrección
+- **`updateUser` clona por identidad, no siempre**: clonar todo valor objeto habría dejado obsoletas las referencias locales de los plugins que hacen `db.updateUser(jid, { inventory: user.inventory })` y siguen usando `user.inventory`. Solo se clona lo que no es ya la referencia almacenada (spreads de `DEFAULT_USER`, objetos de otro usuario, arrays nuevos). Alternativa descartada: `deepFreeze(DEFAULT_USER)`, que convertía la corrupción silenciosa en un `TypeError` en el flujo de reset del owner.
+- **El barrido de regeneración ya no filtra por "al máximo"**: el filtro necesitaba el mismo `calculateTotalStats` que el cálculo, así que no ahorraba nada y era lo que impedía inicializar y avanzar timestamps de los usuarios llenos. La especificación pedía ambas cosas (filtrar e inicializar); se prioriza inicializar.
+- **Timestamps avanzan al máximo solo en múltiplos del intervalo**: ponerlos a `now` marcaría dirty cada minuto para todos los usuarios llenos; avanzar al último intervalo completo marca dirty como mucho una vez por intervalo (6 min para energía, 30 min para vida) y el autoguardado ya escribe cada 30 s cuando hay cambios.
+- **`setLevel` hacia abajo no toca el dinero**: el oro concedido al subir puede estar gastado; restarlo dejaba a cero a usuarios que nunca lo recibieron (subidos con `level*level*100`). Si se quiere confiscar, debe hacerlo el comando del owner explícitamente.
+- **`stop()` con tope de 3 intentos**: `while (dirty)` sin tope se colgaría con un disco roto; tres intentos cubren la ventana de la escritura en curso y un fallo transitorio.
+- **Solo `SyntaxError` es corrupción**: lowdb ya convierte ENOENT en "sin datos"; cualquier otro error de lectura es de E/S y debe impedir el arranque, no provocar que el siguiente autoguardado pise la BD con el `.bak` o con defaults.
+- **No se añade un test que importe owner-rpg.ts**: hoy fallaría (dos `globalModes`) y `npm test` debe pasar; la comprobación queda como paso de integración (ver "Para otros agentes" 2).
+
+
 - **`needsDefault` también repara arrays/objetos corruptos** (p. ej. `inventory: null`), no solo numéricos: un `null` donde se espera array rompe `inventory.find` en muchos plugins. Lo que el informe pedía (faltantes + numéricos no finitos) está incluido.
 - **No se conserva "si `health` es inválido → `health = maxHealth`"** de la migración antigua: la tabla asigna el default (100). Es un caso de corrupción rarísimo y la regla tabular es más fácil de razonar y testear.
 - **Fusión de `elixir_experiencia` en `migrateUser`** en lugar de dejar el item en `ITEMS`: así el jugador no pierde el consumible al retirar el duplicado. Alternativa descartada: mantener ambos items (seguiría el doble listado en tienda/inventario).
@@ -181,7 +209,9 @@ por `db.resetUser(targetJid);`. El `updateUser` con spread compartía los objeto
 
 ## Pendiente
 
-- **Migración de stats de clase apagada** (`CLASS_STATS_MIGRATION_ENABLED = false`): la activa el agente RPG junto al cambio en rpg-clase.ts (punto 6). Hasta entonces los usuarios con clase siguen con el bonus doble en los cálculos que usan `calculateTotalStats` (igual que antes de este cambio).
+- **Regresión intermedia de los eventos automáticos**: hasta que owner-rpg.ts re-exporte `globalModes`/`checkExpiredModes` desde `lib/global-modes.ts` (punto 2), auto-events escribe en un objeto que ningún plugin lee: los eventos se anuncian pero no afectan a XP/dinero/daño/robo, la protección "no pisar modos del owner" no opera y `rpgdesactivar` no apaga eventos automáticos. Antes de este cambio auto-events importaba el objeto de owner-rpg y sí funcionaba. Es un cambio de dos líneas en owner-rpg.ts que debe ir en el mismo commit.
+- **Migración de stats de clase activa** (`CLASS_STATS_MIGRATION_ENABLED = true`, puesto por el agente RPG): rpg-clase.ts ya no suma baseStats, pero owner-rpg.ts `setclase` (1192-1199) sigue escribiendo `100 + baseStats...`; mientras no se cambie, los usuarios a los que el owner asigne clase tendrán el bonus doble. La migración corre una sola vez en el próximo arranque y sube `schemaVersion` a 2.
+
 - **`/eventos`**, el reemplazo de `.rpgowner` en el anuncio, lo crea el agente RPG (punto 3); mientras tanto el texto apunta a un comando que no existe.
 - **owner-rpg.ts:1355** mostrará `undefined` como rango para usuarios creados tras este cambio hasta que use `getRoleByLevel(user.level)` (punto 12).
 - **rpg-forja.ts:425** produce `elixir_experiencia`, que ya no está en `ITEMS`: el craft entregará un item sin definición hasta que se cambie a `elixir_exp` (punto 9). La BD lo funde al siguiente `getUser`.

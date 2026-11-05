@@ -1,31 +1,48 @@
-/**
- * Plugin de Registro
- * Permite a los usuarios registrarse en el sistema RPG
- */
-
-import { createHash } from 'crypto';
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { EMOJI } from '../lib/utils.js';
+import { EMOJI, formatNumber } from '../lib/utils.js';
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
+import { grantRewards, getPlayerId, usageError } from '../lib/rpg-actions.js';
 
-// Patrón para validar nombre.edad o nombre,edad
-const REG_PATTERN = /^(.+)[.,](\d+)$/;
+const NAME_MIN = 2;
+const NAME_MAX = 25;
+const AGE_MIN = 13;
+const AGE_MAX = 100;
+
+export type RegistrationParse =
+  | { name: string; age: number }
+  | { name: string; age: null }
+  | null;
+
+/**
+ * Acepta "Nombre 18", "Nombre.18", "Nombre,18" y "Nombre" (sin edad). Devuelve
+ * null si no hay nombre.
+ */
+export function parseRegistration(text: string): RegistrationParse {
+  const clean = text.trim().replace(/\s+/g, ' ');
+  if (!clean) return null;
+
+  const match = clean.match(/^(.+?)\s*[.,\s]\s*(\d{1,3})$/);
+  if (match) {
+    return { name: match[1].trim(), age: parseInt(match[2], 10) };
+  }
+  return { name: clean, age: null };
+}
 
 export const verificarPlugin: PluginHandler = {
   command: /^(verificar|registrar|register|reg)$/i,
   tags: ['rpg'],
   help: [
-    'verificar <nombre>.<edad>',
-    'registrar Shadow.18'
+    'verificar <nombre> <edad> - Registrarte en el RPG (también nombre.edad o nombre,edad)',
+    'verificar - Usa tu nombre de WhatsApp (luego te pedirá la edad)'
   ],
+  usage: ['verificar <nombre> <edad>', 'verificar Shadow.18'],
 
   handler: async (ctx: MessageContext) => {
     const { m, text, usedPrefix, command } = ctx;
     const db = getDatabase();
     const user = db.getUser(m.sender);
 
-    // Verificar si ya está registrado
     if (user.registered) {
       return m.reply(
         `${EMOJI.warning} *¡Ya estás registrado, aventurero!*\n\n` +
@@ -35,99 +52,61 @@ export const verificarPlugin: PluginHandler = {
       );
     }
 
-    // Validar formato del comando
-    if (!text) {
+    const parsed = parseRegistration(text) ?? (m.pushName?.trim() ? { name: m.pushName.trim(), age: null } : null);
+    if (!parsed) return usageError(ctx, verificarPlugin, 'Escribe tu nombre y tu edad.');
+
+    const name = parsed.name;
+    if (name.length < NAME_MIN || name.length > NAME_MAX) {
+      return m.reply(`${EMOJI.error} El nombre debe tener entre *${NAME_MIN}* y *${NAME_MAX}* caracteres.`);
+    }
+
+    if (parsed.age === null) {
       return m.reply(
-        `${EMOJI.error} *¡Formato incorrecto!*\n\n` +
-        `${EMOJI.info} *Uso correcto:*\n` +
-        `➡️ ${usedPrefix}${command} nombre.edad\n\n` +
-        `${EMOJI.star} *Ejemplos:*\n` +
-        `• ${usedPrefix}${command} Guerrero.18\n` +
-        `• ${usedPrefix}${command} Shadow.25\n` +
-        `• ${usedPrefix}${command} Dragon,21`
+        `${EMOJI.info} Casi listo, *${name}*. Me falta tu edad.\n\n` +
+        `➡️ Envía: *${usedPrefix}${command} ${name}.18* (cambia 18 por tu edad)`
       );
     }
 
-    const match = text.match(REG_PATTERN);
-    if (!match) {
-      return m.reply(
-        `${EMOJI.error} *¡Formato incorrecto!*\n\n` +
-        `${EMOJI.info} Debes usar el formato: *nombre.edad*\n` +
-        `${EMOJI.star} Ejemplo: *${usedPrefix}${command} MiNombre.20*`
-      );
-    }
+    const age = parsed.age;
+    if (age < AGE_MIN) return m.reply(`${EMOJI.error} Debes tener *al menos ${AGE_MIN} años* para registrarte.`);
+    if (age > AGE_MAX) return m.reply(`${EMOJI.error} Por favor ingresa una *edad válida* (menor a ${AGE_MAX}).`);
 
-    const [, rawName, ageStr] = match;
-    const name = rawName.trim();
-    const age = parseInt(ageStr, 10);
-
-    // Validar nombre
-    if (name.length < 2) {
-      return m.reply(
-        `${EMOJI.error} El nombre debe tener *al menos 2 caracteres*.`
-      );
-    }
-
-    if (name.length > 25) {
-      return m.reply(
-        `${EMOJI.error} El nombre no puede tener *más de 25 caracteres*.`
-      );
-    }
-
-    // Validar edad
-    if (isNaN(age) || age < 13) {
-      return m.reply(
-        `${EMOJI.error} Debes tener *al menos 13 años* para registrarte.`
-      );
-    }
-
-    if (age > 100) {
-      return m.reply(
-        `${EMOJI.error} Por favor ingresa una *edad válida* (menor a 100).`
-      );
-    }
-
-    // Generar ID único del jugador
-    const serialNumber = createHash('md5')
-      .update(m.sender + Date.now().toString())
-      .digest('hex')
-      .slice(0, 12)
-      .toUpperCase();
-
-    // Registrar usuario
-    const bonus = CONFIG.rpg.registerBonus;
-
+    const now = Date.now();
     db.updateUser(m.sender, {
       name,
       age,
       registered: true,
-      regTime: Date.now(),
-      money: user.money + bonus.money,
-      exp: user.exp + bonus.exp
+      regTime: now,
+      lastHealthRegen: now,
+      lastStaminaRegen: now
     });
+    const playerId = getPlayerId(db, m.sender);
 
-    // Mensaje de bienvenida
+    const bonus = CONFIG.rpg.registerBonus;
+    const reward = grantRewards(db, m.sender, { exp: bonus.exp, money: bonus.money }, { source: 'register', rank: false, now });
+
+    const extra = reward.lines.length ? `\n${reward.lines.map(l => `├ ${l}`).join('\n')}` : '';
     await m.reply(
       `${EMOJI.success}${EMOJI.crown} *¡REGISTRO EXITOSO!* ${EMOJI.crown}${EMOJI.success}\n\n` +
-      `${EMOJI.sparkles} *¡Bienvenido al mundo de CYALTRONIC, ${name}!*\n\n` +
+      `${EMOJI.sparkles} *¡Bienvenido al mundo de ${CONFIG.botName}, ${name}!*\n\n` +
       `╭─────────────────────────╮\n` +
       `│  ${EMOJI.star} *DATOS DE REGISTRO*\n` +
       `├─────────────────────────\n` +
       `│  ${EMOJI.info} Nombre: *${name}*\n` +
       `│  ${EMOJI.info} Edad: *${age} años*\n` +
-      `│  ${EMOJI.info} ID: *#${serialNumber}*\n` +
-      `│  ${EMOJI.time} Fecha: *${new Date().toLocaleDateString('es-MX')}*\n` +
+      `│  ${EMOJI.info} ID: *#${playerId}*\n` +
+      `│  ${EMOJI.time} Fecha: *${new Date(now).toLocaleDateString('es-MX')}*\n` +
       `╰─────────────────────────╯\n\n` +
       `${EMOJI.gift} *¡REGALO DE BIENVENIDA!*\n` +
-      `├ +${bonus.money.toLocaleString()} ${EMOJI.coin} Monedas\n` +
-      `├ +${bonus.exp.toLocaleString()} ${EMOJI.exp} Experiencia\n` +
+      `├ +${formatNumber(reward.money)} ${EMOJI.coin} Monedas\n` +
+      `├ +${formatNumber(reward.exp)} ${EMOJI.exp} Experiencia${extra}\n` +
       `╰─────────────────────────\n\n` +
       `${EMOJI.sword} *¡Tu aventura comienza ahora!*\n\n` +
       `${EMOJI.info} *Comandos útiles:*\n` +
       `• *${usedPrefix}perfil* - Ver tu perfil\n` +
       `• *${usedPrefix}daily* - Recompensa diaria\n` +
       `• *${usedPrefix}work* - Trabajar por XP\n` +
-      `• *${usedPrefix}nivel* - Subir de nivel`
+      `• *${usedPrefix}misiones* - Tus misiones`
     );
   }
 };

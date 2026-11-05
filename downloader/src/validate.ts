@@ -78,11 +78,21 @@ export function validateUrl(raw: unknown): URL {
   return url;
 }
 
+/** True si hay un proxy HTTP configurado por entorno: entonces resuelve el proxy, no este proceso. */
+export function proxyConfigured(env: Record<string, string | undefined> = process.env): boolean {
+  return ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'].some((k) => Boolean(env[k]?.trim()));
+}
+
 /**
- * Resuelve el host y rechaza si alguna direccion es privada. Si el DNS falla se deja pasar:
- * yt-dlp fallara con su propio error y asi no se duplica la causa.
+ * Resuelve el host y rechaza (INVALID_URL) si alguna direccion es privada o si no se puede resolver.
+ * Solo se deja pasar un fallo de DNS cuando hay un proxy configurado, porque en ese caso la
+ * resolucion la hace el proxy y este proceso puede no tener DNS. Devuelve las IPs resueltas.
+ *
+ * Limite conocido: yt-dlp vuelve a resolver el nombre al conectar, asi que un DNS que cambie de
+ * respuesta entre ambas consultas (rebinding con TTL 0) no se detecta aqui; yt-dlp no permite
+ * fijar la IP de destino sin romper TLS/SNI de los extractores.
  */
-export async function assertPublicHost(hostname: string, timeoutMs = 3000): Promise<void> {
+export async function assertPublicHost(hostname: string, timeoutMs = 5000): Promise<string[]> {
   let addresses: { address: string }[];
   try {
     addresses = await Promise.race([
@@ -90,11 +100,21 @@ export async function assertPublicHost(hostname: string, timeoutMs = 3000): Prom
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('dns timeout')), timeoutMs).unref()),
     ]);
   } catch {
-    return;
+    if (proxyConfigured()) return [];
+    throw new DownloadError('INVALID_URL', 'No se pudo resolver el host');
   }
+  if (!addresses.length) throw new DownloadError('INVALID_URL', 'No se pudo resolver el host');
   if (addresses.some((a) => isPrivateIp(a.address))) {
     throw new DownloadError('INVALID_URL', 'El host resuelve a una direccion privada');
   }
+  return addresses.map((a) => a.address);
+}
+
+/** validateUrl + assertPublicHost en un paso, para URLs derivadas (imagenes, redirecciones, entradas). */
+export async function assertPublicUrl(raw: unknown): Promise<URL> {
+  const url = validateUrl(raw);
+  await assertPublicHost(url.hostname);
+  return url;
 }
 
 const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;

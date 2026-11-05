@@ -19,7 +19,9 @@ export interface Config {
   maxFileBytes: number;
   downloadTimeoutMs: number;
   maxConcurrent: number;
+  metaConcurrent: number;
   queueMax: number;
+  maxPlaylistItems: number;
   cacheTtlMs: number;
   fileTtlMs: number;
   logLevel: LogLevel;
@@ -78,7 +80,9 @@ export function loadConfig(env: Env = process.env): Config {
     maxFileBytes: envInt(env, 'MAX_FILE_MB', 60) * 1024 * 1024,
     downloadTimeoutMs: envInt(env, 'DOWNLOAD_TIMEOUT_MS', 120_000, 1000),
     maxConcurrent: envInt(env, 'MAX_CONCURRENT', 2),
+    metaConcurrent: envInt(env, 'META_CONCURRENT', 4),
     queueMax: envInt(env, 'QUEUE_MAX', 20, 0),
+    maxPlaylistItems: envInt(env, 'MAX_PLAYLIST_ITEMS', 10),
     cacheTtlMs: envInt(env, 'CACHE_TTL_MIN', 30, 0) * 60_000,
     fileTtlMs: envInt(env, 'FILE_TTL_MIN', 30) * 60_000,
     logLevel: level as LogLevel,

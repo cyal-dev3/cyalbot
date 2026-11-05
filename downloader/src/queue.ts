@@ -5,10 +5,15 @@ interface Waiter {
   reject: (err: Error) => void;
 }
 
+export function clientClosedError(): DownloadError {
+  return new DownloadError('CLIENT_CLOSED', 'El cliente cerro la conexion');
+}
+
 /**
  * Cola simple de concurrencia limitada. Mantiene como maximo `maxConcurrent` tareas
  * activas; el resto espera en orden FIFO hasta `queueMax`. Si la espera esta llena,
- * `run` rechaza inmediatamente con RATE_LIMITED.
+ * `run` rechaza inmediatamente con RATE_LIMITED. Si `signal` se aborta mientras la tarea
+ * espera, se saca de la cola y se rechaza con CLIENT_CLOSED sin llegar a ejecutarse.
  */
 export class Queue {
   private active = 0;
@@ -30,16 +35,18 @@ export class Queue {
     return this.waiting.length;
   }
 
-  async run<T>(task: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  async run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) throw clientClosedError();
+    await this.acquire(signal);
     try {
+      if (signal?.aborted) throw clientClosedError();
       return await task();
     } finally {
       this.release();
     }
   }
 
-  private acquire(): Promise<void> {
+  private acquire(signal?: AbortSignal): Promise<void> {
     if (this.active < this.maxConcurrent) {
       this.active += 1;
       return Promise.resolve();
@@ -50,7 +57,21 @@ export class Queue {
       );
     }
     return new Promise<void>((resolve, reject) => {
-      this.waiting.push({ resolve, reject });
+      const waiter: Waiter = {
+        resolve: () => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        },
+        reject,
+      };
+      const onAbort = () => {
+        const index = this.waiting.indexOf(waiter);
+        if (index === -1) return;
+        this.waiting.splice(index, 1);
+        reject(clientClosedError());
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.waiting.push(waiter);
     });
   }
 

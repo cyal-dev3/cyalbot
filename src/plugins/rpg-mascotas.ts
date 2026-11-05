@@ -188,9 +188,8 @@ export const entrenarPlugin: PluginHandler = {
       return m.reply(`🍖 *${user.pet.name}* tiene demasiada hambre para entrenar (${hunger}/100). Usa *${usedPrefix}alimentar* primero.`);
     }
 
-    // Se fija el hambre efectivo actual menos el coste y se reinicia el reloj de decaimiento
-    user.pet.hunger = hunger - TRAIN_HUNGER_COST;
-    user.pet.lastFed = now;
+    // Restar al valor guardado equivale a restar al hambre efectivo: el decaimiento sigue contando desde lastFed
+    user.pet.hunger -= TRAIN_HUNGER_COST;
     user.pet.lastTrain = now;
     const gained = randomInt(40, 80);
     const leveledUp = addPetExp(user.pet, gained);
@@ -198,7 +197,7 @@ export const entrenarPlugin: PluginHandler = {
 
     await m.reply(
       `🏋️ *${user.pet.name}* entrenó duro y ganó ${gained} XP.\n` +
-      `🍖 Hambre: ${user.pet.hunger}/100` +
+      `🍖 Hambre: ${getPetHunger(user.pet, now)}/100` +
       (leveledUp ? `\n⭐ ¡Subió a nivel *${user.pet.level}*!` : '')
     );
   }

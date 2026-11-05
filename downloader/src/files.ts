@@ -3,7 +3,9 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readdir, rm, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
+import { pipeline } from 'node:stream';
 import { log } from './logger.js';
+import type { Metadata } from './ytdlp.js';
 import { sanitizeFilename } from './validate.js';
 
 export type MediaType = 'video' | 'audio' | 'image';
@@ -21,6 +23,8 @@ export interface StoredEntry {
   dir: string;
   files: StoredFile[];
   createdAt: number;
+  /** Metadata de la descarga; vive y muere con la entrada (sin mapas paralelos que crezcan). */
+  meta: Metadata | null;
 }
 
 const MIME_BY_EXT: Record<string, { mime: string; type: MediaType }> = {
@@ -78,6 +82,8 @@ export function newToken(): string {
 export class FileStore {
   private readonly entries = new Map<string, StoredEntry>();
   private readonly cache = new Map<string, { token: string; expiresAt: number }>();
+  // Tokens con descarga en curso: su carpeta existe pero aun no esta registrada y no debe limpiarse.
+  private readonly inProgress = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -121,6 +127,7 @@ export class FileStore {
       return 0;
     }
     for (const name of names) {
+      if (this.inProgress.has(name)) continue;
       const full = path.join(this.baseDir, name);
       const entry = this.entries.get(name);
       let age: number;
@@ -148,11 +155,17 @@ export class FileStore {
 
   async createDir(token: string): Promise<string> {
     const dir = path.join(this.baseDir, token);
+    this.inProgress.add(token);
     await mkdir(dir, { recursive: true });
     return dir;
   }
 
+  isInProgress(token: string): boolean {
+    return this.inProgress.has(token);
+  }
+
   async discard(token: string): Promise<void> {
+    this.inProgress.delete(token);
     this.entries.delete(token);
     await rm(path.join(this.baseDir, token), { recursive: true, force: true });
   }
@@ -172,8 +185,9 @@ export class FileStore {
     return files;
   }
 
-  register(token: string, dir: string, files: StoredFile[], cacheKey?: string): StoredEntry {
-    const entry: StoredEntry = { token, dir, files, createdAt: Date.now() };
+  register(token: string, dir: string, files: StoredFile[], cacheKey?: string, meta: Metadata | null = null): StoredEntry {
+    const entry: StoredEntry = { token, dir, files, createdAt: Date.now(), meta };
+    this.inProgress.delete(token);
     this.entries.set(token, entry);
     if (cacheKey && this.cacheTtlMs > 0) {
       this.cache.set(cacheKey, { token, expiresAt: Date.now() + Math.min(this.cacheTtlMs, this.fileTtlMs) });
@@ -218,7 +232,10 @@ function contentDisposition(filename: string): string {
   return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
-/** Sirve un archivo con soporte de Range (una sola parte) y cabeceras de descarga. */
+/**
+ * Sirve un archivo con soporte de Range (una sola parte) y cabeceras de descarga.
+ * Una cabecera Range con unidad distinta de "bytes" se ignora (RFC 9110 14.2) y se sirve completo.
+ */
 export function serveFile(req: IncomingMessage, res: ServerResponse, file: StoredFile): number {
   const headers: Record<string, string> = {
     'Content-Type': file.mime,
@@ -230,9 +247,9 @@ export function serveFile(req: IncomingMessage, res: ServerResponse, file: Store
   let start = 0;
   let end = file.size - 1;
   let status = 200;
-  const range = req.headers.range;
-  if (range) {
-    const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+  const range = req.headers.range?.trim();
+  if (range && /^bytes=/i.test(range)) {
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(range);
     if (!match || (match[1] === '' && match[2] === '')) {
       res.writeHead(416, { 'Content-Range': `bytes */${file.size}` });
       res.end();
@@ -261,10 +278,11 @@ export function serveFile(req: IncomingMessage, res: ServerResponse, file: Store
     return status;
   }
   const stream = createReadStream(file.path, { start, end });
-  stream.on('error', (err) => {
-    log.warn('Error leyendo archivo', { path: file.path, error: err.message });
-    res.destroy();
+  // pipeline destruye el stream de lectura (y cierra su descriptor) tambien cuando el cliente aborta.
+  pipeline(stream, res, (err) => {
+    if (err && (err as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+      log.warn('Error sirviendo archivo', { path: file.path, error: err.message });
+    }
   });
-  stream.pipe(res);
   return status;
 }
