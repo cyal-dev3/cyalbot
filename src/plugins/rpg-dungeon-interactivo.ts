@@ -238,8 +238,6 @@ async function processMonsterTurn(session: DungeonSession): Promise<void> {
     return;
   }
 
-  tickEffects(session.playerState);
-  tickEffects(session.monsterState);
   session.isPlayerTurn = true;
   session.turn++;
   await showStatus(session);
@@ -424,6 +422,14 @@ export async function startInteractiveDungeon(ctx: MessageContext, user: UserRPG
   await showStatus(session);
 }
 
+/**
+ * Sin prefijo, "a ver" o "d nada" no son acciones: las palabras de una letra
+ * solo cuentan cuando van solas. Con prefijo se acepta lo que sea.
+ */
+function isBareAction(ctx: MessageContext): boolean {
+  return Boolean(ctx.usedPrefix) || ctx.args.length === 0;
+}
+
 /** Sesión del remitente si es su turno; responde y devuelve null si no */
 async function sessionForAction(ctx: MessageContext): Promise<DungeonSession | null> {
   const session = activeDungeons.get(ctx.m.sender);
@@ -433,6 +439,8 @@ async function sessionForAction(ctx: MessageContext): Promise<DungeonSession | n
     return null;
   }
   session.lastActionTime = Date.now();
+  // MAX_TIMEOUTS cuenta turnos perdidos seguidos: cualquier acción del jugador reinicia la cuenta
+  session.timeouts = 0;
   return session;
 }
 
@@ -440,6 +448,16 @@ function beginPlayerAction(session: DungeonSession): void {
   clearActionTimeout(session);
   session.isPlayerTurn = false;
   session.defending = false;
+}
+
+/**
+ * Cierra la acción del jugador descontando una acción a los efectos de ambos.
+ * Se llama antes de aplicar los efectos de una habilidad nueva, para que un
+ * buff "por 3 acciones" cubra las 3 siguientes y no la de lanzarlo.
+ */
+function endPlayerAction(session: DungeonSession): void {
+  tickEffects(session.playerState);
+  tickEffects(session.monsterState);
 }
 
 async function resolvePlayerHit(session: DungeonSession, multiplier: number, label: string): Promise<number> {
@@ -460,11 +478,13 @@ const atacarDungeonPlugin: PluginHandler = {
   noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
+    if (!isBareAction(ctx)) return;
     const session = await sessionForAction(ctx);
     if (!session) return;
     beginPlayerAction(session);
 
     await resolvePlayerHit(session, 1, `⚔️ ${session.playerName} ataca`);
+    endPlayerAction(session);
     if (session.monsterHealth <= 0) {
       await processMonsterDeath(session);
       return;
@@ -480,6 +500,7 @@ const defenderDungeonPlugin: PluginHandler = {
   noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
+    if (!isBareAction(ctx)) return;
     const session = await sessionForAction(ctx);
     if (!session) return;
     beginPlayerAction(session);
@@ -487,6 +508,7 @@ const defenderDungeonPlugin: PluginHandler = {
     session.defending = true;
     session.currentMana = Math.min(session.maxMana, session.currentMana + D.DEFEND_MANA_REGEN);
     session.log.push(`🛡️ ${session.playerName} se defiende (+${D.DEFEND_MANA_REGEN} 💙)`);
+    endPlayerAction(session);
     await processMonsterTurn(session);
   }
 };
@@ -538,7 +560,6 @@ const habilidadDungeonPlugin: PluginHandler = {
     session.currentStamina -= skill.staminaCost;
     if (skill.cooldown > 0) session.skillCooldowns.set(skill.id, session.turn + skill.cooldown);
 
-    const effects = applySkillEffect(skill, session.playerState, session.monsterState);
     let damage = 0;
     if (skill.effect.damageMultiplier) {
       damage = await resolvePlayerHit(session, skill.effect.damageMultiplier, `${skill.emoji} ${session.playerName} usa *${skill.name}*`);
@@ -550,6 +571,8 @@ const habilidadDungeonPlugin: PluginHandler = {
       session.currentHealth = Math.min(session.maxHealth, session.currentHealth + heal);
       session.log.push(`💚 recupera ${heal} de vida`);
     }
+    endPlayerAction(session);
+    const effects = applySkillEffect(skill, session.playerState, session.monsterState);
     for (const line of effects.lines) session.log.push(line);
 
     if (session.monsterHealth <= 0) {
@@ -631,6 +654,7 @@ const huirDungeonPlugin: PluginHandler = {
 
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
+    if (!isBareAction(ctx)) return;
     const session = await sessionForAction(ctx);
     if (!session) return;
 
@@ -647,6 +671,7 @@ const huirDungeonPlugin: PluginHandler = {
       return;
     }
     session.log.push(`🏃 ${session.playerName} intenta huir... ¡FALLA!`);
+    endPlayerAction(session);
     await m.reply(`❌ *¡No pudiste escapar!*\n_El monstruo aprovecha tu descuido..._`);
     await processMonsterTurn(session);
   }
@@ -659,24 +684,25 @@ const estadoDungeonPlugin: PluginHandler = {
   noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
+    if (!isBareAction(ctx)) return;
     const session = activeDungeons.get(ctx.m.sender);
     if (!session) return;
     await ctx.m.reply(formatSessionStatus(session));
   }
 };
 
-/** Acciones del dungeon: solo responden mientras el remitente tiene una sesión */
+/** Acciones del dungeon: solo en el chat donde el remitente tiene su sesión */
 export const dungeonContext: CommandContext = {
   name: 'dungeon',
-  isActive: (m: SerializedMessage) => activeDungeons.has(m.sender),
+  isActive: (m: SerializedMessage) => activeDungeons.get(m.sender)?.chat === m.chat,
   plugins: [atacarDungeonPlugin, defenderDungeonPlugin, habilidadDungeonPlugin, itemDungeonPlugin, huirDungeonPlugin, estadoDungeonPlugin],
   noPrefix: true
 };
 
 /**
- * @deprecated Registro global antiguo (plugins/index.ts). Las acciones viven en
- * `dungeonContext` y el comando /dungeon en rpg-dungeon.ts. Quitar cuando
- * index.ts use registerCombatContexts.
+ * Acciones sueltas: las usan `dungeonContext` y los puentes `@deprecated` de
+ * rpg-duelo.ts (registro global antiguo de plugins/index.ts, donde los alias
+ * del duelo van antes y despachan aquí si el remitente está en un dungeon).
  */
 export { atacarDungeonPlugin, defenderDungeonPlugin, habilidadDungeonPlugin, itemDungeonPlugin, huirDungeonPlugin, estadoDungeonPlugin };
 

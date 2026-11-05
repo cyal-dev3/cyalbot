@@ -188,3 +188,88 @@ test('avisa al owner cuando la cola crece o envejece, una vez por ventana', asyn
   assert.ok(queue.oldestAgeMs >= 16 * 60_000);
   await queue.stop();
 });
+
+test('prepare se ejecuta una sola vez por mensaje aunque el envío se reintente', async () => {
+  const dir = await tmp();
+  let failures = 2;
+  const sock = fakeSock({ failWith: () => (failures-- > 0 ? new Error('Connection Closed') : null) });
+  let prepareCalls = 0;
+  const onSent: (string | undefined)[] = [];
+  const queue = new MessageQueue({
+    dir,
+    delayBetweenMessages: 0,
+    retryDelays: [1],
+    maxConsecutiveErrors: 10,
+    prepare: (item) => {
+      prepareCalls++;
+      return { caption: item.text, onSent: (id) => onSent.push(id) };
+    },
+  });
+  await queue.load();
+  queue.updateSocket(sock);
+  queue.enqueue(msg('r'));
+  await waitFor(() => sock.sent.length === 1 && queue.pendingCount === 0);
+  assert.equal(prepareCalls, 1);
+  assert.deepEqual(onSent, ['wa-1'], 'onSent solo se llama con el envío confirmado');
+  queue.enqueue(msg('s'));
+  await waitFor(() => sock.sent.length === 2);
+  assert.equal(prepareCalls, 2, 'cada mensaje se prepara una vez');
+  await queue.stop();
+});
+
+test('el orden es el de encolado aunque la media del primero tarde más en descargarse', async () => {
+  const dir = await tmp();
+  const sock = fakeSock();
+  const queue = new MessageQueue({ dir, delayBetweenMessages: 0 });
+  await queue.load();
+  queue.updateSocket(sock);
+
+  let releaseSlow!: (b: Buffer) => void;
+  const slow = new Promise<Buffer>((resolve) => { releaseSlow = resolve; });
+  let releaseName!: (n: string) => void;
+  const name = new Promise<string>((resolve) => { releaseName = resolve; });
+  const first = queue.enqueue(msg('lenta', { mediaType: 'photo', mediaBuffer: slow, senderName: name }));
+  queue.enqueue(msg('rapida', { mediaType: 'photo', mediaBuffer: Promise.resolve(Buffer.from('ya')) }));
+  queue.enqueue(msg('fallida', { mediaType: 'photo', mediaBuffer: Promise.reject(new Error('timeout de descarga')) }));
+  assert.equal(first.item.senderName, 'Desconocido');
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sock.sent.length, 0, 'nada sale antes que el primero');
+  releaseName('Ana');
+  releaseSlow(Buffer.from('tarde'));
+  await waitFor(() => sock.sent.length === 3);
+  assert.equal(sock.sent[0].content.caption, '*Ana:* texto lenta');
+  assert.equal((sock.sent[0].content.image as Buffer).toString(), 'tarde');
+  assert.equal((sock.sent[1].content.image as Buffer).toString(), 'ya');
+  assert.equal(sock.sent[2].content.text, '*Tipster:* texto fallida\n\n[media omitida]');
+  await queue.stop();
+});
+
+test('stop espera a que la media en curso llegue al disco y deja el JSON completo', async () => {
+  const dir = await tmp();
+  const queue = new MessageQueue({ dir, delayBetweenMessages: 0 });
+  await queue.load();
+  const big = Buffer.alloc(2 * 1024 * 1024, 1);
+  queue.enqueue(msg('grande', { mediaType: 'photo', mediaBuffer: big }));
+  await queue.stop();
+  const saved = JSON.parse(await readFile(join(dir, 'telegram-queue.json'), 'utf8')) as { queue: QueuedMessage[] };
+  assert.equal(saved.queue.length, 1);
+  assert.ok(saved.queue[0].mediaPath);
+  assert.equal((await readFile(saved.queue[0].mediaPath!)).length, big.length);
+});
+
+test('un id repetido no se encola dos veces y la pausa recuerda su motivo', async () => {
+  const dir = await tmp();
+  const queue = new MessageQueue({ dir, delayBetweenMessages: 0 });
+  await queue.load();
+  queue.enqueue(msg('dup'));
+  queue.enqueue(msg('dup'));
+  assert.equal(queue.pendingCount, 1);
+  assert.equal(queue.pausedBy, null);
+  queue.pause();
+  assert.equal(queue.pausedBy, 'manual');
+  queue.resume();
+  queue.pause(60_000, 'errors');
+  assert.equal(queue.pausedBy, 'errors');
+  await queue.stop();
+});

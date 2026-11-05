@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  TIPSTER_REGEX, extractTipsterName, extractTipsterNameLegacy, tipsterMetrics, formatRecord, findPickFromContext, describePendingPicks, renderFavoriteTipsters,
+  TIPSTER_REGEX, extractTipsterName, extractTipsterNameLegacy, tipsterMetrics, formatRecord, findPickFromContext, describePendingPicks, pendingIndex, renderFavoriteTipsters,
 } from '../src/lib/betting-parser.js';
-import { normalizeTipsterName, type BettingStore } from '../src/lib/betting-store.js';
+import { BettingStore, normalizeTipsterName, MAX_FAVORITE_TIPSTERS } from '../src/lib/betting-store.js';
 import type { BettingPick, TipsterStats, BettingSystem } from '../src/types/database.js';
 import { DEFAULT_TIPSTER_STATS, DEFAULT_BETTING_SYSTEM } from '../src/types/database.js';
 import { DEFAULT_USER_BETTING } from '../src/types/user.js';
@@ -105,4 +105,73 @@ test('renderFavoriteTipsters ordena por winrate y marca los desconocidos', () =>
   assert.match(text, /⏳ 1/);
   assert.match(text, /\/tipster avisos/);
   assert.match(text, /\(3\/20\)/);
+});
+
+test('findPickFromContext con cita que no es de ningún pick y sin más pista devuelve null', () => {
+  const single = [pick('1', 'Alpha', 'msg-1')];
+  assert.equal(findPickFromContext(fakeStore(single), 'g', 'otro-mensaje', ''), null);
+  // Con número o id explícito la cita equivocada no estorba.
+  assert.equal(findPickFromContext(fakeStore(single), 'g', 'otro-mensaje', '1'), single[0]);
+});
+
+test('describePendingPicks y pendingIndex usan la numeración de la lista completa', () => {
+  const all = [pick('aaaaaaaa', 'Alpha'), pick('bbbbbbbb', 'Beta'), pick('cccccccc', 'Beta')];
+  const onlyBeta = all.filter((p) => p.tipster === 'beta');
+  assert.equal(pendingIndex(all, onlyBeta[0]), 2);
+  const text = describePendingPicks(onlyBeta, '/', 'verde', all);
+  assert.match(text, /2\. \*Beta\*/);
+  assert.match(text, /3\. \*Beta\*/);
+  assert.doesNotMatch(text, /1\. /);
+});
+
+function fakeDatabase() {
+  const chats: Record<string, { bettingSystem?: BettingSystem }> = {};
+  const users: Record<string, { betting?: ReturnType<typeof structuredClone<typeof DEFAULT_USER_BETTING>> }> = {};
+  return {
+    data: { chats, users },
+    dirty: 0,
+    markDirty() { this.dirty++; },
+    getChatSettings(chatId: string) { return (chats[chatId] ??= {}); },
+    getUser(jid: string) { return (users[jid] ??= {}); },
+  };
+}
+
+function storeFor(enabled = true) {
+  const db = fakeDatabase();
+  const store = new BettingStore(db as never);
+  store.updateBettingSystem('g', { enabled });
+  return { db, store };
+}
+
+test('normalizeTipsterName rechaza claves reservadas del prototipo y el store no las indexa', () => {
+  for (const name of ['__proto__', 'constructor', 'prototype', '!!!', '']) {
+    assert.equal(normalizeTipsterName(name), '', name);
+  }
+  // En minúsculas ya no coincide con nada heredado, así que es una clave normal.
+  assert.equal(normalizeTipsterName('hasOwnProperty'), 'hasownproperty');
+  assert.equal(normalizeTipsterName('Tipster Uno'), 'tipster_uno');
+
+  const { store } = storeFor();
+  assert.equal(store.getTipster('g', 'constructor'), null);
+  assert.equal(store.getTipster('g', '__proto__'), null);
+  assert.throws(() => store.getOrCreateTipster('g', '__proto__'), /inválido/);
+  assert.throws(() => store.registerPick('g', {
+    tipster: '', tipsterOriginal: '__proto__', description: '', units: 1, status: 'pending', createdAt: 0, createdBy: 'u', followers: [],
+  }), /inválido/);
+  assert.equal(({} as { pending?: number }).pending, undefined, 'Object.prototype intacto');
+  assert.equal(store.followTipsterStatus('g', 'constructor', 'u@s.whatsapp.net'), 'invalid');
+  assert.equal(store.followTipsterStatus('g', '__proto__', 'u@s.whatsapp.net'), 'invalid');
+  assert.deepEqual(store.getPendingPicks('g', '__proto__'), []);
+});
+
+test('followTipsterStatus no crea el tipster cuando el usuario está al límite o el nombre no vale', () => {
+  const { store } = storeFor();
+  const user = 'u@s.whatsapp.net';
+  for (let i = 0; i < MAX_FAVORITE_TIPSTERS; i++) assert.equal(store.followTipsterStatus('g', `Tip${i}`, user), 'ok');
+  assert.equal(Object.keys(store.getBettingSystem('g').tipsters).length, MAX_FAVORITE_TIPSTERS);
+  assert.equal(store.followTipsterStatus('g', 'Basura', user), 'limit');
+  assert.equal(store.followTipsterStatus('g', 'x'.repeat(41), user), 'invalid');
+  assert.equal(Object.keys(store.getBettingSystem('g').tipsters).length, MAX_FAVORITE_TIPSTERS, 'no se crearon tipsters de más');
+  assert.equal(store.followTipsterStatus('g', 'Tip0', user), 'already');
+  assert.equal(store.followTipsterStatus('g', 'Tip0', 'otro@s.whatsapp.net'), 'ok');
 });

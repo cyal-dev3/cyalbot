@@ -7,6 +7,9 @@ const WIKI_API = 'https://es.wikipedia.org/w/api.php';
 const WIKI_SUMMARY = 'https://es.wikipedia.org/api/rest_v1/page/summary/';
 const TIMEOUT_MS = 10_000;
 const EXTRACT_MAX = 600;
+/** Solo se descargan miniaturas del CDN de Wikimedia, de tipo imagen y hasta este tamaño. */
+const THUMBNAIL_HOST = 'upload.wikimedia.org';
+const THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024;
 const USER_AGENT = 'cyalbot/3.1 (bot de WhatsApp; https://github.com/cyal-dev3/cyalbot)';
 
 export interface WikiSummary {
@@ -61,14 +64,50 @@ export async function getWikiSummary(query: string): Promise<WikiSummary | null>
   };
 }
 
-async function fetchThumbnail(url: string): Promise<Buffer | null> {
+/** true solo para https://upload.wikimedia.org/...: la API no debería devolver otra cosa, y si lo hace no se sigue. */
+export function isAllowedThumbnail(url: string): boolean {
   try {
-    const response = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (!response.ok) return null;
-    return Buffer.from(await response.arrayBuffer());
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && parsed.hostname === THUMBNAIL_HOST;
   } catch {
+    return false;
+  }
+}
+
+async function fetchThumbnail(url: string): Promise<Buffer | null> {
+  if (!isAllowedThumbnail(url)) {
+    log.warn('miniatura fuera de upload.wikimedia.org ignorada:', url.slice(0, 120));
     return null;
   }
+  try {
+    const response = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (!response.ok || !response.body) return null;
+    if (!(response.headers.get('content-type') ?? '').startsWith('image/')) return null;
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > THUMBNAIL_MAX_BYTES) return null;
+    return await readUpTo(response.body, THUMBNAIL_MAX_BYTES);
+  } catch (error) {
+    log.debug('miniatura no descargada:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+/** Lee el cuerpo hasta `limit` bytes; si lo supera, corta la descarga y devuelve null. */
+async function readUpTo(body: ReadableStream<Uint8Array>, limit: number): Promise<Buffer | null> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
 }
 
 export const wikiPlugin: PluginHandler = {

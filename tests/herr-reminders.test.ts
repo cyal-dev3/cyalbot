@@ -4,7 +4,7 @@ import { setLogLevel } from '../src/lib/logger.js';
 import {
   parseDuration, splitReminder, zonedParts, zonedTimestamp, monthDayKey,
   scheduleReminder, listReminders, cancelReminder, runRemindersTick, dailyBirthdayCheck,
-  startReminders, stopReminders, MAX_ACTIVE_REMINDERS, type ReminderDb,
+  startReminders, stopReminders, MAX_ACTIVE_REMINDERS, MAX_SEND_ATTEMPTS, MAX_LATE_MS, type ReminderDb,
 } from '../src/lib/reminders.js';
 import { DEFAULT_DATABASE } from '../src/types/database.js';
 
@@ -167,3 +167,55 @@ test('dailyBirthdayCheck felicita solo a miembros del grupo con aviso activado',
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
 }
+
+test('un recordatorio que no se puede enviar se descarta tras varios intentos en vez de reintentarse para siempre', async () => {
+  const db = fakeDb();
+  scheduleReminder({ chat: 'g@g.us', user: 'u', text: 'x', at: NOW - 1 }, db);
+  const broken = fakeConn(true);
+  for (let i = 1; i < MAX_SEND_ATTEMPTS; i++) {
+    assert.equal(await runRemindersTick(NOW + i, db, broken), 0);
+    assert.equal(listReminders('u', db).length, 1, `sigue activo tras ${i} intentos`);
+    assert.equal(db.data.reminders![0].attempts, i);
+  }
+  assert.equal(await runRemindersTick(NOW + MAX_SEND_ATTEMPTS, db, broken), 0);
+  assert.equal(listReminders('u', db).length, 0, 'descartado al agotar los intentos');
+  assert.ok(db.data.reminders![0].firedAt);
+
+  // Con más de un día de retraso se descarta al primer fallo.
+  const late = fakeDb();
+  scheduleReminder({ chat: 'g@g.us', user: 'u', text: 'tarde', at: NOW - MAX_LATE_MS - 1 }, late);
+  await runRemindersTick(NOW, late, broken);
+  assert.equal(listReminders('u', late).length, 0);
+});
+
+test('si el autor ya no está en el grupo el recordatorio le llega en privado', async () => {
+  const db = fakeDb();
+  scheduleReminder({ chat: 'g@g.us', user: 'fuera@s.whatsapp.net', text: 'uno', at: NOW - 1 }, db);
+  scheduleReminder({ chat: 'g@g.us', user: 'dentro@s.whatsapp.net', text: 'dos', at: NOW - 1 }, db);
+  scheduleReminder({ chat: 'lid@g.us', user: '111@lid', text: 'tres', at: NOW - 1 }, db);
+  let metadataCalls = 0;
+  const conn = {
+    ...fakeConn(),
+    async groupMetadata(jid: string) {
+      metadataCalls++;
+      return { participants: jid === 'g@g.us' ? [{ id: 'dentro@s.whatsapp.net' }] : [{ id: '111@lid', jid: '5211@s.whatsapp.net', lid: '111@lid' }] } as never;
+    },
+  };
+  assert.equal(await runRemindersTick(NOW, db, conn as never), 3);
+  assert.deepEqual(conn.sent.map((s) => s.jid), ['fuera@s.whatsapp.net', 'g@g.us', 'lid@g.us']);
+  assert.equal(metadataCalls, 2, 'la metadata de cada grupo se pide una vez por tick');
+});
+
+test('dailyBirthdayCheck reconoce al cumpleañero aunque el grupo use LID', async () => {
+  const db = fakeDb();
+  db.data.birthdays = { '5215555@s.whatsapp.net': '11-05' };
+  db.data.chats['g@g.us'] = { birthdayAnnounce: true } as never;
+  const conn = {
+    ...fakeConn(),
+    async groupMetadata() {
+      return { participants: [{ id: '999@lid', lid: '999@lid', jid: '5215555@s.whatsapp.net' }] } as never;
+    },
+  };
+  assert.equal(await dailyBirthdayCheck(conn as never, db, NOW), 1);
+  assert.deepEqual(conn.sent[0].mentions, ['5215555@s.whatsapp.net']);
+});

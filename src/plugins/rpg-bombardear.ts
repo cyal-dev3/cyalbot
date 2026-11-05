@@ -77,7 +77,7 @@ export const bombardearPlugin: PluginHandler = {
       await m.reply(`${EMOJI.error} Ese jugador no está registrado en el RPG.`);
       return;
     }
-    if (attacker.passiveMode && attacker.passiveModeUntil > now) {
+    if (isPassiveActive(attacker, now)) {
       await m.reply(
         `${EMOJI.error} Estás en *modo pasivo*.\n\n` +
         `🕊️ No puedes bombardear a nadie mientras estés protegido.\n` +
@@ -85,7 +85,7 @@ export const bombardearPlugin: PluginHandler = {
       );
       return;
     }
-    if (target.passiveMode && target.passiveModeUntil > now) {
+    if (isPassiveActive(target, now)) {
       await m.reply(`🕊️ *${target.name}* está en *modo pasivo*.\n\nNo puedes bombardear a jugadores protegidos.`);
       return;
     }

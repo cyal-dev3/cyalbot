@@ -7,11 +7,15 @@ import { PVP } from '../constants/rpg.js';
 import { calculateDamage, type TotalStats } from '../lib/rpg-utils.js';
 import { checkExpiredModes, pvpDamageMultiplier } from '../lib/global-modes.js';
 import { createLogger } from '../lib/logger.js';
+import { isPassiveActive } from '../lib/rpg-actions.js';
 import {
   applySkillEffect, busyMessage, clearBusy, consumeEvasion, createCombatState, effectiveAttack, effectiveDefense,
   getBusy, grantCombatRewards, handlePlayerDeath, playerStats, setBusy, tickEffects, type CombatantState
 } from '../lib/rpg-combat.js';
 import { addPetExp } from './rpg-mascotas.js';
+import {
+  activeDungeons, atacarDungeonPlugin, defenderDungeonPlugin, habilidadDungeonPlugin, huirDungeonPlugin
+} from './rpg-dungeon-interactivo.js';
 
 const log = createLogger('rpg');
 const PET_EXP_PER_DUEL = 25;
@@ -244,12 +248,14 @@ export function performDuelAction(duel: ActiveDuel, side: Side, action: DuelActi
     attacker.mana = Math.min(attacker.maxMana, attacker.mana + PVP.DUEL_REGEN.MANA_PER_ACTION);
   }
 
-  const effects = skill ? applySkillEffect(skill, attacker.state, defender.state) : { lines: [], dealsDamage: true };
   let line = skill ? `${skill.emoji} *${attacker.name}* → *${skill.name}*` : `${attacker.weaponId ? ITEMS[attacker.weaponId]?.emoji ?? '👊' : '👊'} *${attacker.name}* ataca`;
 
-  if (!effects.dealsDamage) {
-    line += ` (${effects.lines.join(', ')})`;
+  // Los efectos nuevos se aplican después de descontar la acción actual, para
+  // que un buff "por 3 acciones" cubra las 3 siguientes y no la de lanzarlo.
+  if (skill && !skill.effect.damageMultiplier) {
     tickEffects(attacker.state);
+    const effects = applySkillEffect(skill, attacker.state, defender.state);
+    line += ` (${effects.lines.join(', ')})`;
     duel.log.push(line);
     return { ok: true, line };
   }
@@ -263,6 +269,7 @@ export function performDuelAction(duel: ActiveDuel, side: Side, action: DuelActi
   if (consumeEvasion(defender.state)) {
     line += ` 💨 *${defender.name}* esquivó`;
     tickEffects(attacker.state);
+    if (skill) applySkillEffect(skill, attacker.state, defender.state);
     duel.log.push(line);
     return { ok: true, line };
   }
@@ -293,9 +300,12 @@ export function performDuelAction(duel: ActiveDuel, side: Side, action: DuelActi
   if (hit.isCrit) line += ' 💥CRIT';
   if (consecutive >= PVP.DUEL_COMBO.MIN_HITS) line += ` 🔥x${consecutive}`;
   line += ` → *${damage}*`;
-  if (effects.lines.length > 0) line += ` (${effects.lines.join(', ')})`;
 
   tickEffects(attacker.state);
+  if (skill) {
+    const effects = applySkillEffect(skill, attacker.state, defender.state);
+    if (effects.lines.length > 0) line += ` (${effects.lines.join(', ')})`;
+  }
   duel.log.push(line);
 
   if (defender.health <= 0) {
@@ -478,12 +488,20 @@ function duelHelp(usedPrefix: string): string {
 
 // ==================== PLUGINS GLOBALES ====================
 
-function canFight(user: UserRPG, jid: string, now: number, self: boolean): string | null {
+/** Motivo por el que `user` no puede entrar en un duelo ahora (retar o aceptar), o null */
+export function canFight(user: UserRPG, jid: string, now: number, self: boolean): string | null {
   const who = self ? 'Estás' : `*${user.name}* está`;
   if (!user.registered) return `${EMOJI.error} ${self ? 'No estás registrado' : 'Ese jugador no está registrado'} en el RPG.`;
   if (user.level < PVP.MIN_LEVEL_PVP) return `${EMOJI.error} ${self ? 'Necesitas' : `*${user.name}* necesita`} nivel *${PVP.MIN_LEVEL_PVP}* para los duelos.`;
-  if (user.passiveMode && user.passiveModeUntil > now) return `🕊️ ${who} en *modo pasivo* y no puede${self ? 's' : ''} pelear.`;
+  if (isPassiveActive(user, now)) return `🕊️ ${who} en *modo pasivo* y no puede${self ? 's' : ''} pelear.`;
   if (user.health < PVP.MIN_HEALTH_DUEL) return `${EMOJI.error} ${who} muy herido para un duelo (mín. ${PVP.MIN_HEALTH_DUEL} HP).`;
+  const sinceDuel = now - (user.lastDuel || 0);
+  if (sinceDuel < PVP.DUEL_COOLDOWN) {
+    const left = msToTime(PVP.DUEL_COOLDOWN - sinceDuel);
+    return self
+      ? `${EMOJI.time} Acabas de pelear. Espera *${left}* para otro duelo.`
+      : `${EMOJI.time} *${user.name}* acaba de pelear; podrá volver a duelar en *${left}*.`;
+  }
   const busy = getBusy(jid);
   if (busy) return `${EMOJI.error} ${busyMessage(busy, self ? 'Tú' : user.name)}`;
   return null;
@@ -524,11 +542,6 @@ export const dueloPlugin: PluginHandler = {
     const selfCheck = canFight(challenger, m.sender, now, true);
     if (selfCheck) {
       await m.reply(selfCheck);
-      return;
-    }
-    const lastDuel = challenger.lastDuel || 0;
-    if (now - lastDuel < PVP.DUEL_COOLDOWN) {
-      await m.reply(`${EMOJI.time} Acabas de pelear. Espera *${msToTime(PVP.DUEL_COOLDOWN - (now - lastDuel))}* para otro duelo.`);
       return;
     }
 
@@ -595,6 +608,16 @@ export const dueloPlugin: PluginHandler = {
   }
 };
 
+/** Reto pendiente dirigido al remitente en este chat, o null */
+function pendingFor(m: SerializedMessage, now: number = Date.now()): PendingDuel | null {
+  return [...pendingDuels.values()].find(p => p.targetJid === m.sender && p.groupJid === m.chat && now - p.timestamp < PVP.DUEL_TIMEOUT) ?? null;
+}
+
+/**
+ * aceptar/rechazar viven en `duelPendingContext`, así que solo despachan aquí
+ * cuando hay un reto para el remitente. Si además se registran globalmente
+ * (index.ts antiguo), callan sin reto para no pisar el /aceptar de otros juegos.
+ */
 export const aceptarPlugin: PluginHandler = {
   command: ['aceptar', 'accept'],
   tags: ['rpg'],
@@ -607,11 +630,8 @@ export const aceptarPlugin: PluginHandler = {
     const db = getDatabase();
     const now = Date.now();
 
-    const pending = [...pendingDuels.values()].find(p => p.targetJid === m.sender && p.groupJid === m.chat && now - p.timestamp < PVP.DUEL_TIMEOUT);
-    if (!pending) {
-      await m.reply(`${EMOJI.error} No tienes ningún desafío pendiente en este grupo.`);
-      return;
-    }
+    const pending = pendingFor(m, now);
+    if (!pending) return;
     if (activeDuels.has(m.chat)) {
       await m.reply(`${EMOJI.error} Ya hay un duelo en curso.`);
       return;
@@ -682,11 +702,8 @@ export const rechazarPlugin: PluginHandler = {
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
     const db = getDatabase();
-    const pending = [...pendingDuels.values()].find(p => p.targetJid === m.sender && p.groupJid === m.chat);
-    if (!pending) {
-      await m.reply(`${EMOJI.info} No tienes desafíos pendientes en este grupo.`);
-      return;
-    }
+    const pending = pendingFor(m);
+    if (!pending) return;
     cancelPending(pending.challengerJid);
     const user = db.getUser(m.sender);
     const challenger = db.getUser(pending.challengerJid);
@@ -704,8 +721,17 @@ function duelFor(m: SerializedMessage): { duel: ActiveDuel; side: Side } | null 
   return side ? { duel, side } : null;
 }
 
+/**
+ * Sin prefijo, "a ver qué pasa" o "d nada" no son acciones: las palabras de una
+ * letra solo cuentan cuando van solas. Con prefijo se acepta lo que sea.
+ */
+function isBareAction(ctx: MessageContext): boolean {
+  return Boolean(ctx.usedPrefix) || ctx.args.length === 0;
+}
+
 async function runAction(ctx: MessageContext, action: DuelAction): Promise<void> {
   const { m } = ctx;
+  if (action.kind !== 'skill' && !isBareAction(ctx)) return;
   const found = duelFor(m);
   if (!found) return;
   const { duel, side } = found;
@@ -759,15 +785,16 @@ function buildSkillRegex(): RegExp {
 
 const SKILL_REGEX = buildSkillRegex();
 
-const atacarDueloPlugin: PluginHandler = {
-  command: ['a', 'atacar', 'attack', 'golpe', 'golpear', 'hit', 'g'],
+// "golpe" no es alias de ataque: "golpe brutal" debe llegar al detector de habilidades
+const atacarPlugin: PluginHandler = {
+  command: ['a', 'atacar', 'attack', 'hit', 'g'],
   tags: ['rpg'],
-  help: ['a - Golpea con tu arma en el duelo (alias: g, golpe)'],
+  help: ['a - Golpea con tu arma en el duelo (alias: g)'],
   noPrefix: true,
   handler: (ctx) => runAction(ctx, { kind: 'attack' })
 };
 
-const bloquearDueloPlugin: PluginHandler = {
+const bloquearPlugin: PluginHandler = {
   command: ['d', 'defender', 'bloquear', 'block', 'b'],
   tags: ['rpg'],
   help: ['d - Bloquea el próximo golpe (alias: b, bloquear)'],
@@ -775,7 +802,7 @@ const bloquearDueloPlugin: PluginHandler = {
   handler: (ctx) => runAction(ctx, { kind: 'block' })
 };
 
-const poderDueloPlugin: PluginHandler = {
+const poderPlugin: PluginHandler = {
   command: ['h', 'habilidad', 'poder', 'skill', 'p'],
   tags: ['rpg'],
   help: ['h - Lista tus habilidades | h [nombre] - Úsala'],
@@ -819,13 +846,13 @@ const skillDetectorPlugin: PluginHandler = {
     const { m } = ctx;
     const found = duelFor(m);
     if (!found) return;
-    const skill = findSkill(m.text || '', found.duel.players[found.side].playerClass);
+    const skill = findSkill([ctx.command, ...ctx.args].join(' '), found.duel.players[found.side].playerClass);
     if (!skill) return;
     await runAction(ctx, { kind: 'skill', skill });
   }
 };
 
-const rendirsePlugin: PluginHandler = {
+const abandonarPlugin: PluginHandler = {
   command: ['rendirse', 'surrender', 'abandonar', 'huir', 'salir'],
   tags: ['rpg'],
   help: ['rendirse - Abandona el duelo (el rival gana)'],
@@ -833,6 +860,7 @@ const rendirsePlugin: PluginHandler = {
 
   handler: async (ctx: MessageContext) => {
     const { m } = ctx;
+    if (!isBareAction(ctx)) return;
     const found = duelFor(m);
     if (!found) return;
     const settled = settleDuel(getDatabase(), found.duel, opposite(found.side), 'surrender');
@@ -840,25 +868,41 @@ const rendirsePlugin: PluginHandler = {
   }
 };
 
-const estadoDueloPlugin: PluginHandler = {
+const estadoPlugin: PluginHandler = {
   command: ['estado', 'status', 'st'],
   tags: ['rpg'],
   help: ['estado - Ver el estado del duelo'],
   noPrefix: true,
 
   handler: async (ctx: MessageContext) => {
+    if (!isBareAction(ctx)) return;
     const found = duelFor(ctx.m);
     if (!found) return;
     await ctx.m.reply(formatDuelStatus(found.duel));
   }
 };
 
-/** Acciones del duelo: solo mientras hay duelo en el chat y el remitente participa */
+/**
+ * Acciones del duelo: solo mientras hay duelo en el chat y el remitente
+ * participa. El detector de habilidades va primero porque su regex está
+ * anclada al texto completo ("golpe brutal") y no roba "a" ni "g".
+ */
 export const duelContext: CommandContext = {
   name: 'duelo',
   isActive: (m: SerializedMessage) => duelFor(m) !== null,
-  plugins: [atacarDueloPlugin, bloquearDueloPlugin, poderDueloPlugin, rendirsePlugin, estadoDueloPlugin, skillDetectorPlugin],
+  plugins: [skillDetectorPlugin, atacarPlugin, bloquearPlugin, poderPlugin, abandonarPlugin, estadoPlugin],
   noPrefix: true
+};
+
+/**
+ * aceptar/rechazar solo mientras el remitente tiene un reto en este chat; así
+ * el /aceptar de dados, ppt o gato sigue libre cuando no hay duelo pendiente.
+ */
+export const duelPendingContext: CommandContext = {
+  name: 'duelo-reto',
+  isActive: (m: SerializedMessage) => pendingFor(m) !== null,
+  plugins: [aceptarPlugin, rechazarPlugin],
+  noPrefix: false
 };
 
 /** Cancela a la fuerza el duelo de un grupo devolviendo la apuesta (owner) */
@@ -868,11 +912,41 @@ export function cancelDuel(db: Database, groupJid: string): SettleResult | null 
   return settleDuel(db, duel, null, 'refund');
 }
 
+// ==================== REGISTRO GLOBAL ANTIGUO ====================
+
+function commandSource(command: PluginHandler['command']): string {
+  if (command instanceof RegExp) return command.source.replace(/^\^/, '').replace(/\$$/, '');
+  return command.map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+}
+
+/**
+ * Un solo plugin para el registro global sin contextos: si el remitente está en
+ * un dungeon la acción es del dungeon; si no, del duelo. Sin ninguno de los dos
+ * no responde (igual que antes).
+ */
+function legacyBridge(duel: PluginHandler, dungeon: PluginHandler): PluginHandler {
+  return {
+    command: new RegExp(`^(?:${commandSource(duel.command)}|${commandSource(dungeon.command)})$`, 'i'),
+    tags: ['rpg'],
+    help: duel.help,
+    handler: (ctx) => (activeDungeons.has(ctx.m.sender) ? dungeon.handler(ctx) : duel.handler(ctx))
+  };
+}
+
 /**
  * @deprecated Registro global antiguo (plugins/index.ts). Las acciones viven en
- * `duelContext`; fuera de un duelo no hacen nada. Quitar cuando index.ts use
+ * `duelContext` y `dungeonContext`; estos puentes despachan al dungeon o al
+ * duelo según el remitente, solo con prefijo. Quitar cuando index.ts use
  * registerCombatContexts.
  */
-export { atacarDueloPlugin, bloquearDueloPlugin, poderDueloPlugin, skillDetectorPlugin, rendirsePlugin };
+export const atacarDueloPlugin: PluginHandler = legacyBridge(atacarPlugin, atacarDungeonPlugin);
+/** @deprecated Ver atacarDueloPlugin. */
+export const bloquearDueloPlugin: PluginHandler = legacyBridge(bloquearPlugin, defenderDungeonPlugin);
+/** @deprecated Ver atacarDueloPlugin. */
+export const poderDueloPlugin: PluginHandler = legacyBridge(poderPlugin, habilidadDungeonPlugin);
+/** @deprecated Ver atacarDueloPlugin. */
+export const rendirsePlugin: PluginHandler = legacyBridge(abandonarPlugin, huirDungeonPlugin);
+/** @deprecated Ver atacarDueloPlugin. */
+export { skillDetectorPlugin };
 
 export default dueloPlugin;

@@ -137,7 +137,7 @@ const HANDLERS: Record<string, SpecialItemHandler> = {
 
   ticket_kick: async (input) => {
     const { ctx, db } = input;
-    const target = resolveGroupTarget(input, '/usar ticket kick @usuario');
+    const target = await resolveGroupTarget(input, '/usar ticket kick @usuario');
     if ('error' in target) return { ok: false, message: target.error };
 
     try {
@@ -155,17 +155,19 @@ const HANDLERS: Record<string, SpecialItemHandler> = {
   bomba_dinero: async (input) => {
     const { ctx, db, user, now } = input;
     if (!ctx.isGroup) return { ok: false, message: `${EMOJI.error} La bomba de dinero solo explota en grupos.` };
-    const participants = ctx.participants ?? [];
-    if (participants.length === 0) return { ok: false, message: `${EMOJI.error} No pude leer a los participantes del grupo.` };
+    const info = await groupInfo(ctx);
+    if (!info || info.participants.length === 0) return { ok: false, message: NO_METADATA };
 
     let total = 0;
     let protectedCount = 0;
     const victims: string[] = [];
-    for (const jid of participants) {
+    for (const jid of info.participants) {
       if (sameUser(jid, ctx.m.sender)) continue;
+      // getUser crearía un registro vacío por cada participante no registrado
+      if (!db.hasUser(jid)) continue;
       const victim = db.getUser(jid);
       if (!victim.registered) continue;
-      if ((victim.passiveMode && victim.passiveModeUntil > now) || victim.shieldRobo > now) {
+      if (isPassiveActive(victim, now) || victim.shieldRobo > now) {
         protectedCount++;
         continue;
       }

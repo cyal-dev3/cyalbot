@@ -64,11 +64,22 @@ export function issueTitle(prefix: string, text: string): string {
   return `${prefix} ${cut}`;
 }
 
+/**
+ * Texto de WhatsApp listo para el markdown del issue: "@usuario" no debe
+ * notificar a cuentas de GitHub (se intercala un espacio de ancho cero) y "|"
+ * ni los saltos de línea deben romper la tabla de metadatos.
+ */
+export function sanitizeForIssue(text: string, { singleLine = false } = {}): string {
+  let out = text.replace(/@(?=[\w-])/g, '@\u200b').replace(/\|/g, '\\|');
+  if (singleLine) out = out.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
 /** Nombre visible y últimos 4 dígitos: suficiente para reconocerse, sin exponer el número completo. */
 export function reporterLabel(pushName: string, sender: string): string {
   const digits = normalizeNumber(sender);
   const suffix = digits.length >= 4 ? `…${digits.slice(-4)}` : 'sin número';
-  return `${pushName.trim() || 'Usuario'} (${suffix})`;
+  return `${sanitizeForIssue(pushName, { singleLine: true }) || 'Usuario'} (${suffix})`;
 }
 
 export interface IssueCommand {
@@ -109,7 +120,7 @@ export function makeIssueCommand(spec: IssueCommand): PluginHandler {
       if (!user.ok) return m.reply(`Ya enviaste 3 reportes en la última hora. Vuelve a intentarlo en ${Math.ceil(user.retryInMs / 60_000)} min.`);
       const everyone = global.try(GLOBAL_KEY);
       if (!everyone.ok) {
-        perUser.reset(m.sender);
+        perUser.undo(m.sender);
         return m.reply('Hoy ya se enviaron demasiados reportes al equipo. Inténtalo mañana.');
       }
 
@@ -118,13 +129,15 @@ export function makeIssueCommand(spec: IssueCommand): PluginHandler {
       const where = m.isGroup ? 'grupo' : 'chat privado';
       const date = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City', dateStyle: 'short', timeStyle: 'short' });
       const body =
-        `## ${isBug ? 'Reporte de bug' : 'Solicitud de función'}\n\n${description}\n\n---\n\n` +
+        `## ${isBug ? 'Reporte de bug' : 'Solicitud de función'}\n\n${sanitizeForIssue(description)}\n\n---\n\n` +
         `| Campo | Valor |\n|---|---|\n| Reportado por | ${reporter} |\n| Desde | ${where} |\n| Fecha | ${date} |\n\n` +
         `_Creado automáticamente desde WhatsApp._`;
 
-      const result = await createGitHubIssue(issueTitle(spec.titlePrefix, description), body, spec.labels);
+      const result = await createGitHubIssue(issueTitle(spec.titlePrefix, sanitizeForIssue(description)), body, spec.labels);
       if (!result.ok) {
-        perUser.reset(m.sender);
+        // Solo se devuelve el hueco de este intento, al usuario y al cupo global: un GitHub caído no debe agotar el día.
+        perUser.undo(m.sender);
+        global.undo(GLOBAL_KEY);
         await m.react('❌');
         return m.reply(`❌ No pude crear ${what}: ${result.error}`);
       }

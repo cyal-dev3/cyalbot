@@ -14,6 +14,13 @@ export interface Language {
   names: string[];
 }
 
+/**
+ * Códigos que también son palabras españolas corrientes ("de nada", "la casa",
+ * "es tarde", "latín"): solo se aceptan por nombre, nunca como código, para no
+ * tomar la primera palabra de una frase como idioma destino.
+ */
+const AMBIGUOUS_CODES = new Set(['de', 'es', 'it', 'la']);
+
 export const LANGUAGES: Language[] = [
   { code: 'es', label: 'español', names: ['espanol', 'spanish', 'esp'] },
   { code: 'en', label: 'inglés', names: ['ingles', 'english', 'ing'] },
@@ -30,14 +37,22 @@ export const LANGUAGES: Language[] = [
   { code: 'tr', label: 'turco', names: ['turco', 'turkish'] },
   { code: 'nl', label: 'neerlandés', names: ['holandes', 'neerlandes', 'dutch'] },
   { code: 'pl', label: 'polaco', names: ['polaco', 'polish'] },
-  { code: 'ca', label: 'catalán', names: ['catalan'] },
+  { code: 'ca', label: 'catalán', names: ['catalan', 'catala'] },
   { code: 'la', label: 'latín', names: ['latin'] },
 ];
 
 export function findLanguage(input: string): Language | null {
   const key = normalizeText(input.trim());
   if (!key) return null;
-  return LANGUAGES.find((l) => l.code.toLowerCase() === key || l.code.toLowerCase().split('-')[0] === key || l.names.includes(key)) ?? null;
+  const byName = LANGUAGES.find((l) => l.names.includes(key) || normalizeText(l.label) === key);
+  if (byName) return byName;
+  if (AMBIGUOUS_CODES.has(key)) return null;
+  return LANGUAGES.find((l) => l.code.toLowerCase() === key || l.code.toLowerCase().split('-')[0] === key) ?? null;
+}
+
+/** Cómo escribir cada idioma en el comando: por código, o solo por nombre si el código es ambiguo. */
+export function languageHint(l: Language): string {
+  return AMBIGUOUS_CODES.has(l.code) ? `${l.label} (escríbelo así)` : `${l.label} (${l.code})`;
 }
 
 function labelFor(code: string): string {
@@ -84,11 +99,11 @@ export const translatePlugin: PluginHandler = {
     'translate [idioma] <texto> - Traduce (por defecto al español); también citando un mensaje',
     'translate idiomas - Lista los idiomas disponibles',
   ],
-  usage: ['translate en Hola mundo', 'translate japonés Buenos días', 'translate (citando un mensaje)'],
+  usage: ['translate en Hola mundo', 'translate japonés Buenos días', 'translate alemán Buenas noches', 'translate (citando un mensaje)'],
 
   handler: async ({ m, args, usedPrefix }) => {
     if (args.length === 1 && /^(idiomas|langs?|languages)$/i.test(args[0])) {
-      return m.reply(`🌐 *Idiomas*\n${LANGUAGES.map((l) => `• ${l.code} (${l.label})`).join('\n')}`);
+      return m.reply(`🌐 *Idiomas*\n${LANGUAGES.map((l) => `• ${languageHint(l)}`).join('\n')}`);
     }
 
     const quoted = m.quoted?.text?.trim() || '';

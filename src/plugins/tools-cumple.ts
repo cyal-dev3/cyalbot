@@ -1,5 +1,6 @@
 import type { PluginHandler } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
+import { findParticipant } from '../lib/participants.js';
 import { mentionTag, normalizeText } from '../lib/utils.js';
 import { zonedParts } from '../lib/reminders.js';
 
@@ -97,7 +98,7 @@ export const cumplesPlugin: PluginHandler = {
   usage: ['cumples', 'cumpleanios on'],
   group: true,
 
-  handler: async ({ m, command, args, participants = [], usedPrefix, isAdmin, isOwner, chatSettings }) => {
+  handler: async ({ m, command, args, groupMetadata, usedPrefix, isAdmin, isOwner, chatSettings, send }) => {
     const toggle = args[0]?.toLowerCase();
     if (command === 'cumpleanios' && (toggle === 'on' || toggle === 'off')) {
       if (!isAdmin && !isOwner) {
@@ -112,9 +113,9 @@ export const cumplesPlugin: PluginHandler = {
     }
 
     const all = birthdays();
-    const members = new Set(participants);
+    // Número o LID según el grupo: se compara con findParticipant, no por igualdad de cadenas.
     const upcoming = Object.entries(all)
-      .filter(([jid]) => members.has(jid))
+      .filter(([jid]) => findParticipant(groupMetadata, jid))
       .map(([jid, key]) => ({ jid, key, days: daysUntilBirthday(key) }))
       .sort((a, b) => a.days - b.days)
       .slice(0, 5);
@@ -128,6 +129,9 @@ export const cumplesPlugin: PluginHandler = {
       return `• ${mentionTag(u.jid)}: ${formatBirthday(u.key)} (${when})`;
     });
     const announce = chatSettings.birthdayAnnounce ? 'activadas' : `desactivadas (*${usedPrefix}cumpleanios on*)`;
-    await m.reply(`🎂 *Próximos cumpleaños*\n${lines.join('\n')}\n\n_Felicitaciones automáticas ${announce}_`);
+    await send(
+      { text: `🎂 *Próximos cumpleaños*\n${lines.join('\n')}\n\n_Felicitaciones automáticas ${announce}_`, mentions: upcoming.map((u) => u.jid) },
+      { quoted: m.rawMessage },
+    );
   },
 };

@@ -36,11 +36,8 @@ async function runQuickDungeon(ctx: MessageContext, user: UserRPG, dungeon: Dung
   }
 
   checkExpiredModes();
-  await m.react('🏰');
-
   const stats = playerStats(user);
   const luckBonus = getDropLuck(user, now);
-  db.updateUser(m.sender, { stamina: user.stamina - dungeon.staminaCost, lastDungeon: now });
 
   let health = Math.min(user.health, stats.maxHealth);
   let monstersKilled = 0;
@@ -50,7 +47,10 @@ async function runQuickDungeon(ctx: MessageContext, user: UserRPG, dungeon: Dung
   let reason: DungeonEndReason = 'victory';
   let diedToBoss = false;
 
+  // Todo lo que pueda fallar (el envío incluido) va dentro del try para no dejar al jugador "ocupado"
   try {
+    await m.react('🏰');
+    db.updateUser(m.sender, { stamina: user.stamina - dungeon.staminaCost, lastDungeon: now });
     for (const encounter of encounters) {
       const { monster, boss } = encounter;
       log.push(boss

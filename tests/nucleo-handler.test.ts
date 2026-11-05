@@ -447,3 +447,87 @@ test('si la metadata falla no se vuelve a pedir en cada mensaje', async () => {
     assert.equal(fake.metadataCalls, 2, 'invalidar fuerza una nueva consulta');
   }, { metadataFails: true });
 });
+
+test('con el bot apagado en el grupo solo pasan el owner y "botgrupo on"', async () => {
+  await withHandler(async (h, fake, db) => {
+    const ping = echo('ping');
+    const toggle = echo('botgrupo');
+    h.registerPlugin('ping', ping);
+    h.registerPlugin('toggle', toggle);
+    db.updateChatSettings(GROUP, { enabled: false } as never);
+    await h.handle([
+      message({ text: '/ping' }),
+      message({ text: '/botgrupo off' }),
+      message({ text: '/botgrupo' }),
+      message({ text: '/botgrupo activar' }),
+      message({ text: '/BotGrupo on' }),
+      message({ text: '/ping', sender: OWNER }),
+    ]);
+    assert.deepEqual(texts(fake), ['botgrupo:activar', 'botgrupo:on', 'ping:']);
+    assert.equal(ping.calls.length, 1);
+  });
+});
+
+test('antilink borra, advierte con mención y exime a admins y owner; "all" también bloquea URLs', async () => {
+  await withHandler(async (h, fake, db) => {
+    db.updateChatSettings(GROUP, { antiLink: true });
+    const invite = 'únete https://chat.whatsapp.com/ABCDEFGHIJKLMNOPQRS';
+    await h.handle([message({ text: invite }), message({ text: invite, sender: ADMIN }), message({ text: invite, sender: OWNER })]);
+    const deletes = fake.sent.filter((s) => s.content.delete);
+    assert.equal(deletes.length, 1, 'solo se borra el del usuario normal');
+    const warning = fake.sent.find((s) => String(s.content.text).includes('advertencia 1/3'));
+    assert.ok(warning, texts(fake).join(' | '));
+    assert.deepEqual(warning!.content.mentions, [USER]);
+    assert.equal(db.getChatSettings(GROUP).warnings?.filter((w) => w.odTo === USER).length, 1);
+
+    fake.sent.length = 0;
+    await h.handle([message({ text: 'mira https://ejemplo.com/x' })]);
+    assert.equal(fake.sent.filter((s) => s.content.delete).length, 0, 'en modo wa una URL normal pasa');
+    db.updateChatSettings(GROUP, { antiLinkMode: 'all' } as never);
+    await h.handle([message({ text: 'mira https://ejemplo.com/x' })]);
+    assert.equal(fake.sent.filter((s) => s.content.delete).length, 1);
+  }, { botAdmin: true });
+});
+
+test('un mute temporal vencido se retira solo y uno vigente sigue silenciando', async () => {
+  await withHandler(async (h, fake, db) => {
+    h.registerPlugin('ping', echo('ping'));
+    h.setAutoMute(GROUP, true);
+    h.muteUser(GROUP, USER);
+    h.muteUser(GROUP, USER);
+    assert.deepEqual(db.getChatSettings(GROUP).mutedUsers, [USER], 'no se duplica');
+
+    db.updateChatSettings(GROUP, { mutedUntil: { [USER]: Date.now() + 60_000 } } as never);
+    await h.handle([message({ text: '/ping' })]);
+    assert.deepEqual(texts(fake), [], 'vigente: se ignora');
+
+    db.updateChatSettings(GROUP, { mutedUntil: { [USER]: Date.now() - 1 } } as never);
+    await h.handle([message({ text: '/ping' })]);
+    assert.deepEqual(texts(fake), ['ping:'], 'vencido: vuelve a responder');
+    assert.deepEqual(db.getChatSettings(GROUP).mutedUsers, []);
+    assert.deepEqual((db.getChatSettings(GROUP) as { mutedUntil?: Record<string, number> }).mutedUntil, {});
+    assert.equal(h.isUserMuted(GROUP, USER), false);
+  }, { botAdmin: true });
+});
+
+test('removeTrackedMessages quita solo esos ids y deleteMessage hace que anti-delete olvide el mensaje', async () => {
+  const { rememberMessage, isRemembered } = await import('../src/lib/anti-delete.js');
+  await withHandler(async (h, fake) => {
+    h.registerPlugin('ping', echo('ping'));
+    h.registerPlugin('quiet', echo('quiet', { untracked: true }));
+    await h.handle([message({ text: '/ping' }), message({ text: '/quiet' })]);
+    const tracked = h.getTrackedMessages(GROUP);
+    // ping: comando + respuesta; quiet: solo la respuesta.
+    assert.equal(tracked.length, 3);
+    assert.equal(tracked.filter((t) => t.isCommand).length, 1);
+    h.removeTrackedMessages(GROUP, [tracked[0].key.id!, 'no-existe']);
+    assert.equal(h.getTrackedMessages(GROUP).length, 2);
+
+    const original = message({ text: 'borrable' });
+    rememberMessage(original);
+    assert.equal(isRemembered(GROUP, original.key.id!), true);
+    assert.equal(await h.deleteMessage(GROUP, original.key), true);
+    assert.equal(isRemembered(GROUP, original.key.id!), false);
+    assert.ok(fake.sent.some((s) => s.content.delete));
+  });
+});

@@ -38,7 +38,7 @@ export const bridgePlugin: PluginHandler = {
       return;
     }
     const telegram = s.reconnecting ? '🔄 reconectando' : s.telegramConnected ? '✅ conectado' : s.reconnectExhausted ? '❌ sin conexión (intentos agotados)' : '❌ desconectado';
-    const queue = s.queuePaused ? '⏸️ pausada' : '▶️ activa';
+    const queue = s.queuePaused ? `⏸️ pausada (${s.queuePausedBy === 'errors' ? 'por errores, se reanuda sola' : 'manualmente'})` : '▶️ activa';
     const oldest = s.queuePending > 0 ? ` (el más antiguo lleva ${msToTime(s.queueOldestAgeMs)})` : '';
     await m.reply(
       `*Puente Telegram*\n` +

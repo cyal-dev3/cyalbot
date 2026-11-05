@@ -73,6 +73,8 @@ export interface Reminder {
   createdAt: number;
   /** Momento en que se envió; los enviados se purgan a los 7 días */
   firedAt?: number;
+  /** Envíos fallidos; al llegar al máximo se descarta (se marca firedAt) */
+  attempts?: number;
 }
 
 /**

@@ -36,6 +36,9 @@ let telegramClient: TelegramClient | null = null;
 let healthCheck: NodeJS.Timeout | null = null;
 let reconnecting: Promise<boolean> | null = null;
 let reconnectExhausted = false;
+/** Pedido de cancelar la reconexión en vuelo (reinicio manual); despierta la espera entre intentos. */
+let cancelReconnect: (() => void) | null = null;
+let reconnectCancelled = false;
 let loaded = false;
 
 // ---------------------------------------------------------------------------
@@ -47,7 +50,11 @@ async function notifyOwner(text: string): Promise<void> {
   await currentSock.sendMessage(`${CONFIG.owners[0]}@s.whatsapp.net`, { text: `⚠️ ${text}` });
 }
 
-/** Detecta #Tipster, registra el pick si procede y arma la tarjeta y las menciones. */
+/**
+ * Detecta #Tipster y arma la tarjeta y las menciones. No tiene efectos: el pick
+ * se registra en onSent, una vez que WhatsApp confirmó el envío, así un
+ * reintento no lo duplica y un mensaje descartado no deja un pick huérfano.
+ */
 function prepareDelivery(item: QueuedMessage): Delivery {
   const header = `*${item.senderName}:* ${item.text}`.trim();
   const tipsterName = extractTipsterName(item.text);
@@ -56,26 +63,15 @@ function prepareDelivery(item: QueuedMessage): Delivery {
   const store = getDatabase().betting;
   const system = store.peekBettingSystem(item.whatsappGroupId);
   if (!system?.enabled) return { caption: header };
+  if (!store.normalizeTipsterName(tipsterName)) {
+    log.debug(`tipster ignorado por nombre inválido: ${tipsterName}`);
+    return { caption: header };
+  }
 
   const tipster = store.getTipster(item.whatsappGroupId, tipsterName);
   const mentions = (tipster?.followers ?? []).filter((jid) => store.getUserBetting(jid).notifyOnFavorite);
-
-  let pickId: string | undefined;
-  if (system.autoRegister && item.mediaPath) {
-    pickId = store.registerPick(item.whatsappGroupId, {
-      tipster: store.normalizeTipsterName(tipsterName),
-      tipsterOriginal: tipsterName,
-      description: item.text.substring(0, 500),
-      units: 1,
-      status: 'pending',
-      createdAt: Date.now(),
-      createdBy: TELEGRAM_BRIDGE_AUTHOR,
-      followers: [],
-    }).id;
-    log.info(`pick auto-registrado: ${tipsterName}`);
-  } else {
-    log.debug(`tipster detectado: ${tipsterName}`);
-  }
+  const autoRegister = system.autoRegister && Boolean(item.mediaPath);
+  log.debug(`tipster detectado: ${tipsterName}${autoRegister ? ' (se registrará al enviar)' : ''}`);
 
   const card = `\n\n${buildTipsterStatCard(tipsterName, tipster)}`;
   const followers = mentions.length > 0 ? `\n\n🔔 Seguidores: ${mentions.map(mentionTag).join(' ')}` : '';
@@ -83,9 +79,20 @@ function prepareDelivery(item: QueuedMessage): Delivery {
     caption: header + card + followers,
     mentions,
     onSent: (messageId) => {
-      if (!pickId || !messageId) return;
-      store.setPickMessageId(item.whatsappGroupId, pickId, messageId);
-      store.rememberReply(item.whatsappGroupId, messageId, pickId);
+      if (!autoRegister) return;
+      const pick = store.registerPick(item.whatsappGroupId, {
+        tipster: store.normalizeTipsterName(tipsterName),
+        tipsterOriginal: tipsterName,
+        description: item.text.substring(0, 500),
+        units: 1,
+        status: 'pending',
+        createdAt: Date.now(),
+        createdBy: TELEGRAM_BRIDGE_AUTHOR,
+        followers: [],
+        messageId,
+      });
+      if (messageId) store.rememberReply(item.whatsappGroupId, messageId, pick.id);
+      log.info(`pick auto-registrado: ${tipsterName}`);
     },
   };
 }
@@ -163,43 +170,44 @@ async function handleTelegramMessage(event: NewMessageEvent, client: TelegramCli
   if (!config.telegramGroupIds.some((id) => id === chatId || normalizeChatId(id) === normalized)) return;
 
   const text = message.text || message.message || '';
-  const hasMedia = Boolean(message.photo || message.video);
   const mediaType = message.photo ? 'photo' : message.video ? 'video' : undefined;
-  let mediaBuffer: Buffer | undefined;
-  let mediaOmitted = false;
+  if (!text && !mediaType) return;
 
-  if (hasMedia) {
+  let mediaBuffer: Promise<Buffer | undefined> | undefined;
+  let mediaOmitted = false;
+  if (mediaType) {
     const size = mediaSize(message);
     if (size > MAX_BRIDGE_MEDIA_BYTES) {
       log.warn(`media de ${Math.round(size / 1024 / 1024)} MB omitida (> 5 MB)`);
       mediaOmitted = true;
     } else {
-      try {
-        const downloaded = await client.downloadMedia(message, {});
-        if (Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= MAX_BRIDGE_MEDIA_BYTES) {
-          mediaBuffer = downloaded;
-        } else {
-          mediaOmitted = true;
-        }
-      } catch (error) {
-        log.warn('no se pudo descargar la media, se reenvía solo el texto:', error instanceof Error ? error.message : error);
-        mediaOmitted = true;
-      }
+      mediaBuffer = downloadMedia(client, message);
     }
   }
-  if (!text && !mediaBuffer) {
-    if (!mediaOmitted) return;
-  }
 
+  // Se encola sin esperar nada: así el orden es el de llegada aunque una foto
+  // tarde segundos en bajar; la cola espera la descarga y el nombre antes de enviar.
   messageQueue.enqueue({
     id: `${chatId}-${message.id}`,
-    senderName: await senderName(event),
+    senderName: senderName(event),
     text,
     whatsappGroupId: config.whatsappGroupId,
     mediaType,
     mediaBuffer,
     mediaOmitted,
   });
+}
+
+/** Descarga la media; resuelve undefined (media omitida) si falla o excede el tamaño. */
+async function downloadMedia(client: TelegramClient, message: Api.Message): Promise<Buffer | undefined> {
+  try {
+    const downloaded = await client.downloadMedia(message, {});
+    if (Buffer.isBuffer(downloaded) && downloaded.length > 0 && downloaded.length <= MAX_BRIDGE_MEDIA_BYTES) return downloaded;
+    log.warn('media descargada vacía o demasiado grande, se reenvía solo el texto');
+  } catch (error) {
+    log.warn('no se pudo descargar la media, se reenvía solo el texto:', error instanceof Error ? error.message : error);
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,18 +257,25 @@ async function connectTelegramClient(config: TelegramBridgeConfig): Promise<bool
 export function attemptTelegramReconnect(config: TelegramBridgeConfig): Promise<boolean> {
   if (reconnecting) return reconnecting;
   if (reconnectExhausted) return Promise.resolve(false);
+  reconnectCancelled = false;
   reconnecting = (async () => {
     for (let attempt = 1; attempt <= MAX_RECONNECT_ATTEMPTS; attempt++) {
       const delay = RECONNECT_DELAYS[Math.min(attempt - 1, RECONNECT_DELAYS.length - 1)];
       log.warn(`reconectando Telegram (intento ${attempt}/${MAX_RECONNECT_ATTEMPTS}) en ${Math.round(delay / 1000)}s`);
-      await new Promise((resolve) => setTimeout(resolve, delay).unref());
+      await reconnectDelay(delay);
+      if (reconnectCancelled) {
+        log.info('reconexión de Telegram cancelada por un reinicio manual');
+        return false;
+      }
       if (await connectTelegramClient(config)) {
+        // La cola no se toca: si estaba pausada fue por WhatsApp (index.ts la reanuda) o por el owner.
         log.info('Telegram reconectado');
-        if (messageQueue.isPaused) messageQueue.resume();
         return true;
       }
     }
     reconnectExhausted = true;
+    if (healthCheck) clearInterval(healthCheck);
+    healthCheck = null;
     log.error('máximo de intentos de reconexión de Telegram alcanzado; usa /bridge restart');
     await notifyOwner('Puente Telegram: no pude reconectar tras varios intentos. Usa /bridge restart.').catch(() => undefined);
     return false;
@@ -270,10 +285,35 @@ export function attemptTelegramReconnect(config: TelegramBridgeConfig): Promise<
   return reconnecting;
 }
 
+/** Espera entre intentos que un reinicio manual puede interrumpir. */
+function reconnectDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    timer.unref();
+    cancelReconnect = () => {
+      clearTimeout(timer);
+      done();
+    };
+    function done(): void {
+      cancelReconnect = null;
+      resolve();
+    }
+  });
+}
+
+/** Si hay una reconexión en vuelo la cancela y espera a que termine, para que no quede un cliente huérfano escuchando. */
+async function settleReconnect(): Promise<void> {
+  const inFlight = reconnecting;
+  if (!inFlight) return;
+  reconnectCancelled = true;
+  cancelReconnect?.();
+  await inFlight;
+}
+
 function startHealthCheck(config: TelegramBridgeConfig): void {
   if (healthCheck) clearInterval(healthCheck);
   healthCheck = setInterval(async () => {
-    if (reconnecting) return;
+    if (reconnecting || reconnectExhausted) return;
     try {
       if (!telegramClient || !telegramClient.connected) {
         log.warn('Telegram desconectado');
@@ -314,6 +354,7 @@ export async function startTelegramBridge(sock: WASocket): Promise<TelegramClien
 export async function stopTelegramBridge(): Promise<void> {
   if (healthCheck) clearInterval(healthCheck);
   healthCheck = null;
+  await settleReconnect();
   await disconnectClient();
   await messageQueue.stop();
   log.info('puente Telegram detenido');
@@ -323,6 +364,7 @@ export async function restartTelegramBridge(sock: WASocket): Promise<TelegramCli
   log.info('reiniciando el puente Telegram');
   if (healthCheck) clearInterval(healthCheck);
   healthCheck = null;
+  await settleReconnect();
   await disconnectClient();
   reconnectExhausted = false;
   messageQueue.resume();
@@ -367,6 +409,7 @@ export interface BridgeStatus {
   reconnectExhausted: boolean;
   queuePending: number;
   queuePaused: boolean;
+  queuePausedBy: 'manual' | 'errors' | null;
   queueOldestAgeMs: number;
   whatsappGroupId: string | null;
   telegramGroups: number;
@@ -381,6 +424,7 @@ export function getBridgeStatus(): BridgeStatus {
     reconnectExhausted,
     queuePending: messageQueue.pendingCount,
     queuePaused: messageQueue.isPaused,
+    queuePausedBy: messageQueue.pausedBy,
     queueOldestAgeMs: messageQueue.oldestAgeMs,
     whatsappGroupId: config?.whatsappGroupId ?? null,
     telegramGroups: config?.telegramGroupIds.length ?? 0,

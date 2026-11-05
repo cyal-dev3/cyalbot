@@ -4,10 +4,11 @@
  * envía los vencidos y purga los enviados hace más de 7 días.
  */
 
-import type { WASocket } from 'baileys';
+import type { GroupMetadata, WASocket } from 'baileys';
 import type { DatabaseSchema, Reminder } from '../types/database.js';
 import { getDatabase } from './database.js';
 import { createLogger } from './logger.js';
+import { findParticipant } from './participants.js';
 import { mentionTag } from './utils.js';
 
 const log = createLogger('tools');
@@ -21,6 +22,9 @@ export const MAX_REMINDER_MS = 366 * 24 * 60 * 60_000;
 const TICK_MS = 30_000;
 const FIRED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const BIRTHDAY_HOUR = 9;
+/** Tras estos fallos de envío (o este retraso) el recordatorio se da por perdido y deja de reintentarse. */
+export const MAX_SEND_ATTEMPTS = 5;
+export const MAX_LATE_MS = 24 * 60 * 60_000;
 
 /** Lo mínimo que necesita este módulo de la base de datos; permite probarlo sin disco. */
 export interface ReminderDb {
@@ -243,7 +247,32 @@ export function setRemindersConnection(conn: Sender | null): void {
   connection = conn;
 }
 
-/** Envía los recordatorios vencidos y purga los antiguos. Devuelve cuántos envió. */
+/**
+ * Dónde se entrega un recordatorio creado en un grupo: en el grupo si el autor
+ * sigue dentro; en privado si ya no está (así nadie deja textos programados en
+ * un grupo del que lo echaron). Sin metadata se asume que sigue.
+ */
+async function deliveryChat(reminder: Reminder, conn: Sender, cache: Map<string, GroupMetadata | null>): Promise<string> {
+  if (!reminder.chat.endsWith('@g.us') || !conn.groupMetadata) return reminder.chat;
+  let metadata = cache.get(reminder.chat);
+  if (metadata === undefined) {
+    try {
+      metadata = await conn.groupMetadata(reminder.chat);
+    } catch (error) {
+      log.debug(`recordatorios: sin metadata de ${reminder.chat}:`, error instanceof Error ? error.message : error);
+      metadata = null;
+    }
+    cache.set(reminder.chat, metadata);
+  }
+  if (!metadata || findParticipant(metadata, reminder.user)) return reminder.chat;
+  return reminder.user;
+}
+
+/**
+ * Envía los recordatorios vencidos y purga los antiguos. Devuelve cuántos envió.
+ * Un recordatorio que falla MAX_SEND_ATTEMPTS veces o lleva más de un día de
+ * retraso se marca como disparado para no reintentarlo cada 30 s para siempre.
+ */
 export async function runRemindersTick(now = Date.now(), db: ReminderDb = getDatabase(), conn: Sender | null = connection): Promise<number> {
   const reminders = all(db);
   const before = reminders.length;
@@ -255,10 +284,12 @@ export async function runRemindersTick(now = Date.now(), db: ReminderDb = getDat
 
   if (!conn) return 0;
   let sent = 0;
+  const metadataCache = new Map<string, GroupMetadata | null>();
   for (const reminder of kept) {
     if (reminder.firedAt || reminder.at > now) continue;
     try {
-      await conn.sendMessage(reminder.chat, {
+      const chat = await deliveryChat(reminder, conn, metadataCache);
+      await conn.sendMessage(chat, {
         text: `⏰ ${mentionTag(reminder.user)}: ${reminder.text}`,
         mentions: [reminder.user],
       });
@@ -266,7 +297,15 @@ export async function runRemindersTick(now = Date.now(), db: ReminderDb = getDat
       db.markDirty();
       sent++;
     } catch (error) {
-      log.warn(`no se pudo enviar el recordatorio ${reminder.id}:`, error instanceof Error ? error.message : error);
+      reminder.attempts = (reminder.attempts ?? 0) + 1;
+      const giveUp = reminder.attempts >= MAX_SEND_ATTEMPTS || now - reminder.at > MAX_LATE_MS;
+      if (giveUp) {
+        reminder.firedAt = now;
+        log.warn(`recordatorio ${reminder.id} descartado tras ${reminder.attempts} intentos:`, error instanceof Error ? error.message : error);
+      } else {
+        log.warn(`no se pudo enviar el recordatorio ${reminder.id} (intento ${reminder.attempts}):`, error instanceof Error ? error.message : error);
+      }
+      db.markDirty();
     }
   }
   return sent;
@@ -285,16 +324,17 @@ export async function dailyBirthdayCheck(conn: Sender, db: ReminderDb = getDatab
   let announced = 0;
   for (const [chat, settings] of Object.entries(db.data.chats)) {
     if (!settings?.birthdayAnnounce || !chat.endsWith('@g.us')) continue;
-    let members: string[] | null = null;
+    let metadata: GroupMetadata | null = null;
     if (conn.groupMetadata) {
       try {
-        members = (await conn.groupMetadata(chat)).participants.map((p) => p.id);
+        metadata = await conn.groupMetadata(chat);
       } catch (error) {
         log.warn(`cumpleaños: sin metadata de ${chat}:`, error instanceof Error ? error.message : error);
         continue;
       }
     }
-    const inGroup = members ? celebrating.filter((jid) => members.includes(jid)) : celebrating;
+    // findParticipant compara número y LID: el cumpleaños se guardó con el id que traía el mensaje.
+    const inGroup = metadata ? celebrating.filter((jid) => findParticipant(metadata, jid)) : celebrating;
     if (inGroup.length === 0) continue;
     const tags = inGroup.map(mentionTag).join(', ');
     try {

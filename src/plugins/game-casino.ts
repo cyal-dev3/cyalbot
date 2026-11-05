@@ -3,7 +3,7 @@ import type { MessageHandler } from '../handler.js';
 import { getDatabase } from '../lib/database.js';
 import { normalizeText } from '../lib/utils.js';
 import { houseEdge, formatCoins } from '../lib/games/bets.js';
-import { getCasino } from '../lib/games/state.js';
+import { getCasino, CASINO_LIMITS } from '../lib/games/state.js';
 import { enter, rulesText, type GameInfo } from '../lib/games/common.js';
 import { SLOT_INFO, registerSlot } from './game-slot.js';
 import { BLACKJACK_INFO, registerBlackjack } from './game-blackjack.js';
@@ -50,7 +50,7 @@ export const casinoPlugin: PluginHandler = {
     const minis = GAMES.filter((g) => !g.casino).map((g) => `${g.emoji} *${g.name}* → ${prefix}${g.play}`);
     const jackpot = getCasino(getDatabase()).jackpot;
     await ctx.m.reply(
-      `🎰 *Casino*\n${casino.join('\n')}\n\n🎲 *Minijuegos*\n${minis.join('\n')}\n\n`
+      `🎰 *Casino*\n${casino.join('\n')}\n\n🎲 *Minijuegos* (premios hasta ${CASINO_LIMITS.dailyPrizeCap.toLocaleString('es-MX')} 💰 por persona y día)\n${minis.join('\n')}\n\n`
       + `Reglas: *${prefix}casino <juego>* · Mesa activa: *${prefix}mesa*`
       + (jackpot > 0 ? `\n🏺 Jackpot del slot: ${formatCoins(jackpot)}` : ''),
     );

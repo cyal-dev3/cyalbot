@@ -17,7 +17,8 @@ export function parseDice(input: string): { count: number; sides: number } | nul
 }
 
 export const dadoPlugin: PluginHandler = {
-  command: ['dado', 'dados', 'roll', 'tirar'],
+  // Sin 'dados': ese alias es del juego de casino (game-dados.ts).
+  command: ['dado', 'roll', 'tirar'],
   description: 'Tira uno o varios dados',
   category: 'herramientas',
   help: [`dado [NdM] - Tira N dados de M caras (por defecto 1d6; máximo ${MAX_DICE}d${MAX_SIDES})`],
