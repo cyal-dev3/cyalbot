@@ -6,7 +6,7 @@ import { ITEMS, CLASSES, FORGE_MATERIALS, type PlayerClass } from '../types/rpg.
 import { COOLDOWNS, PVP } from '../constants/rpg.js';
 import { calculateTotalStats } from '../lib/rpg-utils.js';
 import { grantExp, loseExp, setLevel } from '../lib/levelling.js';
-import { globalModes, checkExpiredModes, getActiveModes, type GlobalModeKey } from '../lib/global-modes.js';
+import { globalModes, getActiveModes, type GlobalModeKey } from '../lib/global-modes.js';
 import { addItem, addMaterial, countItem, removeItem } from '../lib/rpg-inventory.js';
 import { clearBusy, getBusy, listBusy } from '../lib/rpg-combat.js';
 import {

@@ -118,7 +118,7 @@ export function sideOf(duel: ActiveDuel, jid: string): Side | null {
   return null;
 }
 
-export function createDuelPlayer(jid: string, user: UserRPG, now: number = Date.now()): DuelPlayer {
+export function createDuelPlayer(jid: string, user: UserRPG): DuelPlayer {
   const stats = playerStats(user);
   const realHealth = Math.min(user.health, stats.maxHealth);
   return {
@@ -153,8 +153,8 @@ export function createDuel(
 ): ActiveDuel {
   return {
     players: {
-      challenger: createDuelPlayer(challenger.jid, challenger.user, now),
-      target: createDuelPlayer(target.jid, target.user, now)
+      challenger: createDuelPlayer(challenger.jid, challenger.user),
+      target: createDuelPlayer(target.jid, target.user)
     },
     groupJid,
     bet,
