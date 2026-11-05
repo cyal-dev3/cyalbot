@@ -3,6 +3,7 @@ import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, msToTime, randomInt, pickRandom, getTargetUser } from '../lib/utils.js';
 import { COOLDOWNS, PVP } from '../constants/rpg.js';
 import { calculateTotalStats } from '../lib/rpg-utils.js';
+import { isPassiveActive } from '../lib/rpg-actions.js';
 import { busyMessage, getBusy, grantCombatRewards, handlePlayerDeath } from '../lib/rpg-combat.js';
 
 const SUCCESS_MESSAGES = [

@@ -8,7 +8,7 @@ import { Database } from '../src/lib/database.js';
 import { PVP } from '../src/constants/rpg.js';
 import { SKILLS } from '../src/types/rpg.js';
 import { clearBusy, getBusy, setBusy } from '../src/lib/rpg-combat.js';
-import { createDuel, performDuelAction, resolveTimeout, settleDuel, findSkill, activeDuels } from '../src/plugins/rpg-duelo.js';
+import { createDuel, performDuelAction, resolveTimeout, settleDuel, findSkill, activeDuels, canFight } from '../src/plugins/rpg-duelo.js';
 
 setLogLevel('error');
 
@@ -222,5 +222,54 @@ test('timeout: sin acciones se devuelve la apuesta; con la misma vida es empate 
     result = await withRandom(0.5, () => settleDuel(db, duel, 'challenger', 'timeout', now));
     assert.equal(db.getUser(A).money, 3500);
     assert.equal(db.getUser(B).money, 2500);
+  });
+});
+
+test('canFight aplica el cooldown de duelo tanto al retador como al retado', async () => {
+  await withDb(async (db) => {
+    const now = 1_000_000_000;
+    seed(db, A, { lastDuel: 0 });
+    seed(db, B, { lastDuel: now - 1000 });
+    assert.equal(canFight(db.getUser(A), A, now, true), null);
+    const rival = canFight(db.getUser(B), B, now, false);
+    assert.ok(rival && rival.includes('acaba de pelear'), 'el retado con lastDuel reciente no puede aceptar');
+    const self = canFight(db.getUser(B), B, now, true);
+    assert.ok(self && self.includes('Espera'));
+    assert.equal(canFight(db.getUser(B), B, now + PVP.DUEL_COOLDOWN, false), null);
+
+    seed(db, A, { passiveMode: true, passiveModeUntil: Number.MAX_SAFE_INTEGER });
+    assert.match(canFight(db.getUser(A), A, now, true) ?? '', /pasivo/);
+  });
+});
+
+test('un buff "por 3 acciones" cubre los 3 golpes siguientes, no el de lanzarlo', async () => {
+  await withDb(async (db) => {
+    seed(db, A, { playerClass: 'guerrero', mana: 100, maxMana: 100 });
+    seed(db, B, { health: 100_000, maxHealth: 100_000 });
+    let now = 50_000;
+    const duel = createDuel({ jid: A, user: db.getUser(A) }, { jid: B, user: db.getUser(B) }, GROUP, 0, now);
+    const challenger = duel.players.challenger;
+
+    await withRandom(0.5, () => {
+      const grito = performDuelAction(duel, 'challenger', { kind: 'skill', skill: SKILLS.grito_guerra }, now);
+      assert.equal(grito.ok, true);
+      const buff = challenger.state.effects.find(e => e.type === 'attackUp');
+      assert.equal(buff?.remaining, SKILLS.grito_guerra.effect.buff?.duration);
+
+      const duration = SKILLS.grito_guerra.effect.buff?.duration ?? 0;
+      const damages: number[] = [];
+      for (let i = 0; i < duration + 1; i++) {
+        now += PVP.DUEL_ACTION_COOLDOWN;
+        const before = duel.players.target.health;
+        const hit = performDuelAction(duel, 'challenger', { kind: 'attack' }, now);
+        assert.equal(hit.ok, true);
+        damages.push(before - duel.players.target.health);
+        // el combo sube con los golpes seguidos; se rompe a mano para comparar solo el buff
+        duel.consecutiveHits = 0;
+        duel.lastAttacker = null;
+      }
+      for (let i = 0; i < duration; i++) assert.ok(damages[i] > damages[duration], `golpe ${i + 1} con +30% (${damages[i]} vs ${damages[duration]})`);
+      assert.equal(challenger.state.effects.length, 0);
+    });
   });
 });

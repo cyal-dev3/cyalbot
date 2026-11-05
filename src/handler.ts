@@ -271,7 +271,8 @@ export class MessageHandler {
       this.patternPlugins.push(entry);
       return;
     }
-    for (const alias of aliases) {
+    // Un alias repetido dentro del propio plugin no es una colisión.
+    for (const alias of new Set(aliases)) {
       const taken = this.aliasIndex.get(alias);
       if (taken) {
         log.warn(`alias "${alias}" de ${name} ya lo usa ${taken.name}; gana ${taken.name}`);

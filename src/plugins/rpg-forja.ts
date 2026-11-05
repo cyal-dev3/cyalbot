@@ -3,11 +3,11 @@ import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, pickRandom, randomInt } from '../lib/utils.js';
 import { ITEMS, FORGE_MATERIALS, type Item, type ItemRarity } from '../types/rpg.js';
 import type { InventoryItem, UserRPG } from '../types/user.js';
-import { FORGE, SHOP, SLOT_ALIASES, type EquipmentSlot } from '../constants/rpg.js';
+import { FORGE, LIMITS, SHOP, SLOT_ALIASES, type EquipmentSlot } from '../constants/rpg.js';
 import {
-  addItem, addMaterial, consumeMaterials, findEquippedEntry, formatAmbiguous, getMaterialCount, inventoryItems,
-  isEquipable, isEquipped, listMaterials, migrateLegacyMaterials, missingMaterials, removeMaterial, resolveItem,
-  type MaterialRequirement
+  addItem, addMaterial, consumeMaterials, findEquippedEntry, formatAmbiguous, freeInventorySpace, getMaterialCount,
+  inventoryItems, isEquipable, isEquipped, listMaterials, migrateLegacyMaterials, missingMaterials, removeMaterial,
+  resolveItem, type MaterialRequirement
 } from '../lib/rpg-inventory.js';
 import { activeBuffs } from '../lib/rpg-combat.js';
 import { updateQuestProgress } from './rpg-misiones.js';
@@ -260,14 +260,19 @@ interface PendingEnhance {
 
 const pendingConfirm = new Map<string, PendingEnhance>();
 
+/**
+ * Confirmación pendiente del jugador en este chat. Un mensaje suyo en otro chat
+ * no la toca (el handler evalúa isActive de todos los contextos con cada
+ * mensaje); solo caduca por tiempo.
+ */
 function getPending(jid: string, chat: string, now: number = Date.now()): PendingEnhance | null {
   const pending = pendingConfirm.get(jid);
   if (!pending) return null;
-  if (pending.expiresAt <= now || pending.chat !== chat) {
+  if (pending.expiresAt <= now) {
     pendingConfirm.delete(jid);
     return null;
   }
-  return pending;
+  return pending.chat === chat ? pending : null;
 }
 
 /** Bonus de la Poción del Herrero (puntos porcentuales) */
@@ -332,6 +337,9 @@ export const forjaMenuPlugin: PluginHandler = {
       case 'materiales': case 'materials': case 'mats': return handleMateriales(ctx, user);
       case 'fundir': case 'smelt': case 'melt': return handleFundir(ctx, user, rest);
       case 'vender': case 'sell': return handleVender(ctx, user, rest);
+      // Con prefijo, para cuando el contexto de confirmación no está registrado
+      case 'confirmar': case 'si': case 'sí': return confirmPending(ctx);
+      case 'cancelar': case 'no': return cancelPendingEnhance(ctx);
     }
 
     const totalMaterials = listMaterials(user).reduce((sum, entry) => sum + entry.quantity, 0);
@@ -427,6 +435,10 @@ async function handleCraftear(ctx: MessageContext, user: UserRPG, args: string[]
     await m.reply(`${EMOJI.error} Esa receta apunta a un item que no existe (${recipe.resultItemId}).`);
     return;
   }
+  if (freeInventorySpace(user) < 1) {
+    await m.reply(`${EMOJI.error} Tu inventario está lleno (${LIMITS.MAX_INVENTORY_SIZE}). Vende o funde algo antes de forjar.`);
+    return;
+  }
 
   await m.react('⚒️');
 
@@ -443,7 +455,7 @@ async function handleCraftear(ctx: MessageContext, user: UserRPG, args: string[]
   updateQuestProgress(db, m.sender, 'spend', recipe.goldCost);
 
   if (success) {
-    const added = addItem(user, recipe.resultItemId, 1);
+    addItem(user, recipe.resultItemId, 1);
     db.updateUser(m.sender, { money: user.money, forgeMaterials: user.forgeMaterials, inventory: user.inventory });
 
     let response = `⚒️ *¡FORJA EXITOSA!* ⚒️\n\n🎉 Has creado:\n${resultItem.emoji} *${resultItem.name}*\n\n`;
@@ -457,7 +469,7 @@ async function handleCraftear(ctx: MessageContext, user: UserRPG, args: string[]
     }
     response += `\n🎲 Tiraste *${roll}* (necesitabas ≤${rate})\n`;
     response += `💰 Gastaste: *$${formatNumber(recipe.goldCost)}*\n`;
-    response += added.ok ? `📦 _El item está en tu inventario_` : `${EMOJI.warning} _Tu inventario estaba lleno y el item se perdió_`;
+    response += `📦 _El item está en tu inventario_`;
     await m.reply(response);
     await m.react('✅');
     return;
@@ -571,7 +583,7 @@ async function handleMejorar(ctx: MessageContext, user: UserRPG, args: string[])
     response += `   • El item bajará a +${Math.max(0, currentLevel - 1)}\n\n`;
     response += `💰 Costo: *$${formatNumber(ENHANCE_GOLD_COST[nextLevel])}*\n`;
     response += `📦 Materiales: ${materialsLine(ENHANCE_MATERIALS[nextLevel])}\n\n`;
-    response += `✍️ Responde *si* para continuar o *no* para cancelar (${CONFIRM_TIMEOUT / 1000} s).`;
+    response += `✍️ Responde *si* para continuar o *no* para cancelar (${CONFIRM_TIMEOUT / 1000} s).\n_También: ${usedPrefix}forja confirmar / ${usedPrefix}forja cancelar_`;
     await m.reply(response);
     return;
   }
@@ -782,26 +794,47 @@ async function handleVender(ctx: MessageContext, user: UserRPG, args: string[]):
 
 // ==================== CONTEXTO DE CONFIRMACIÓN ====================
 
+/** Sin prefijo solo cuenta "si"/"no" a secas: "si claro que no" no confirma nada */
+function isBareAnswer(ctx: MessageContext): boolean {
+  return Boolean(ctx.usedPrefix) || ctx.args.length === 0;
+}
+
+async function confirmPending(ctx: MessageContext): Promise<void> {
+  const { m, usedPrefix } = ctx;
+  const pending = getPending(m.sender, m.chat);
+  if (!pending) {
+    if (usedPrefix) await m.reply(`${EMOJI.info} No tienes ninguna mejora pendiente de confirmar.`);
+    return;
+  }
+  pendingConfirm.delete(m.sender);
+
+  const db = getDatabase();
+  const user = db.getUser(m.sender);
+  const entry = findEquippedEntry(user, pending.slot);
+  if (user.equipment[pending.slot] !== pending.itemId || !entry || (entry.enhanceLevel || 0) !== pending.fromLevel) {
+    await m.reply(`${EMOJI.warning} El item cambió desde que pediste la mejora. Vuelve a usar la forja.`);
+    return;
+  }
+  await performEnhance(ctx, user, pending.slot);
+}
+
+async function cancelPendingEnhance(ctx: MessageContext): Promise<void> {
+  const { m, usedPrefix } = ctx;
+  if (!getPending(m.sender, m.chat)) {
+    if (usedPrefix) await m.reply(`${EMOJI.info} No tienes ninguna mejora pendiente.`);
+    return;
+  }
+  pendingConfirm.delete(m.sender);
+  await m.reply(`${EMOJI.info} Mejora cancelada. Tu equipo sigue intacto.`);
+}
+
 const confirmarForjaPlugin: PluginHandler = {
   command: ['si', 'sí', 'yes', 'confirmar', 'confirm'],
   tags: ['rpg'],
   help: ['si - Confirma la mejora peligrosa pendiente'],
   noPrefix: true,
-
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-    const pending = getPending(m.sender, m.chat);
-    if (!pending) return;
-    pendingConfirm.delete(m.sender);
-
-    const db = getDatabase();
-    const user = db.getUser(m.sender);
-    const entry = findEquippedEntry(user, pending.slot);
-    if (user.equipment[pending.slot] !== pending.itemId || !entry || (entry.enhanceLevel || 0) !== pending.fromLevel) {
-      await m.reply(`${EMOJI.warning} El item cambió desde que pediste la mejora. Vuelve a usar la forja.`);
-      return;
-    }
-    await performEnhance(ctx, user, pending.slot);
+    if (isBareAnswer(ctx)) await confirmPending(ctx);
   }
 };
 
@@ -810,12 +843,8 @@ const cancelarForjaPlugin: PluginHandler = {
   tags: ['rpg'],
   help: ['no - Cancela la mejora pendiente'],
   noPrefix: true,
-
   handler: async (ctx: MessageContext) => {
-    const { m } = ctx;
-    if (!getPending(m.sender, m.chat)) return;
-    pendingConfirm.delete(m.sender);
-    await m.reply(`${EMOJI.info} Mejora cancelada. Tu equipo sigue intacto.`);
+    if (isBareAnswer(ctx)) await cancelPendingEnhance(ctx);
   }
 };
 

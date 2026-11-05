@@ -2,14 +2,15 @@ import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber } from '../lib/utils.js';
-import { ITEMS, RARITY_COLORS, FORGE_MATERIALS, type ItemRarity, type ItemType } from '../types/rpg.js';
+import { ITEMS, RARITY_COLORS, FORGE_MATERIALS, type ForgeMaterial, type Item, type ItemRarity, type ItemType } from '../types/rpg.js';
+import type { UserRPG } from '../types/user.js';
 import { ITEM_TYPE_ALIASES, ITEM_TYPE_EMOJI, ITEM_TYPE_NAMES, LIMITS, SHOP } from '../constants/rpg.js';
 import {
   addItem, addMaterial, countItem, formatAmbiguous, freeInventorySpace, inventoryItems, isEquipable, isEquipped,
   listMaterials, migrateLegacyMaterials, removeItem, removeMaterial, resolveItem
 } from '../lib/rpg-inventory.js';
 import { updateQuestProgress } from './rpg-misiones.js';
-import { SPECIAL_ITEM_USAGE } from './rpg-items-especiales.js';
+import { SPECIAL_ITEM_USAGE, permanentExpStacks } from './rpg-items-especiales.js';
 
 /** Items de ITEMS que se venden por monedas, por categoría */
 const SHOP_ITEMS: Record<string, string[]> = {
@@ -296,10 +297,11 @@ const comprarPlugin: PluginHandler = {
 
     if (offer.kind !== 'material') {
       const maxStack = SHOP.MAX_STACK[offer.id];
-      const owned = countItem(user, offer.id);
+      // Las runas ya usadas viven como buff permanente y cuentan igual que las del inventario
+      const owned = countItem(user, offer.id) + (offer.id === 'doble_exp_permanente' ? permanentExpStacks(user) : 0);
       if (maxStack !== undefined) {
         if (owned >= maxStack) {
-          await m.reply(`${EMOJI.error} Solo puedes tener *${maxStack}* de *${offer.name}* y ya tienes ${owned}.`);
+          await m.reply(`${EMOJI.error} Solo puedes tener *${maxStack}* de *${offer.name}* (contando las ya activas) y ya tienes ${owned}.`);
           return;
         }
         quantity = Math.min(quantity, maxStack - owned);
@@ -360,6 +362,22 @@ const comprarPlugin: PluginHandler = {
   }
 };
 
+type SellCandidate =
+  | { id: string; name: string; emoji: string; kind: 'item'; item: Item }
+  | { id: string; name: string; emoji: string; kind: 'material'; material: ForgeMaterial };
+
+/** Items del inventario y materiales poseídos en una sola lista para resolveItem */
+export function sellableCandidates(user: UserRPG): SellCandidate[] {
+  const items: SellCandidate[] = inventoryItems(user).map(item => ({ id: item.id, name: item.name, emoji: item.emoji, kind: 'item', item }));
+  const materials: SellCandidate[] = listMaterials(user).map(({ material }) => ({ id: material.id, name: material.name, emoji: material.emoji, kind: 'material', material }));
+  return [...items, ...materials];
+}
+
+/** Los items de la tienda de diamantes tienen sellPrice 0 y no se venden */
+export function isSellable(item: Item): boolean {
+  return item.sellPrice > 0;
+}
+
 const venderPlugin: PluginHandler = {
   command: ['vender', 'sell', 'vendedor'],
   tags: ['rpg'],
@@ -414,20 +432,28 @@ const venderPlugin: PluginHandler = {
       }
       let total = 0;
       let count = 0;
+      const kept: string[] = [];
       user.inventory = user.inventory.filter(entry => {
         const item = ITEMS[entry.itemId];
         if (!item || item.type !== 'consumable') return true;
+        // Tickets, runas, cajas... no tienen precio de venta: destruirlos por 0 sería un error
+        if (!isSellable(item)) {
+          kept.push(item.name);
+          return true;
+        }
         total += item.sellPrice * entry.quantity;
         count += entry.quantity;
         return false;
       });
       if (count === 0) {
-        await m.reply(`${EMOJI.warning} No tienes consumibles para vender.`);
+        await m.reply(`${EMOJI.warning} No tienes consumibles que se puedan vender.${kept.length ? `\n\n🔒 Sin precio de venta: ${kept.join(', ')}` : ''}`);
         return;
       }
       db.updateUser(m.sender, { money: user.money + total, totalEarned: user.totalEarned + total, inventory: user.inventory });
       updateQuestProgress(db, m.sender, 'earn', total);
-      await m.reply(`${EMOJI.success} ¡Vendiste todo!\n\n📦 Items vendidos: *${count}*\n💰 Ganaste: *${formatNumber(total)}* monedas\n💵 Total: *${formatNumber(user.money + total)}* monedas`);
+      let response = `${EMOJI.success} ¡Vendiste todo!\n\n📦 Items vendidos: *${count}*\n💰 Ganaste: *${formatNumber(total)}* monedas\n💵 Total: *${formatNumber(user.money + total)}* monedas`;
+      if (kept.length > 0) response += `\n\n🔒 Se conservaron (sin precio de venta): ${kept.join(', ')}`;
+      await m.reply(response);
       await m.react('💰');
       return;
     }
@@ -439,24 +465,19 @@ const venderPlugin: PluginHandler = {
     }
     const term = words.join(' ');
 
-    const result = resolveItem(term, inventoryItems(user));
+    // Items y materiales se resuelven juntos: "hierro" debe dar el material, no la espada_hierro
+    const result = resolveItem(term, sellableCandidates(user));
     if (result.status === 'ambiguous') {
       await m.reply(formatAmbiguous(result.candidates));
       return;
     }
-
     if (result.status === 'none') {
-      const owned = listMaterials(user).map(entry => entry.material);
-      const material = resolveItem(term, owned);
-      if (material.status === 'ambiguous') {
-        await m.reply(formatAmbiguous(material.candidates));
-        return;
-      }
-      if (material.status === 'none') {
-        await m.reply(`${EMOJI.error} No tienes ese item ni ese material.\n\n💡 Usa *${usedPrefix}inventario* para ver tus items.`);
-        return;
-      }
-      const mat = material.item;
+      await m.reply(`${EMOJI.error} No tienes ese item ni ese material.\n\n💡 Usa *${usedPrefix}inventario* para ver tus items.`);
+      return;
+    }
+
+    if (result.item.kind === 'material') {
+      const mat = result.item.material;
       if (!removeMaterial(user, mat.id, quantity)) {
         await m.reply(`${EMOJI.error} No tienes tantos.\n\n📦 Tienes: *${user.forgeMaterials[mat.id] ?? 0}* ${mat.name}`);
         return;
@@ -469,7 +490,11 @@ const venderPlugin: PluginHandler = {
       return;
     }
 
-    const item = result.item;
+    const item = result.item.item;
+    if (!isSellable(item)) {
+      await m.reply(`${EMOJI.error} *${item.name}* no se puede vender (no tiene precio de venta).\n\n💡 Úsalo con *${usedPrefix}usar ${item.name.toLowerCase()}*.`);
+      return;
+    }
     const available = countItem(user, item.id);
     if (quantity > available) {
       await m.reply(`${EMOJI.error} No tienes tantos.\n\n📦 Tienes: *${available}* ${item.name}`);

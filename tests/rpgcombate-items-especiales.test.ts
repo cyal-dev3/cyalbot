@@ -10,6 +10,8 @@ import { ITEMS, type Item } from '../src/types/rpg.js';
 import { PVP, SPECIAL_ITEMS } from '../src/constants/rpg.js';
 import { addItem, countItem } from '../src/lib/rpg-inventory.js';
 import { getDropLuck, getExpMultiplier } from '../src/lib/rpg-combat.js';
+import { PASSIVE_MODE_NO_EXPIRY } from '../src/lib/rpg-actions.js';
+import { invalidateGroupMetadata } from '../src/lib/group-events.js';
 import { useSpecialItem, isSpecialItem, permanentExpStacks, mysteryBoxPool } from '../src/plugins/rpg-items-especiales.js';
 
 setLogLevel('error');
@@ -221,13 +223,13 @@ test('bomba_dinero roba a los registrados del grupo y respeta modo pasivo y escu
     give(db, OTHER, 'vendaje', { money: 5000 });
     give(db, ADMIN, 'vendaje', { money: 5000, shieldRobo: now + 60_000 });
     const passive = '5210000000004@s.whatsapp.net';
-    give(db, passive, 'vendaje', { money: 5000, passiveMode: true, passiveModeUntil: now + 60_000 });
+    give(db, passive, 'vendaje', { money: 5000, passiveMode: true, passiveModeUntil: PASSIVE_MODE_NO_EXPIRY });
     const user = give(db, ME, 'bomba_dinero', { money: 0 });
 
     const original = Math.random;
     Math.random = () => 0.5;
     try {
-      const good = fakeCtx({ participants: [ME, OTHER, ADMIN, passive] });
+      const good = fakeCtx({ participants: [ME, OTHER, ADMIN, passive, '5210000000077@s.whatsapp.net'] });
       const result = await useSpecialItem(good.ctx, db, user, ITEMS.bomba_dinero, '');
       assert.equal(result.consumed, true);
       const stolen = Math.floor(0.5 * (SPECIAL_ITEMS.MONEY_BOMB.MAX - SPECIAL_ITEMS.MONEY_BOMB.MIN + 1)) + SPECIAL_ITEMS.MONEY_BOMB.MIN;
@@ -235,6 +237,7 @@ test('bomba_dinero roba a los registrados del grupo y respeta modo pasivo y escu
       assert.equal(db.getUser(ADMIN).money, 5000, 'escudo anti-robo');
       assert.equal(db.getUser(passive).money, 5000, 'modo pasivo');
       assert.equal(db.getUser(ME).money, stolen);
+      assert.equal(db.hasUser('5210000000077@s.whatsapp.net'), false, 'un participante sin cuenta no se crea en la BD');
     } finally {
       Math.random = original;
     }
@@ -245,5 +248,83 @@ test('bomba_dinero roba a los registrados del grupo y respeta modo pasivo y escu
     assert.equal((await useSpecialItem(empty.ctx, db, again, ITEMS.bomba_dinero, '')).consumed, false);
     assert.equal(countItem(db.getUser(ME), 'bomba_dinero'), 1);
     assert.equal((await useSpecialItem(fakeCtx({ isGroup: false }).ctx, db, again, ITEMS.bomba_dinero, '')).consumed, false);
+  });
+});
+
+/**
+ * El handler real solo rellena participants/isBotAdmin cuando el plugin declara
+ * admin/botAdmin/group; /usar no lo hace, así que los items de grupo deben leer
+ * la metadata por su cuenta.
+ */
+function handlerLikeCtx(over: { mentioned?: string[]; botAdmin?: boolean; metadataFails?: boolean } = {}): { ctx: MessageContext; calls: FakeCalls } {
+  const calls: FakeCalls = { muted: [], kicked: [], autoMute: [] };
+  const BOT = '5210000000099@s.whatsapp.net';
+  const ctx = {
+    m: { sender: ME, chat: GROUP, mentionedJid: over.mentioned ?? [], quoted: undefined, text: '', isGroup: true, reply: async () => undefined, react: async () => undefined },
+    args: [],
+    text: '',
+    isGroup: true,
+    isBotAdmin: false,
+    isOwner: false,
+    isAdmin: false,
+    participants: undefined,
+    groupAdmins: undefined,
+    handler: {
+      muteUser: (_g: string, jid: string) => calls.muted.push(jid),
+      unmuteUser: () => true,
+      setAutoMute: (_g: string, enabled: boolean) => calls.autoMute.push(enabled)
+    },
+    conn: {
+      user: { id: BOT },
+      groupMetadata: async () => {
+        if (over.metadataFails) throw new Error('sin red');
+        return {
+          id: GROUP,
+          subject: 'g',
+          participants: [
+            { id: ME, admin: null },
+            { id: OTHER, admin: null },
+            { id: ADMIN, admin: 'admin' },
+            { id: BOT, admin: over.botAdmin === false ? null : 'admin' }
+          ]
+        };
+      },
+      groupParticipantsUpdate: async (_g: string, jids: string[]) => { calls.kicked.push(...jids); }
+    }
+  } as unknown as MessageContext;
+  return { ctx, calls };
+}
+
+test('con el ctx del handler (sin participants) los tickets y la bomba leen los roles del grupo', async () => {
+  await withDb(async (db) => {
+    give(db, OTHER, 'vendaje', { money: 5000 });
+    give(db, ADMIN, 'vendaje', { money: 5000 });
+
+    invalidateGroupMetadata(GROUP);
+    const user = give(db, ME, 'ticket_muteo');
+    const admin = handlerLikeCtx({ mentioned: [ADMIN] });
+    assert.equal((await useSpecialItem(admin.ctx, db, user, ITEMS.ticket_muteo, '')).consumed, false, 'el admin sigue protegido');
+    const good = handlerLikeCtx({ mentioned: [OTHER] });
+    const muted = await useSpecialItem(good.ctx, db, user, ITEMS.ticket_muteo, '');
+    assert.equal(muted.consumed, true, muted.message);
+    assert.deepEqual(good.calls.muted, [OTHER]);
+
+    invalidateGroupMetadata(GROUP);
+    const noAdmin = give(db, ME, 'ticket_kick');
+    const result = await useSpecialItem(handlerLikeCtx({ mentioned: [OTHER], botAdmin: false }).ctx, db, noAdmin, ITEMS.ticket_kick, '');
+    assert.equal(result.consumed, false);
+    assert.match(result.message, /admin/);
+
+    invalidateGroupMetadata(GROUP);
+    const bomber = give(db, ME, 'bomba_dinero', { money: 0 });
+    const bomb = await useSpecialItem(handlerLikeCtx().ctx, db, bomber, ITEMS.bomba_dinero, '');
+    assert.equal(bomb.consumed, true, bomb.message);
+    assert.ok(db.getUser(OTHER).money < 5000 && db.getUser(ADMIN).money < 5000);
+
+    invalidateGroupMetadata(GROUP);
+    const offline = give(db, ME, 'bomba_dinero');
+    const failed = await useSpecialItem(handlerLikeCtx({ metadataFails: true }).ctx, db, offline, ITEMS.bomba_dinero, '');
+    assert.equal(failed.consumed, false, 'sin metadata no se consume');
+    invalidateGroupMetadata(GROUP);
   });
 });

@@ -2,7 +2,7 @@ import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { EMOJI, formatNumber, msToTime } from '../lib/utils.js';
-import { ITEMS, RARITY_COLORS, FORGE_MATERIALS, type Item, type ItemType } from '../types/rpg.js';
+import { ITEMS, RARITY_COLORS, FORGE_MATERIALS, type ForgeMaterial, type Item, type ItemType } from '../types/rpg.js';
 import type { ActiveBuff, UserRPG } from '../types/user.js';
 import { calculateTotalStats } from '../lib/rpg-utils.js';
 import { ITEM_TYPE_ALIASES, ITEM_TYPE_EMOJI, ITEM_TYPE_NAMES, SLOT_ALIASES, LIMITS } from '../constants/rpg.js';
@@ -204,7 +204,7 @@ const equiparPlugin: PluginHandler = {
 };
 
 const desequiparPlugin: PluginHandler = {
-  command: ['desequipar', 'unequip', 'quitar', 'remove'],
+  command: ['desequipar', 'unequip'],
   tags: ['rpg'],
   help: [
     'desequipar arma - Quita el arma equipada',
@@ -247,14 +247,13 @@ const desequiparPlugin: PluginHandler = {
   }
 };
 
-function parseQuantityToken(text: string): { term: string; quantity: number; useAll: boolean } {
-  const parts = text.trim().split(/\s+/);
-  const last = parts[parts.length - 1]?.toLowerCase();
-  if (parts.length > 1) {
-    if (['all', 'todo', 'todas', 'todos'].includes(last)) return { term: parts.slice(0, -1).join(' '), quantity: 1, useAll: true };
-    if (/^\d+$/.test(last) && parseInt(last, 10) > 0) return { term: parts.slice(0, -1).join(' '), quantity: parseInt(last, 10), useAll: false };
-  }
-  return { term: text.trim(), quantity: 1, useAll: false };
+/** Lo que sobra tras el nombre del item: nada, "all" o una cantidad; null si no se entiende */
+function parseQuantity(rest: string): { quantity: number; useAll: boolean } | null {
+  const word = rest.trim().toLowerCase();
+  if (!word) return { quantity: 1, useAll: false };
+  if (['all', 'todo', 'todas', 'todos'].includes(word)) return { quantity: 1, useAll: true };
+  if (/^\d+$/.test(word) && parseInt(word, 10) > 0) return { quantity: parseInt(word, 10), useAll: false };
+  return null;
 }
 
 const usarPlugin: PluginHandler = {
@@ -283,10 +282,10 @@ const usarPlugin: PluginHandler = {
       return;
     }
 
-    const parsed = parseQuantityToken(text);
     const consumables = inventoryItems(user).filter(i => i.type === 'consumable');
-    // Las menciones llegan como @numero en el texto y no forman parte del nombre
-    const cleanTerm = parsed.term.replace(/@\S+/g, ' ').trim();
+    // Las menciones llegan como @numero en el texto y no forman parte del nombre.
+    // El item se resuelve primero: "cambio nombre Dark 99" lleva el 99 en el nombre, no es una cantidad.
+    const cleanTerm = text.replace(/@\S+/g, ' ').trim();
     const { result, rest } = resolveItemWithRest(cleanTerm, consumables);
 
     if (result.status === 'none') {
@@ -309,6 +308,12 @@ const usarPlugin: PluginHandler = {
     const effect = item.consumeEffect;
     if (!effect || Object.keys(effect).length === 0) {
       await m.reply(`${EMOJI.error} *${item.name}* todavía no tiene efecto. No se consumió.`);
+      return;
+    }
+
+    const parsed = parseQuantity(rest);
+    if (!parsed) {
+      await m.reply(`${EMOJI.error} No entiendo "${rest}".\n\n📝 *Uso:* ${usedPrefix}usar ${item.name.toLowerCase()} [cantidad|all]`);
       return;
     }
 
@@ -393,8 +398,16 @@ const usarPlugin: PluginHandler = {
   }
 };
 
+interface InfoCandidate {
+  id: string;
+  name: string;
+  emoji: string;
+  item?: Item;
+  material?: ForgeMaterial;
+}
+
 const itemInfoPlugin: PluginHandler = {
-  command: ['iteminfo', 'veritem', 'item', 'info'],
+  command: ['iteminfo', 'veritem'],
   tags: ['rpg'],
   help: ['iteminfo [nombre o id] - Ver información detallada de un item o material'],
   register: true,
@@ -407,34 +420,34 @@ const itemInfoPlugin: PluginHandler = {
       return;
     }
 
-    const result = resolveItem(text, Object.values(ITEMS));
+    // Items y materiales en una sola lista: "hierro" u "oro" son materiales, no espada_hierro ni cofre_oro
+    const candidates: InfoCandidate[] = [
+      ...Object.values(ITEMS).map((item): InfoCandidate => ({ id: item.id, name: item.name, emoji: item.emoji, item })),
+      ...Object.values(FORGE_MATERIALS).map((material): InfoCandidate => ({ id: material.id, name: material.name, emoji: material.emoji, material }))
+    ];
+    const result = resolveItem(text, candidates);
     if (result.status === 'ambiguous') {
       await m.reply(formatAmbiguous(result.candidates));
       return;
     }
     if (result.status === 'none') {
-      const material = resolveItem(text, Object.values(FORGE_MATERIALS));
-      if (material.status === 'found') {
-        const mat = material.item;
-        await m.reply(
-          `${mat.emoji} *${mat.name}* (material de forja)\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
-          `📖 ${mat.description}\n\n` +
-          `   ${RARITY_COLORS[mat.rarity]} Rareza: ${mat.rarity}\n` +
-          `   💵 Venta: ${formatNumber(mat.sellPrice)} monedas\n` +
-          (mat.price ? `   💰 Precio en tienda: ${formatNumber(mat.price)} monedas\n` : '') +
-          `\n💡 Se usa en *${usedPrefix}forja* (id: \`${mat.id}\`)`
-        );
-        return;
-      }
-      if (material.status === 'ambiguous') {
-        await m.reply(formatAmbiguous(material.candidates));
-        return;
-      }
       await m.reply(`${EMOJI.error} No encontré ningún item con ese nombre.`);
       return;
     }
+    if (result.item.material) {
+      const mat = result.item.material;
+      await m.reply(
+        `${mat.emoji} *${mat.name}* (material de forja)\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `📖 ${mat.description}\n\n` +
+        `   ${RARITY_COLORS[mat.rarity]} Rareza: ${mat.rarity}\n` +
+        `   💵 Venta: ${formatNumber(mat.sellPrice)} monedas\n` +
+        (mat.price ? `   💰 Precio en tienda: ${formatNumber(mat.price)} monedas\n` : '') +
+        `\n💡 Se usa en *${usedPrefix}forja* (id: \`${mat.id}\`)`
+      );
+      return;
+    }
 
-    const item = result.item;
+    const item = result.item.item as Item;
     let response = `${item.emoji} *${item.name}*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
     response += `📖 ${item.description}\n\n`;
     response += `📋 *Información:*\n`;

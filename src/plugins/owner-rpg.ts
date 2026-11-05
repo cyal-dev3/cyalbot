@@ -8,7 +8,7 @@ import { calculateTotalStats } from '../lib/rpg-utils.js';
 import { grantExp, loseExp, setLevel } from '../lib/levelling.js';
 import { globalModes, checkExpiredModes, getActiveModes, type GlobalModeKey } from '../lib/global-modes.js';
 import { addItem, addMaterial, countItem, removeItem } from '../lib/rpg-inventory.js';
-import { listBusy } from '../lib/rpg-combat.js';
+import { clearBusy, getBusy, listBusy } from '../lib/rpg-combat.js';
 import {
   autoEventConfig, toggleAutoEvents, addAnnouncementGroup, removeAnnouncementGroup, setEventIntervals,
   forceRandomEvent, getAutoEventStatus
@@ -34,6 +34,14 @@ function parseCount(raw: string | undefined): number | null {
   if (!raw || !/^\d+$/.test(raw)) return null;
   const value = parseInt(raw, 10);
   return Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
+
+/**
+ * Argumentos sin los tokens de mención ("@521..."): la mención viaja en el
+ * texto, así que "rpgdaritem @user espada 2" tiene el item en args[1] y no en args[0].
+ */
+function argsWithoutMentions(ctx: MessageContext): string[] {
+  return ctx.args.filter(a => !/^@\d+$/.test(a));
 }
 
 /** Objetivo mencionado o citado; sin mención, el propio owner */
@@ -217,7 +225,8 @@ export const rpgDarPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, usedPrefix } = ctx;
+    const args = argsWithoutMentions(ctx);
     const db = getDatabase();
     const jid = targetOf(ctx);
     const user = db.getUser(jid);
@@ -247,7 +256,8 @@ export const rpgQuitarPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, usedPrefix } = ctx;
+    const args = argsWithoutMentions(ctx);
     const db = getDatabase();
     const jid = targetOf(ctx);
     const user = db.getUser(jid);
@@ -273,7 +283,8 @@ export const rpgSetPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, usedPrefix } = ctx;
+    const args = argsWithoutMentions(ctx);
     const db = getDatabase();
     const jid = targetOf(ctx);
     const user = db.getUser(jid);
@@ -332,7 +343,8 @@ export const rpgDarItemPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, usedPrefix } = ctx;
+    const args = argsWithoutMentions(ctx);
     const db = getDatabase();
     const jid = targetOf(ctx);
     const user = db.getUser(jid);
@@ -372,7 +384,8 @@ export const rpgQuitarItemPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, usedPrefix } = ctx;
+    const args = argsWithoutMentions(ctx);
     const db = getDatabase();
     const jid = targetOf(ctx);
     const user = db.getUser(jid);
@@ -576,7 +589,8 @@ export const rpgResetCdPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args } = ctx;
+    const { m } = ctx;
+    const args = argsWithoutMentions(ctx);
     const db = getDatabase();
     const jid = targetOf(ctx);
     const user = db.getUser(jid);
@@ -629,7 +643,8 @@ export const rpgSetClasePlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, usedPrefix } = ctx;
+    const args = argsWithoutMentions(ctx);
     const db = getDatabase();
     const jid = targetOf(ctx);
     const user = db.getUser(jid);
@@ -703,7 +718,8 @@ export const rpgSetNivelPlugin: PluginHandler = {
   owner: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, usedPrefix } = ctx;
+    const args = argsWithoutMentions(ctx);
     const db = getDatabase();
     const jid = targetOf(ctx);
     const user = db.getUser(jid);
@@ -980,14 +996,21 @@ export const rpgCancelarPlugin: PluginHandler = {
     }
 
     const jid = targetOf(ctx);
-    if (jid === m.sender && !activeDungeons.has(jid)) {
+    if (jid === m.sender && !activeDungeons.has(jid) && !getBusy(jid)) {
       return m.reply(`${EMOJI.error} Uso: ${usedPrefix}rpgcancelar @user (dungeon) o ${usedPrefix}rpgcancelar duelo`);
     }
     if (await cancelDungeon(jid)) {
       await m.reply(`👑 Dungeon de ${jid.split('@')[0]} cerrado.`);
       return;
     }
-    await m.reply(`${EMOJI.info} Ese usuario no tiene un dungeon activo.`);
+    // Marca de ocupado sin sesión detrás (p. ej. un envío que falló a mitad): se limpia a mano
+    const busy = getBusy(jid);
+    if (busy) {
+      clearBusy(jid);
+      await m.reply(`👑 ${jid.split('@')[0]} figuraba como ocupado (${busy}) sin sesión activa; marca limpiada.`);
+      return;
+    }
+    await m.reply(`${EMOJI.info} Ese usuario no tiene un dungeon activo ni está marcado como ocupado.`);
   }
 };
 

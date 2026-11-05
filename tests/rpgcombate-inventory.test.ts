@@ -7,6 +7,7 @@ import {
   addItem, addLoot, addMaterial, consumeMaterials, countItem, findEquippedEntry, inventorySize, isEquipped,
   migrateLegacyMaterials, missingMaterials, removeItem, removeMaterial, resolveItem
 } from '../src/lib/rpg-inventory.js';
+import { sellableCandidates, isSellable } from '../src/plugins/rpg-tienda.js';
 
 const freshUser = (): UserRPG => structuredClone(DEFAULT_USER);
 
@@ -154,4 +155,25 @@ test('migrateLegacyMaterials mueve los items de material antiguos a forgeMateria
   assert.equal(user.forgeMaterials.oro, 3);
   assert.equal(user.forgeMaterials.cristal, 2);
   assert.equal(migrateLegacyMaterials(user), false);
+});
+
+test('vender: "hierro" resuelve al material aunque haya una espada_hierro en el inventario', () => {
+  const user = freshUser();
+  addItem(user, 'espada_hierro', 1);
+  addItem(user, 'armadura_cuero', 1);
+  addItem(user, 'cofre_oro', 1);
+  addMaterial(user, 'hierro', 10);
+  addMaterial(user, 'cuero', 3);
+  addMaterial(user, 'oro', 2);
+
+  for (const term of ['hierro', 'cuero', 'oro']) {
+    const result = resolveItem(term, sellableCandidates(user));
+    assert.equal(result.status, 'found', term);
+    if (result.status === 'found') assert.equal(result.item.kind, 'material', term);
+  }
+  const sword = resolveItem('espada de hierro', sellableCandidates(user));
+  assert.ok(sword.status === 'found' && sword.item.kind === 'item' && sword.item.id === 'espada_hierro');
+
+  assert.equal(isSellable(ITEMS.cofre_oro), false, 'los items de diamantes no se venden por 0');
+  assert.equal(isSellable(ITEMS.pocion_salud), true);
 });
