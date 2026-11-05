@@ -51,14 +51,19 @@ export function selectPrey(roll: number = Math.random()): Prey {
   return PREY[PREY.length - 1];
 }
 
+/**
+ * El comando es `caceria` y no `cazar`/`hunt` porque rpg-atacar.ts registra
+ * ambos como alias de atacar y el handler se queda con el primer plugin que
+ * los registra. Cuando combate los suelte, se añaden aquí.
+ */
 export const cazarPlugin: PluginHandler = {
-  command: /^(cazar|hunt|caceria|cacería)$/i,
+  command: /^(caceria|cacería|cazarpresa)$/i,
   tags: ['rpg'],
   help: [
-    `cazar - Salir de caza: dinero, XP y materiales (cada ${CONFIG.cooldowns.hunt / 60000} minutos)`,
+    `caceria - Salir de caza: dinero, XP y materiales (cada ${CONFIG.cooldowns.hunt / 60000} minutos)`,
     `Cuesta ${HUNT_STAMINA_COST} de energía y puedes salir herido`
   ],
-  usage: ['cazar'],
+  usage: ['caceria'],
   register: true,
 
   handler: async (ctx: MessageContext) => {

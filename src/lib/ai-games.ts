@@ -1,5 +1,6 @@
 import { createLogger } from './logger.js';
 import { normalizeText } from './utils.js';
+import { LRUCache } from './lru-cache.js';
 import { TRIVIA_BANK, TRIVIA_TEMAS, type TriviaQuestion } from '../constants/trivia.js';
 import { PALABRAS, PALABRAS_CATEGORIAS, type Palabra } from '../constants/palabras.js';
 import { pickOne } from './games/common.js';
@@ -7,6 +8,8 @@ import { pickOne } from './games/common.js';
 const log = createLogger('ai-juegos');
 
 const CACHE_LIMIT = 50;
+/** Temas/categorías distintos que se recuerdan: el texto lo escribe el usuario y no debe crecer sin tope. */
+const CACHE_KEYS = 20;
 const BATCH = 10;
 
 // ai.ts arrastra el registro completo de plugins; se carga solo cuando hace falta,
@@ -19,7 +22,7 @@ async function loadAI(): Promise<typeof import('./ai.js')> {
 // Trivia
 // ---------------------------------------------------------------------------
 
-const triviaCache = new Map<string, TriviaQuestion[]>();
+const triviaCache = new LRUCache<string, TriviaQuestion[]>(CACHE_KEYS);
 
 function cacheKey(raw: string | undefined): string {
   return normalizeText(raw ?? '').trim() || 'general';
@@ -69,15 +72,15 @@ async function fillTriviaCache(key: string): Promise<void> {
 /** Pregunta generada por la IA (con caché por tema) o del banco local si no hay IA. */
 export async function nextTriviaQuestion(tema: string | undefined, exclude: Set<string> = new Set()): Promise<TriviaQuestion> {
   const key = cacheKey(tema);
-  if ((await loadAI()).isAIEnabled()) {
-    try {
+  try {
+    if ((await loadAI()).isAIEnabled()) {
       if ((triviaCache.get(key)?.length ?? 0) === 0) await fillTriviaCache(key);
       const cached = triviaCache.get(key) ?? [];
       const index = cached.findIndex((q) => !exclude.has(q.pregunta));
       if (index >= 0) return cached.splice(index, 1)[0];
-    } catch (error) {
-      log.warn('trivia: fallo la IA, uso el banco local:', error);
     }
+  } catch (error) {
+    log.warn('trivia: fallo la IA, uso el banco local:', error);
   }
   return localTriviaQuestion(tema, exclude);
 }
@@ -86,7 +89,7 @@ export async function nextTriviaQuestion(tema: string | undefined, exclude: Set<
 // Ahorcado
 // ---------------------------------------------------------------------------
 
-const wordCache = new Map<string, Palabra[]>();
+const wordCache = new LRUCache<string, Palabra[]>(CACHE_KEYS);
 
 /** Minúsculas, sin tildes; la ñ se trata como n para adivinar letra a letra. */
 export function normalizeWord(text: string): string {
@@ -129,14 +132,14 @@ async function fillWordCache(key: string): Promise<void> {
 
 export async function nextWord(categoria: string | undefined): Promise<Palabra> {
   const key = cacheKey(categoria);
-  if ((await loadAI()).isAIEnabled()) {
-    try {
+  try {
+    if ((await loadAI()).isAIEnabled()) {
       if ((wordCache.get(key)?.length ?? 0) === 0) await fillWordCache(key);
       const cached = wordCache.get(key);
       if (cached && cached.length > 0) return cached.pop() as Palabra;
-    } catch (error) {
-      log.warn('ahorcado: fallo la IA, uso el banco local:', error);
     }
+  } catch (error) {
+    log.warn('ahorcado: fallo la IA, uso el banco local:', error);
   }
   return localWord(categoria);
 }

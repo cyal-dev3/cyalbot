@@ -46,23 +46,21 @@ import { gremioPlugin } from './rpg-gremios.js';
 import ownerRpgPlugins from './owner-rpg.js';
 
 // Grupos
-import { registerGroupAdminPlugins } from './group-admin.js';
-import { registerGroupMutePlugins } from './group-mute.js';
-import { registerGroupDeletePlugins } from './group-delete.js';
-import { registerGroupPinPlugins } from './group-pin.js';
-import { registerGroupLockPlugins } from './group-lock.js';
-import { registerGroupCompactPlugin } from './group-compact.js';
-import { antiLinkPlugin, antiSpamPlugin } from './group-protection.js';
-import { warnPlugin, unwarnPlugin, listWarnPlugin, clearWarnPlugin } from './group-warn.js';
-import { setWelcomePlugin, setByePlugin, welcomeTogglePlugin, byeTogglePlugin } from './group-welcome.js';
+import { TOGGLE_ENTRIES } from './group-toggles.js';
+import {
+  grupoPlugin, linkPlugin, revokePlugin, setNamePlugin, setDescPlugin, setPicPlugin, adminsPlugin, leavePlugin,
+} from './group-tools.js';
+import { promotePlugin, demotePlugin, kickPlugin } from './group-admin.js';
+import { mutePlugin, tempMutePlugin, unmutePlugin, listMutePlugin } from './group-mute.js';
+import { warnPlugin, unwarnPlugin, listWarnPlugin, clearWarnPlugin, setWarnsPlugin } from './group-warn.js';
+import { deletePlugin, clearPlugin } from './group-delete.js';
+import { pinPlugin, unpinPlugin } from './group-pin.js';
+import { closePlugin, openPlugin } from './group-lock.js';
+import { addBadWordPlugin, delBadWordPlugin, listBadWordsPlugin } from './group-antibad.js';
+import { setWelcomePlugin, setByePlugin } from './group-welcome.js';
 import { tagAllPlugin, hideTagPlugin } from './group-tagall.js';
-import { antiDeletePlugin } from './group-antidelete.js';
-import { antiBadPlugin, addBadWordPlugin, delBadWordPlugin, listBadWordsPlugin } from './group-antibad.js';
-import { autoStickerPlugin } from './group-autosticker.js';
-import { autoDownloadPlugin } from './group-autodownload.js';
 
 // Admin / owner
-import { notifyPlugin } from './admin-notify.js';
 import { restartPlugin, gitPullPlugin, logsPlugin } from './admin-restart.js';
 import { modePlugin } from './admin-mode.js';
 import { adminStatsPlugin } from './admin-stats.js';
@@ -72,13 +70,11 @@ import { playPlugin } from './media-play.js';
 import { stickerPlugin } from './sticker-sticker.js';
 import { toImagePlugin } from './sticker-toimg.js';
 import { toVideoPlugin, toGifPlugin } from './sticker-tovideo.js';
-import { tiktokPlugin } from './download-tiktok.js';
-import { instagramPlugin } from './download-instagram.js';
-import { facebookPlugin } from './download-facebook.js';
-import { twitterPlugin } from './download-twitter.js';
-import { pinterestPlugin } from './download-pinterest.js';
-import { threadsPlugin } from './download-threads.js';
-import { universalDownloadPlugin, cobaltPlugin, audioDownloadPlugin, downloadStatusPlugin } from './download-universal.js';
+import { toMp3Plugin } from './media-tomp3.js';
+import { comprimirPlugin } from './media-comprimir.js';
+import { mediaInfoPlugin } from './media-info.js';
+import { platformDownloadPlugins } from './download-platform.js';
+import { universalDownloadPlugin, audioDownloadPlugin, downloadStatusPlugin } from './download-universal.js';
 
 // Herramientas
 import { menuPlugin } from './menu.js';
@@ -201,16 +197,9 @@ const SECTIONS: Section[] = [
     ],
   },
   { category: 'ranking', register: registerRankingPlugins },
-  { category: 'grupos-admin', register: registerGroupAdminPlugins },
-  { category: 'grupos-mute', register: registerGroupMutePlugins },
-  { category: 'grupos-delete', register: registerGroupDeletePlugins },
-  { category: 'grupos-compact', register: registerGroupCompactPlugin },
-  { category: 'grupos-pin', register: registerGroupPinPlugins },
-  { category: 'grupos-lock', register: registerGroupLockPlugins },
   {
     category: 'admin',
     entries: [
-      ['admin-notify', notifyPlugin],
       ['admin-restart', restartPlugin],
       ['admin-gitpull', gitPullPlugin],
       ['admin-logs', logsPlugin],
@@ -221,25 +210,40 @@ const SECTIONS: Section[] = [
   {
     category: 'grupos',
     entries: [
-      ['group-antilink', antiLinkPlugin],
-      ['group-antispam', antiSpamPlugin],
+      ...TOGGLE_ENTRIES,
+      ['group-grupo', grupoPlugin],
+      ['group-promote', promotePlugin],
+      ['group-demote', demotePlugin],
+      ['group-kick', kickPlugin],
+      ['group-mute', mutePlugin],
+      ['group-tempmute', tempMutePlugin],
+      ['group-unmute', unmutePlugin],
+      ['group-listmute', listMutePlugin],
       ['group-warn', warnPlugin],
       ['group-unwarn', unwarnPlugin],
       ['group-listwarn', listWarnPlugin],
       ['group-clearwarn', clearWarnPlugin],
-      ['group-antidelete', antiDeletePlugin],
-      ['group-antibad', antiBadPlugin],
+      ['group-setwarns', setWarnsPlugin],
+      ['group-delete', deletePlugin],
+      ['group-clear', clearPlugin],
+      ['group-pin', pinPlugin],
+      ['group-unpin', unpinPlugin],
+      ['group-close', closePlugin],
+      ['group-open', openPlugin],
       ['group-addbadword', addBadWordPlugin],
       ['group-delbadword', delBadWordPlugin],
       ['group-listbadwords', listBadWordsPlugin],
-      ['group-autosticker', autoStickerPlugin],
-      ['group-autodownload', autoDownloadPlugin],
       ['group-setwelcome', setWelcomePlugin],
       ['group-setbye', setByePlugin],
-      ['group-welcome', welcomeTogglePlugin],
-      ['group-bye', byeTogglePlugin],
       ['group-tagall', tagAllPlugin],
       ['group-hidetag', hideTagPlugin],
+      ['group-link', linkPlugin],
+      ['group-revoke', revokePlugin],
+      ['group-setname', setNamePlugin],
+      ['group-setdesc', setDescPlugin],
+      ['group-setpic', setPicPlugin],
+      ['group-admins', adminsPlugin],
+      ['group-leave', leavePlugin],
     ],
   },
   {
@@ -250,15 +254,12 @@ const SECTIONS: Section[] = [
       ['sticker-toimg', toImagePlugin],
       ['sticker-tovideo', toVideoPlugin],
       ['sticker-togif', toGifPlugin],
-      ['download-tiktok', tiktokPlugin],
-      ['download-instagram', instagramPlugin],
-      ['download-facebook', facebookPlugin],
-      ['download-twitter', twitterPlugin],
-      ['download-pinterest', pinterestPlugin],
-      ['download-threads', threadsPlugin],
+      ['media-tomp3', toMp3Plugin],
+      ['media-comprimir', comprimirPlugin],
+      ...platformDownloadPlugins,
       ['download-universal', universalDownloadPlugin],
-      ['download-cobalt', cobaltPlugin],
       ['download-audio', audioDownloadPlugin],
+      ['download-info', mediaInfoPlugin],
       ['download-status', downloadStatusPlugin],
     ],
   },

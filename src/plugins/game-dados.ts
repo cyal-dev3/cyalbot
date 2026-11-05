@@ -6,7 +6,7 @@ import { GameSessionManager } from '../lib/games/session.js';
 import { parseBet, debitBet, creditWin, holdBet, releaseEscrow, formatCoins } from '../lib/games/bets.js';
 import { CASINO_LIMITS } from '../lib/games/state.js';
 import {
-  enter, requireRegistered, requireGroup, say, edit, sleep, rollInt, playerName, isRegistered, declareContext, attachContexts, type GameInfo,
+  enter, requireRegistered, requireGroup, say, edit, sleep, rollInt, playerName, isRegistered, isCompact, declareContext, attachContexts, type GameInfo,
 } from '../lib/games/common.js';
 
 const GAME = 'dados';
@@ -88,8 +88,13 @@ async function playHouse(ctx: MessageContext, betText: string | undefined, choic
   if (payout > 0) creditWin(db, ctx.m.sender, payout, GAME);
   const net = payout - bet.amount;
   const label = typeof choice === 'number' ? `al ${choice}` : `a ${choice}`;
+  const netText = `${net >= 0 ? '+' : ''}${net.toLocaleString('es-MX')} 💰`;
+  if (isCompact(ctx)) {
+    await ctx.m.reply(`🎲 ${diceText(a, b)} ${payout > 0 ? '✅' : '❌'} ${netText}`);
+    return;
+  }
   await ctx.m.reply(
-    `🎲 ${diceText(a, b)} — apostaste ${label}\n${payout > 0 ? '✅ Ganaste' : '❌ Perdiste'}: ${net >= 0 ? '+' : ''}${net.toLocaleString('es-MX')} 💰 → saldo ${formatCoins(db.getUser(ctx.m.sender).money)}`,
+    `🎲 ${diceText(a, b)} — apostaste ${label}\n${payout > 0 ? '✅ Ganaste' : '❌ Perdiste'}: ${netText} → saldo ${formatCoins(db.getUser(ctx.m.sender).money)}`,
   );
 }
 
@@ -175,6 +180,10 @@ async function runDuel(groupId: string): Promise<void> {
     await edit(groupId, key, lines.join('\n'));
   }
 
+  if (!duels.isCurrent(s)) {
+    await say(groupId, '🎲 El duelo se canceló a mitad (mesa cerrada); las apuestas fueron devueltas.');
+    return;
+  }
   const db = getDatabase();
   const winner = a.wins > b.wins ? challenger : b.wins > a.wins ? target : null;
   if (winner) {
@@ -193,7 +202,7 @@ export const aceptarDadosPlugin: PluginHandler = {
   category: 'casino',
   async handler(ctx) {
     const s = duels.get(ctx.m.chat);
-    if (!s || s.phase !== 'reto' || s.state.target !== ctx.m.sender) return;
+    if (!s || s.phase !== 'reto' || s.state.target !== ctx.m.sender || ctx.args.length > 0) return;
     enter(ctx);
     const db = getDatabase();
     if (!holdBet(db, ctx.m.chat, ctx.m.sender, s.state.bet, GAME, { round: false })) {

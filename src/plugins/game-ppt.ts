@@ -6,7 +6,7 @@ import { GameSessionManager } from '../lib/games/session.js';
 import { parseBet, debitBet, creditWin, holdBet, releaseEscrow, formatCoins } from '../lib/games/bets.js';
 import { CASINO_LIMITS } from '../lib/games/state.js';
 import {
-  enter, requireRegistered, requireGroup, say, pickOne, playerName, isRegistered, declareContext, attachContexts, type GameInfo,
+  enter, requireRegistered, requireGroup, say, pickOne, playerName, isRegistered, isCompact, noPrefixOnly, declareContext, attachContexts, type GameInfo,
 } from '../lib/games/common.js';
 
 const GAME = 'ppt';
@@ -36,11 +36,11 @@ export function compare(a: Choice, b: Choice): number {
 export const PPT_INFO: GameInfo = {
   key: 'ppt', name: 'Piedra, papel o tijera', emoji: '✂️', play: 'ppt 500 piedra', casino: true,
   rules: [
-    '{p}ppt <apuesta> <piedra|papel|tijera>: contra el bot, paga 1:1; empate devuelve.',
-    '{p}ppt @usuario <apuesta>: reto al mejor de 3. El rival acepta con *aceptar* (60 s).',
+    `{p}ppt <apuesta> <piedra|papel|tijera>: contra el bot, paga 1:1; en empate recuperas la apuesta menos ${Math.round(CASINO_LIMITS.duelFee * 100)} %.`,
+    '{p}ppt @usuario <apuesta>: reto al mejor de 3. El rival acepta con *aceptar* (60 s; si no, reembolso).',
     'Cada ronda, los dos eligen escribiendo *piedra*, *papel* o *tijera* (o p/pa/t) sin prefijo.',
     'Elige por privado al bot para que tu rival no lo vea; si eliges en el grupo, él lo verá.',
-    `El ganador se lleva el bote menos ${Math.round(CASINO_LIMITS.duelFee * 100)} % de comisión. Sin respuesta en 60 s: reembolso.`,
+    `El ganador se lleva el bote menos ${Math.round(CASINO_LIMITS.duelFee * 100)} % de comisión. Quien no elige en 60 s pierde la ronda y el duelo.`,
   ],
 };
 
@@ -66,11 +66,27 @@ async function playBot(ctx: MessageContext, betText: string | undefined, choiceT
   }
   const bot = pickOne(CHOICES);
   const result = compare(choice, bot);
-  const payout = result > 0 ? bet.amount * 2 : result === 0 ? bet.amount : 0;
+  const payout = botPayout(bet.amount, result);
   if (payout > 0) creditWin(db, ctx.m.sender, payout, GAME);
   const net = payout - bet.amount;
-  const verdict = result > 0 ? '✅ Ganaste' : result === 0 ? '🤝 Empate, te devuelvo la apuesta' : '❌ Perdiste';
-  await ctx.m.reply(`${EMOJI[choice]} vs ${EMOJI[bot]} (bot)\n${verdict}: ${net >= 0 ? '+' : ''}${net.toLocaleString('es-MX')} 💰 → saldo ${formatCoins(db.getUser(ctx.m.sender).money)}`);
+  const netText = `${net >= 0 ? '+' : ''}${net.toLocaleString('es-MX')} 💰`;
+  if (isCompact(ctx)) {
+    await ctx.m.reply(`${EMOJI[choice]} vs ${EMOJI[bot]} ${result > 0 ? '✅' : result === 0 ? '🤝' : '❌'} ${netText}`);
+    return;
+  }
+  const verdict = result > 0 ? '✅ Ganaste' : result === 0 ? '🤝 Empate, recuperas la apuesta menos la comisión' : '❌ Perdiste';
+  await ctx.m.reply(`${EMOJI[choice]} vs ${EMOJI[bot]} (bot)\n${verdict}: ${netText} → saldo ${formatCoins(db.getUser(ctx.m.sender).money)}`);
+}
+
+/**
+ * Lo que recibe contra el bot: victoria 1:1, empate devuelve la apuesta menos la
+ * comisión de la casa (sin ella el RTP sería exactamente 1 y el juego serviría
+ * para mover monedas sin riesgo).
+ */
+export function botPayout(bet: number, result: number): number {
+  if (result > 0) return bet * 2;
+  if (result === 0) return Math.floor(bet * (1 - CASINO_LIMITS.duelFee));
+  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,12 +108,38 @@ interface PptState {
 
 const duels = new GameSessionManager<PptPlayer, PptState, 'reto' | 'eleccion'>({ game: GAME, label: 'Duelo de ppt' });
 
+/**
+ * Fin de fase sin respuesta. En el reto se reembolsa; en una ronda ya aceptada,
+ * quien eligió gana por abandono del otro (si nadie eligió, reembolso): el que va
+ * perdiendo no puede escapar del duelo dejando de escribir.
+ */
 function expire(groupId: string): void {
   duels.setTimer(groupId, PHASE_MS, async () => {
     const s = duels.get(groupId);
+    if (!s) return;
+    const chose = [...s.players.entries()].filter(([, p]) => p.choice !== null).map(([jid]) => jid);
+    if (s.phase === 'eleccion' && chose.length === 1) {
+      const [winner] = chose;
+      const loser = winner === s.state.challenger ? s.state.target : s.state.challenger;
+      const prize = payWinner(groupId, s, winner);
+      await say(groupId, `⏰ ${mentionTag(loser)} no eligió. ${mentionTag(winner)} gana el duelo por abandono y se lleva ${formatCoins(prize)}.`, [winner, loser]);
+      return;
+    }
     duels.close(groupId, { refund: true });
-    if (s) await say(groupId, '✂️ Duelo cancelado por falta de respuesta. Apuestas devueltas.');
+    if (s.phase === 'reto') {
+      await say(groupId, `✂️ ${mentionTag(s.state.target)} no aceptó el duelo. Apuesta devuelta.`, [s.state.target]);
+      return;
+    }
+    await say(groupId, '✂️ Nadie eligió en 60 s. Duelo cancelado y apuestas devueltas.');
   });
+}
+
+/** Paga el bote menos la comisión y cierra la mesa. Devuelve el premio. */
+function payWinner(groupId: string, s: { state: PptState }, winner: string): number {
+  const prize = Math.floor(s.state.bet * 2 * (1 - CASINO_LIMITS.duelFee));
+  releaseEscrow(getDatabase(), groupId, GAME, { pay: new Map([[winner, prize]]) });
+  duels.close(groupId);
+  return prize;
 }
 
 async function challenge(ctx: MessageContext, target: string, betText: string | undefined): Promise<void> {
@@ -155,10 +197,7 @@ async function resolveRound(groupId: string): Promise<void> {
 
   if (a.wins === 2 || b.wins === 2) {
     const winner = a.wins === 2 ? s.state.challenger : s.state.target;
-    const pot = s.state.bet * 2;
-    const prize = Math.floor(pot * (1 - CASINO_LIMITS.duelFee));
-    releaseEscrow(getDatabase(), groupId, GAME, { pay: new Map([[winner, prize]]) });
-    duels.close(groupId);
+    const prize = payWinner(groupId, s, winner);
     await say(groupId, `${line}\n\n🏆 ${mentionTag(winner)} gana el duelo y se lleva ${formatCoins(prize)}.`, mentions);
     return;
   }
@@ -173,7 +212,7 @@ export const aceptarPptPlugin: PluginHandler = {
   category: 'casino',
   async handler(ctx) {
     const s = duels.get(ctx.m.chat);
-    if (!s || s.phase !== 'reto' || s.state.target !== ctx.m.sender) return;
+    if (!s || s.phase !== 'reto' || s.state.target !== ctx.m.sender || ctx.args.length > 0) return;
     enter(ctx);
     if (!holdBet(getDatabase(), ctx.m.chat, ctx.m.sender, s.state.bet, GAME, { round: false })) {
       await ctx.m.reply(`Necesitas ${formatCoins(s.state.bet)} para aceptar.`);
@@ -195,7 +234,7 @@ export const eleccionPptPlugin: PluginHandler = {
   category: 'casino',
   async handler(ctx) {
     const s = duels.findByPlayer(ctx.m.sender);
-    if (!s || s.phase !== 'eleccion') return;
+    if (!s || s.phase !== 'eleccion' || ctx.args.length > 0) return;
     if (ctx.m.isGroup && ctx.m.chat !== s.groupId) return;
     const choice = parseChoice(ctx.command);
     const player = s.players.get(ctx.m.sender);
@@ -232,19 +271,28 @@ export const pptPlugin: PluginHandler = {
   },
 };
 
-const PPT_CONTEXT = declareContext({
+const PPT_ACEPTAR_CONTEXT = declareContext({
   name: 'ppt',
   isActive: (m) => {
-    const s = duels.findByPlayer(m.sender) ?? duels.get(m.chat);
-    if (!s) return false;
-    if (s.phase === 'reto') return m.chat === s.groupId && s.state.target === m.sender;
-    return s.players.has(m.sender) && (!m.isGroup || m.chat === s.groupId);
+    const s = duels.get(m.chat);
+    return Boolean(s && s.phase === 'reto' && s.state.target === m.sender);
   },
-  plugins: [aceptarPptPlugin, eleccionPptPlugin],
+  plugins: [aceptarPptPlugin],
+  noPrefix: true,
+});
+
+// p/pa/t son también alias de comandos (poder, etc.), así que la elección solo va sin prefijo.
+const PPT_ELECCION_CONTEXT = declareContext({
+  name: 'ppt-eleccion',
+  isActive: noPrefixOnly((m) => {
+    const s = duels.findByPlayer(m.sender);
+    return Boolean(s && s.phase === 'eleccion' && (!m.isGroup || m.chat === s.groupId));
+  }),
+  plugins: [eleccionPptPlugin],
   noPrefix: true,
 });
 
 export function registerPpt(handler: MessageHandler): void {
   handler.registerPlugin('game-ppt', pptPlugin);
-  attachContexts(handler, [PPT_CONTEXT]);
+  attachContexts(handler, [PPT_ACEPTAR_CONTEXT, PPT_ELECCION_CONTEXT]);
 }

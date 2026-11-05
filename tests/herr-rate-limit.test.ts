@@ -39,3 +39,20 @@ test('rechaza parámetros inválidos', () => {
   assert.throws(() => new RateLimiter(0, 1000));
   assert.throws(() => new RateLimiter(1, 0));
 });
+
+test('undo devuelve solo el último hueco consumido', () => {
+  const limiter = new RateLimiter(3, 1000);
+  limiter.try('a', 0);
+  limiter.try('a', 1);
+  limiter.try('a', 2);
+  assert.equal(limiter.try('a', 3).ok, false);
+  limiter.undo('a');
+  assert.equal(limiter.count('a', 3), 2);
+  assert.equal(limiter.try('a', 4).ok, true);
+  limiter.undo('a');
+  limiter.undo('a');
+  limiter.undo('a');
+  assert.equal(limiter.size, 0);
+  limiter.undo('nunca-vista');
+  assert.equal(limiter.size, 0);
+});

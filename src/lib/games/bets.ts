@@ -19,9 +19,12 @@ export function formatCoins(n: number): string {
   return `${Math.floor(n).toLocaleString('es-MX')} 💰`;
 }
 
+/** Palabras y porcentajes que se calculan sobre el saldo del jugador. */
+const RELATIVE_AMOUNT = /^(todo|all|max|maximo|máximo|mitad|half|\d{1,3}%)$/i;
+
 /**
- * Interpreta la apuesta escrita por el usuario (enteros, sufijos k/m,
- * todo/all/mitad) y la valida contra límites y saldo.
+ * Interpreta la apuesta escrita por el usuario (solo enteros, sufijos k/m,
+ * todo/all/mitad/porcentaje sobre el saldo) y la valida contra límites y saldo.
  */
 export function parseBet(text: string | undefined, options: ParseBetOptions): BetResult {
   const min = options.min ?? CASINO_LIMITS.minBet;
@@ -31,9 +34,14 @@ export function parseBet(text: string | undefined, options: ParseBetOptions): Be
   if (!raw) {
     if (options.fallback === undefined) return { ok: false, reason: `Indica cuánto apuestas (mínimo ${formatCoins(min)}).` };
     amount = options.fallback;
+  } else if (raw.includes('.')) {
+    return { ok: false, reason: `"${raw}" no es una apuesta válida: solo enteros (500, 2k), sin decimales.` };
+  } else if (RELATIVE_AMOUNT.test(raw)) {
+    // "todo"/"mitad"/"50%" van sobre el saldo y se acotan al máximo de la mesa en vez de rechazarse.
+    const relative = parseAmount(raw, options.balance);
+    amount = relative === null ? null : Math.min(relative, max);
   } else {
-    // "todo" se acota al máximo de la mesa para no rechazar al que tiene más saldo.
-    amount = parseAmount(raw, Math.min(options.balance, max));
+    amount = parseAmount(raw);
   }
   if (amount === null || !Number.isInteger(amount)) {
     return { ok: false, reason: `"${raw}" no es una apuesta válida. Ejemplos: 500, 2k, todo, mitad.` };
@@ -67,6 +75,35 @@ export function creditWin(db: Database, jid: string, amount: number, game: strin
   db.updateUser(jid, { money: user.money + paid });
   gameStats(db, game).paid += paid;
   db.markDirty();
+}
+
+function localDay(now = new Date()): string {
+  return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+}
+
+/** Lo que el jugador aún puede cobrar hoy en premios de minijuegos. */
+export function dailyPrizeLeft(db: Database, jid: string): number {
+  const entry = getCasino(db).prizes[jid];
+  const used = entry && entry.day === localDay() ? entry.total : 0;
+  return Math.max(0, CASINO_LIMITS.dailyPrizeCap - used);
+}
+
+/**
+ * Premio de un minijuego sin apuesta (trivia, ahorcado, memoria, adivina grupo):
+ * crea monedas, así que se acota al tope diario por persona. Devuelve lo que se
+ * acreditó de verdad (0 si ya alcanzó el tope).
+ */
+export function creditPrize(db: Database, jid: string, amount: number, game: string): number {
+  const credited = Math.min(Math.floor(amount), dailyPrizeLeft(db, jid));
+  if (credited <= 0) return 0;
+  const casino = getCasino(db);
+  const day = localDay();
+  // Las entradas de otros días ya no sirven: se purgan para que el mapa no crezca.
+  for (const [key, entry] of Object.entries(casino.prizes)) if (entry.day !== day) delete casino.prizes[key];
+  const entry = casino.prizes[jid] ?? (casino.prizes[jid] = { day, total: 0 });
+  entry.total += credited;
+  creditWin(db, jid, credited, game);
+  return credited;
 }
 
 /** Cobra la apuesta y la deja en custodia hasta que la mesa se resuelva. */

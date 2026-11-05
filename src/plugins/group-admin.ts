@@ -1,5 +1,4 @@
 import type { GroupMetadata } from 'baileys';
-import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { createLogger } from '../lib/logger.js';
 import { mentionTag } from '../lib/utils.js';
@@ -143,10 +142,3 @@ export const kickPlugin: PluginHandler = {
   botAdmin: true,
   handler: (ctx) => moderate(ctx, 'kick'),
 };
-
-/** @deprecated plugins/index.ts debe registrar promotePlugin, demotePlugin y kickPlugin desde ENTRIES.grupos. */
-export function registerGroupAdminPlugins(handler: MessageHandler): void {
-  handler.registerPlugin('group-promote', promotePlugin);
-  handler.registerPlugin('group-demote', demotePlugin);
-  handler.registerPlugin('group-kick', kickPlugin);
-}

@@ -1,16 +1,26 @@
 import type { PluginHandler } from '../types/message.js';
 import type { ChatNote } from '../types/database.js';
 import { getDatabase } from '../lib/database.js';
+import { isReservedKey } from '../lib/betting-store.js';
 import { normalizeText, mentionTag } from '../lib/utils.js';
 
 const MAX_NOTES = 50;
 const MAX_NOTE_CHARS = 1000;
 const MAX_KEY_CHARS = 30;
 
-/** Clave en minúsculas, sin acentos ni símbolos; null si no queda nada útil. */
+/**
+ * Clave en minúsculas, sin acentos ni símbolos; null si no queda nada útil o
+ * si coincide con una propiedad heredada de Object.prototype (las notas se
+ * guardan en un objeto plano y "constructor" o "__proto__" lo romperían).
+ */
 export function normalizeNoteKey(raw: string): string | null {
   const key = normalizeText(raw).replace(/[^a-z0-9_-]/g, '').slice(0, MAX_KEY_CHARS);
-  return key || null;
+  if (!key || isReservedKey(key)) return null;
+  return key;
+}
+
+function noteOf(notes: Record<string, ChatNote>, key: string | null): ChatNote | undefined {
+  return key && Object.hasOwn(notes, key) ? notes[key] : undefined;
 }
 
 function notesOf(chatId: string): Record<string, ChatNote> {
@@ -35,7 +45,7 @@ export const notaPlugin: PluginHandler = {
   usage: ['nota guardar reglas Nada de spam', 'nota reglas', 'notas', 'nota borrar reglas'],
   group: true,
 
-  handler: async ({ m, command, args, usedPrefix, isAdmin, isOwner }) => {
+  handler: async ({ m, command, args, usedPrefix, isAdmin, isOwner, send }) => {
     const db = getDatabase();
     const notes = notesOf(m.chat);
     const sub = args[0]?.toLowerCase() ?? '';
@@ -62,7 +72,7 @@ export const notaPlugin: PluginHandler = {
         await m.reply(`La nota es muy larga (${text.length} caracteres, máximo ${MAX_NOTE_CHARS}).`);
         return;
       }
-      const existing = notes[key];
+      const existing = noteOf(notes, key);
       if (existing && existing.author !== m.sender && !isAdmin && !isOwner) {
         await m.reply(`La nota *${key}* ya existe y es de otra persona. Solo su autor o un admin pueden cambiarla.`);
         return;
@@ -79,7 +89,7 @@ export const notaPlugin: PluginHandler = {
 
     if (['borrar', 'eliminar', 'del', 'delete', 'quitar'].includes(sub)) {
       const key = normalizeNoteKey(args[1] ?? '');
-      const note = key ? notes[key] : undefined;
+      const note = noteOf(notes, key);
       if (!key || !note) {
         await m.reply(`No existe esa nota. Mira la lista con *${usedPrefix}notas*.`);
         return;
@@ -99,12 +109,16 @@ export const notaPlugin: PluginHandler = {
       await m.reply(`Uso: *${usedPrefix}nota <clave>*, *${usedPrefix}notas* o *${usedPrefix}nota guardar <clave> <texto>*.`);
       return;
     }
-    const note = notes[key];
+    const note = noteOf(notes, key);
     if (!note) {
       await m.reply(`No hay ninguna nota llamada *${key}*. Mira la lista con *${usedPrefix}notas*.`);
       return;
     }
     const when = new Date(note.createdAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
-    await m.reply(`📝 *${key}*\n${note.text}\n\n_Guardada por ${mentionTag(note.author)} el ${when}_`);
+    // Con mentions para que la @ del autor se resalte; m.reply solo manda texto.
+    await send(
+      { text: `📝 *${key}*\n${note.text}\n\n_Guardada por ${mentionTag(note.author)} el ${when}_`, mentions: [note.author] },
+      { quoted: m.rawMessage },
+    );
   },
 };

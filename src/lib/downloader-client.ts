@@ -107,7 +107,7 @@ function downloadTimeoutMs(): number {
 }
 
 function authHeaders(): Record<string, string> {
-  const key = process.env.DOWNLOADER_API_KEY;
+  const key = CONFIG.downloaderApi.apiKey;
   return key ? { 'x-api-key': key } : {};
 }
 

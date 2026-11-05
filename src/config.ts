@@ -6,6 +6,8 @@
  * Ver `.env.example` para la lista completa.
  */
 
+import { join } from 'node:path';
+
 function envList(name: string): string[] {
   return (process.env[name] || '')
     .split(',')
@@ -63,11 +65,17 @@ export const CONFIG = {
    */
   owners,
 
-  /** API local opcional de descargas (dev3-downloader). */
+  /** Servicio propio de descargas (downloader/). Vacío = comandos de descarga deshabilitados. */
   downloaderApi: {
     url: process.env.DOWNLOADER_API_URL || '',
-    timeout: envInt('DOWNLOADER_API_TIMEOUT_MS', 30_000),
+    /** Las descargas tardan más de 30 s; el cliente aplica además un mínimo de 120 s. */
+    timeout: envInt('DOWNLOADER_API_TIMEOUT_MS', 120_000),
+    /** Cabecera x-api-key si el servicio define DOWNLOADER_API_KEY. */
+    apiKey: process.env.DOWNLOADER_API_KEY || '',
   },
+
+  /** Temporales de ffmpeg (stickers, conversiones). */
+  tmpDir: process.env.TMP_DIR || join(process.cwd(), 'tmp'),
 
   /** Integración con Claude. Se desactiva sola si falta ANTHROPIC_API_KEY. */
   ai: {

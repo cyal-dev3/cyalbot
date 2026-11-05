@@ -1,7 +1,7 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { EMOJI, formatNumber, createProgressBar } from '../lib/utils.js';
 import { canLevelUp, getLevelProgress, grantExp } from '../lib/levelling.js';
-import { getRoleByLevel, getRankProgress } from '../types/user.js';
+import { getRoleByLevel, getRankProgress, formatRankBenefits } from '../types/user.js';
 import { getDatabase } from '../lib/database.js';
 import { CONFIG } from '../config.js';
 
@@ -49,6 +49,8 @@ export const nivelPlugin: PluginHandler = {
       ? `🐉👑 *¡Has alcanzado el rango máximo!*\n\n`
       : `📊 Siguiente rango: ${rank.nextRank} (en *${rank.levelsToNext}* niveles)\n\n`;
 
+    // El perfil resume el rango en una línea y remite aquí para el detalle
+    text += `${formatRankBenefits(user.level)}\n\n`;
     text += `💡 El nivel sube solo al ganar XP con *${usedPrefix}work*, *${usedPrefix}minar*, *${usedPrefix}daily* o combatiendo.`;
 
     await m.reply(text);

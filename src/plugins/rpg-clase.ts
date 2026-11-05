@@ -53,31 +53,52 @@ function classListForErrors(): string {
   return CLASS_IDS.map((id, i) => `   ${i + 1}. ${CLASSES[id].emoji} ${CLASSES[id].name}`).join('\n');
 }
 
+/** Bonus de stats en una línea: `❤️ +50 · ⚔️ +5` */
+function formatClassStatsInline(classInfo: ClassInfo): string {
+  return formatClassStats(classInfo, '').split('\n').filter(Boolean).map(l => l.replace(/ (Vida|Maná|Energía|Ataque|Defensa)$/, '')).join(' · ');
+}
+
 export const clasesPlugin: PluginHandler = {
   command: ['clases', 'classes', 'verclases'],
   tags: ['rpg'],
-  help: ['clases - Ver todas las clases disponibles con sus stats y habilidades'],
-  usage: ['clases'],
+  help: [
+    'clases - Resumen de las clases disponibles',
+    'clases <nombre o número> - Detalle de una clase (stats y habilidades)'
+  ],
+  usage: ['clases', 'clases <nombre o número>'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, usedPrefix } = ctx;
+    const { m, text: query, usedPrefix } = ctx;
     const user = getDatabase().getUser(m.sender);
 
-    let text = `🎭 *CLASES DISPONIBLES*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    // Detalle bajo demanda para no mandar 60 líneas de golpe
+    if (query.trim()) {
+      const selected = resolveClass(query);
+      if (!selected) return usageError(ctx, clasesPlugin, `Clase no válida. Clases disponibles:\n${classListForErrors()}`);
+      const info = CLASSES[selected];
+      return m.reply(
+        `${info.emoji} *${info.name}*${user.playerClass === selected ? ' ← Tu clase' : ''}\n━━━━━━━━━━━━━━━━━━━━━\n` +
+        `📖 _${info.description}_\n\n` +
+        `📊 *Bonus de stats:*\n${formatClassStats(info)}\n\n` +
+        `✨ *Habilidades:*\n${formatClassSkills(info, true)}\n\n` +
+        `📝 *${usedPrefix}clase ${selected}* para elegirla` +
+        (user.playerClass && user.playerClass !== selected ? ` (cambiar cuesta *${formatNumber(CLASS.CHANGE_COST)}* monedas)` : '')
+      );
+    }
 
+    let text = `🎭 *CLASES DISPONIBLES*\n━━━━━━━━━━━━━━━━━━━━━\n`;
     CLASS_IDS.forEach((classId, index) => {
       const info = CLASSES[classId];
-      text += `${index + 1}. ${info.emoji} *${info.name}*${user.playerClass === classId ? ' ← Tu clase' : ''}\n`;
-      text += `   _${info.description}_\n\n`;
-      text += `   📊 *Bonus de stats:*\n${formatClassStats(info, '      ')}\n\n`;
-      text += `   ✨ *Habilidades:*\n${formatClassSkills(info, false, '      ')}\n\n`;
+      text += `${index + 1}. ${info.emoji} *${info.name}*${user.playerClass === classId ? ' ← Tu clase' : ''} — _${info.description}_\n`;
+      text += `   ${formatClassStatsInline(info)}\n`;
+      text += `   ✨ ${formatClassSkills(info, false, '').split('\n').join(' · ')}\n`;
     });
 
     text += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `📝 *${usedPrefix}clase <nombre o número>* - Elegir clase\n`;
+    text += `📝 *${usedPrefix}clases <n>* detalle · *${usedPrefix}clase <nombre o número>* elegir\n`;
     text += `📊 Nivel mínimo: *${CLASS.MIN_LEVEL}*`;
-    if (user.playerClass) text += `\n💰 Cambiar de clase cuesta *${formatNumber(CLASS.CHANGE_COST)}* monedas`;
+    if (user.playerClass) text += ` · 💰 cambiar cuesta *${formatNumber(CLASS.CHANGE_COST)}*`;
 
     await m.reply(text);
   }

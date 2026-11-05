@@ -7,7 +7,7 @@ import { setLogLevel } from '../src/lib/logger.js';
 import { Database } from '../src/lib/database.js';
 import { globalModes, checkExpiredModes } from '../src/lib/global-modes.js';
 import { xpRange } from '../src/lib/levelling.js';
-import { grantRewards, SLAVERY_CUT, GUILD_XP_BONUS_PER_LEVEL, isPassiveActive, clamp } from '../src/lib/rpg-actions.js';
+import { grantRewards, SLAVERY_CUT, GUILD_XP_BONUS_PER_LEVEL, isPassiveActive, clamp, PASSIVE_MODE_NO_EXPIRY } from '../src/lib/rpg-actions.js';
 import { DEFAULT_USER } from '../src/types/user.js';
 
 setLogLevel('error');
@@ -122,12 +122,24 @@ test('grantRewards hace avanzar las misiones: earn por el dinero y los questObje
   });
 });
 
-test('isPassiveActive solo mira passiveMode y clamp acota', () => {
+test('isPassiveActive usa el mismo criterio que bombardear/duelo (passiveMode && passiveModeUntil > now) y clamp acota', () => {
+  const now = 1_000_000;
   const user = structuredClone(DEFAULT_USER);
-  assert.equal(isPassiveActive(user), false);
+  assert.equal(isPassiveActive(user, now), false);
+
+  // Pasivo caducado (legado de 30 días): ya no protege, igual que para bombardear
   user.passiveMode = true;
+  user.passiveModeUntil = now - 1;
+  assert.equal(isPassiveActive(user, now), false);
   user.passiveModeUntil = 0;
-  assert.equal(isPassiveActive(user), true);
+  assert.equal(isPassiveActive(user, now), false);
+
+  // Pasivo vigente (legado con fecha o nuevo sin caducidad)
+  user.passiveModeUntil = now + 1;
+  assert.equal(isPassiveActive(user, now), true);
+  user.passiveModeUntil = PASSIVE_MODE_NO_EXPIRY;
+  assert.equal(isPassiveActive(user, now), true);
+  assert.equal(isPassiveActive({ ...user, passiveMode: false }, now), false);
 
   assert.equal(clamp(5, 0, 3), 3);
   assert.equal(clamp(-1, 0, 3), 0);

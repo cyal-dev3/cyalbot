@@ -7,10 +7,23 @@ import { LRUCache } from './lru-cache.js';
 /** Máximo de tipsters favoritos por usuario */
 export const MAX_FAVORITE_TIPSTERS = 20;
 
+/** Longitud máxima del nombre original de un tipster */
+export const MAX_TIPSTER_NAME_CHARS = 40;
+
 /** Picks registrados por el puente de Telegram llevan este "autor" */
 export const TELEGRAM_BRIDGE_AUTHOR = 'TELEGRAM_BRIDGE';
 
-export type FollowResult = 'ok' | 'already' | 'limit';
+export type FollowResult = 'ok' | 'already' | 'limit' | 'invalid';
+
+/**
+ * Claves que un objeto plano hereda de Object.prototype: usarlas como índice
+ * de tipsters contaminaría el prototipo o devolvería funciones como si fueran datos.
+ */
+const RESERVED_KEYS = new Set(Object.getOwnPropertyNames(Object.prototype).concat('__proto__', 'prototype'));
+
+export function isReservedKey(key: string): boolean {
+  return RESERVED_KEYS.has(key);
+}
 
 /** Copia independiente del betting por defecto; nunca compartir el objeto entre usuarios */
 export function createDefaultBetting(): UserBetting {
@@ -19,15 +32,23 @@ export function createDefaultBetting(): UserBetting {
 
 /**
  * Normaliza el nombre de un tipster para indexar: sin emojis ni símbolos,
- * minúsculas y espacios a guiones bajos.
+ * minúsculas y espacios a guiones bajos. Devuelve '' si no queda nada útil o
+ * si el resultado es una clave reservada del prototipo (__proto__, constructor...).
  */
 export function normalizeTipsterName(name: string): string {
-  return name
+  const normalized = name
     .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
     .replace(/[^\w\sáéíóúñÁÉÍÓÚÑ]/gi, '')
     .trim()
     .toLowerCase()
     .replace(/\s+/g, '_');
+  return isReservedKey(normalized) ? '' : normalized;
+}
+
+/** Tipster por clave normalizada, solo si es propiedad propia del índice. */
+export function tipsterByKey(system: BettingSystem, normalized: string): TipsterStats | null {
+  if (!normalized || !Object.hasOwn(system.tipsters, normalized)) return null;
+  return system.tipsters[normalized];
 }
 
 /**
@@ -67,25 +88,27 @@ export class BettingStore {
     this.db.markDirty();
   }
 
+  /** Lanza si el nombre no da una clave válida: los comandos deben validarlo antes con normalizeTipsterName. */
   getOrCreateTipster(chatId: string, tipsterName: string): TipsterStats {
     const system = this.getBettingSystem(chatId);
     const normalized = normalizeTipsterName(tipsterName);
+    if (!normalized) throw new Error(`nombre de tipster inválido: "${tipsterName}"`);
 
-    if (!system.tipsters[normalized]) {
-      system.tipsters[normalized] = {
-        ...structuredClone(DEFAULT_TIPSTER_STATS),
-        name: tipsterName.trim(),
-        normalized
-      };
-      this.db.markDirty();
-    }
+    const existing = tipsterByKey(system, normalized);
+    if (existing) return existing;
 
-    return system.tipsters[normalized];
+    const created: TipsterStats = {
+      ...structuredClone(DEFAULT_TIPSTER_STATS),
+      name: tipsterName.trim(),
+      normalized
+    };
+    system.tipsters[normalized] = created;
+    this.db.markDirty();
+    return created;
   }
 
   getTipster(chatId: string, tipsterName: string): TipsterStats | null {
-    const system = this.getBettingSystem(chatId);
-    return system.tipsters[normalizeTipsterName(tipsterName)] || null;
+    return tipsterByKey(this.getBettingSystem(chatId), normalizeTipsterName(tipsterName));
   }
 
   registerPick(chatId: string, pick: Omit<BettingPick, 'id'>): BettingPick {
@@ -132,7 +155,7 @@ export class BettingStore {
     const pick = system.picks.find(p => p.id === pickId);
     if (!pick || pick.status !== 'pending') return null;
 
-    const tipster = system.tipsters[pick.tipster];
+    const tipster = tipsterByKey(system, pick.tipster);
     if (!tipster) return null;
 
     pick.status = won ? 'won' : 'lost';
@@ -177,7 +200,7 @@ export class BettingStore {
     const pick = system.picks[pickIndex];
     if (pick.status !== 'pending') return null;
 
-    const tipster = system.tipsters[pick.tipster];
+    const tipster = tipsterByKey(system, pick.tipster);
     if (tipster) {
       tipster.pending--;
       tipster.totalUnits -= pick.units;
@@ -196,7 +219,7 @@ export class BettingStore {
 
     if (tipsterName) {
       const normalized = normalizeTipsterName(tipsterName);
-      picks = picks.filter(p => p.tipster === normalized);
+      picks = normalized ? picks.filter(p => p.tipster === normalized) : [];
     }
 
     return picks;
@@ -229,7 +252,7 @@ export class BettingStore {
     const system = this.getBettingSystem(chatId);
     const pending = system.picks.filter(p => p.status === 'pending');
     for (const pick of pending) {
-      const tipster = system.tipsters[pick.tipster];
+      const tipster = tipsterByKey(system, pick.tipster);
       if (tipster) {
         tipster.pending = Math.max(0, tipster.pending - 1);
         tipster.totalUnits = Math.max(0, tipster.totalUnits - pick.units);
@@ -267,19 +290,23 @@ export class BettingStore {
 
   /**
    * Sigue a un tipster. 'already' si ya lo seguía; 'limit' si el usuario llegó
-   * al máximo de favoritos (en ese caso no se añade como follower).
+   * al máximo de favoritos; 'invalid' si el nombre no sirve como clave. El
+   * tipster solo se crea cuando el seguimiento va a registrarse.
    */
   followTipsterStatus(chatId: string, tipsterName: string, userJid: string): FollowResult {
-    const tipster = this.getOrCreateTipster(chatId, tipsterName);
-    if (tipster.followers.includes(userJid)) return 'already';
+    const normalized = normalizeTipsterName(tipsterName);
+    if (!normalized || tipsterName.trim().length > MAX_TIPSTER_NAME_CHARS) return 'invalid';
+
+    const existing = this.getTipster(chatId, tipsterName);
+    if (existing?.followers.includes(userJid)) return 'already';
 
     const betting = this.getUserBetting(userJid);
-    const normalized = normalizeTipsterName(tipsterName);
     const alreadyFavorite = betting.favoriteTipsters.includes(normalized);
     if (!alreadyFavorite && betting.favoriteTipsters.length >= MAX_FAVORITE_TIPSTERS) {
       return 'limit';
     }
 
+    const tipster = existing ?? this.getOrCreateTipster(chatId, tipsterName);
     tipster.followers.push(userJid);
     if (!alreadyFavorite) betting.favoriteTipsters.push(normalized);
 

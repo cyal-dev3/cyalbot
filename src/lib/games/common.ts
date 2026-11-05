@@ -1,6 +1,6 @@
 import { randomInt } from 'node:crypto';
 import type { proto } from 'baileys';
-import type { MessageContext, MessageHandlerInterface, PluginHandler, CommandContext } from '../../types/message.js';
+import type { MessageContext, MessageHandlerInterface, PluginHandler, CommandContext, SerializedMessage } from '../../types/message.js';
 import { getDatabase, type Database } from '../database.js';
 import { displayName, mentionTag } from '../utils.js';
 import { createLogger } from '../logger.js';
@@ -103,6 +103,34 @@ export async function requireGroup(ctx: MessageContext): Promise<boolean> {
   return false;
 }
 
+/** Modo compacto del chat: los juegos de una sola respuesta contestan en una línea. */
+export function isCompact(ctx: MessageContext): boolean {
+  return ctx.handler.isCompactMode(ctx.m.chat);
+}
+
+/** Espera mínima por clave (grupo o jugador) entre partidas; en memoria de proceso. */
+export class Cooldown {
+  private readonly last = new Map<string, number>();
+
+  constructor(private readonly ms: number) {}
+
+  /** Milisegundos que faltan para poder volver a jugar; 0 si ya se puede. */
+  remaining(key: string, now = Date.now()): number {
+    const last = this.last.get(key);
+    if (last === undefined) return 0;
+    return Math.max(0, last + this.ms - now);
+  }
+
+  mark(key: string, now = Date.now()): void {
+    this.last.set(key, now);
+  }
+
+  /** Texto corto para avisar la espera. */
+  static text(ms: number): string {
+    return ms >= 60_000 ? `${Math.ceil(ms / 60_000)} min` : `${Math.ceil(ms / 1000)} s`;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Contextos: cada juego declara el suyo al cargar el módulo. registerXxx los
 // registra en el handler; mientras plugins/index.ts no llame a esas funciones,
@@ -115,6 +143,16 @@ const attached = new WeakMap<MessageHandlerInterface, Set<string>>();
 export function declareContext(context: CommandContext): CommandContext {
   declaredContexts.push(context);
   return context;
+}
+
+/**
+ * Para contextos cuyos plugins son patrones libres (una letra, un número, un
+ * emoji): solo deben activarse con texto SIN prefijo. El handler consulta los
+ * contextos también para mensajes con prefijo, y un patrón como /^[a-z]$/ se
+ * tragaría `!s` o `!menu` mientras hubiera partida.
+ */
+export function noPrefixOnly(isActive: (m: SerializedMessage) => boolean): (m: SerializedMessage) => boolean {
+  return (m) => !CONFIG.prefix.test(m.text ?? '') && isActive(m);
 }
 
 export function attachContexts(handler: MessageHandlerInterface, only?: CommandContext[]): void {

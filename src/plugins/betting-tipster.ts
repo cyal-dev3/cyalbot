@@ -4,7 +4,7 @@
 
 import type { PluginHandler } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
-import { MAX_FAVORITE_TIPSTERS } from '../lib/betting-store.js';
+import { MAX_FAVORITE_TIPSTERS, MAX_TIPSTER_NAME_CHARS } from '../lib/betting-store.js';
 import { extractTipsterNameLegacy, formatRecord, renderFavoriteTipsters, requireBetting } from '../lib/betting-parser.js';
 import { getTargetUserOrSelf, mentionTag } from '../lib/utils.js';
 
@@ -48,6 +48,7 @@ export const tipsterPlugin: PluginHandler = {
           return m.reply(`Dime a quién: *${usedPrefix}tipster seguir NombreTipster*, o responde a un mensaje que empiece con #NombreTipster.`);
         }
         const result = store.followTipsterStatus(m.chat, name, m.sender);
+        if (result === 'invalid') return m.reply(`Ese nombre no sirve como tipster: usa letras o números (máximo ${MAX_TIPSTER_NAME_CHARS} caracteres).`);
         if (result === 'already') return m.reply(`Ya sigues a *${name}*.`);
         if (result === 'limit') return m.reply(`Ya tienes ${MAX_FAVORITE_TIPSTERS} favoritos. Quita alguno con *${usedPrefix}tipster dejar <nombre>*.`);
         const tipster = store.getTipster(m.chat, name);
@@ -103,27 +104,30 @@ export const tipstersDePlugin: PluginHandler = {
   group: true,
 
   handler: async (ctx) => {
-    const { m, args, usedPrefix } = ctx;
+    const { m, args, usedPrefix, send } = ctx;
     const db = getDatabase();
     const system = await requireBetting(ctx);
     if (!system) return;
 
     const targetJid = getTargetUserOrSelf(m, { args });
     const isSelf = targetJid === m.sender;
+    // m.reply no lleva mentions; los textos con @usuario van por send para que WhatsApp los resalte.
+    const replyMentioning = (text: string) => send({ text, mentions: [targetJid] }, { quoted: m.rawMessage });
     if (!isSelf && !db.hasUser(targetJid)) {
-      return m.reply(`${mentionTag(targetJid)} todavía no ha usado el bot, así que no tiene tipsters.`);
+      return replyMentioning(`${mentionTag(targetJid)} todavía no ha usado el bot, así que no tiene tipsters.`);
     }
     const betting = db.betting.getUserBetting(targetJid);
     if (betting.favoriteTipsters.length === 0) {
-      return m.reply(isSelf
-        ? `📋 No tienes tipsters favoritos. Añade uno con *${usedPrefix}tipster seguir <nombre>*.`
-        : `📋 ${mentionTag(targetJid)} no tiene tipsters favoritos.`);
+      return isSelf
+        ? m.reply(`📋 No tienes tipsters favoritos. Añade uno con *${usedPrefix}tipster seguir <nombre>*.`)
+        : replyMentioning(`📋 ${mentionTag(targetJid)} no tiene tipsters favoritos.`);
     }
-    await m.reply(renderFavoriteTipsters(betting, system, {
+    const text = renderFavoriteTipsters(betting, system, {
       usedPrefix,
       title: isSelf ? undefined : `TIPSTERS DE ${mentionTag(targetJid)}`,
       showNotify: isSelf,
-    }));
+    });
+    await (isSelf ? m.reply(text) : replyMentioning(text));
   },
 };
 

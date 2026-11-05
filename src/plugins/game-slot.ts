@@ -3,7 +3,7 @@ import type { MessageHandler } from '../handler.js';
 import { getDatabase } from '../lib/database.js';
 import { parseBet, debitBet, creditWin, formatCoins } from '../lib/games/bets.js';
 import { CASINO_LIMITS, getCasino } from '../lib/games/state.js';
-import { enter, requireRegistered, rollInt, infoPlugin, type GameInfo } from '../lib/games/common.js';
+import { enter, requireRegistered, rollInt, isCompact, infoPlugin, type GameInfo } from '../lib/games/common.js';
 
 export interface SlotSymbol {
   emoji: string;
@@ -133,6 +133,10 @@ export const slotPlugin: PluginHandler = {
     if (jackpot > 0) line += `\n🌟 ¡JACKPOT! +${formatCoins(jackpot)}`;
 
     const netText = `${net >= 0 ? '+' : '-'}${Math.abs(net).toLocaleString('es-MX')}`;
+    if (isCompact(ctx)) {
+      await m.reply(`${display} ${netText} 💰${jackpot > 0 ? ' 🌟 JACKPOT' : ''}`);
+      return;
+    }
     const extra = [
       streak >= 2 ? `🔥 racha ×${streak}` : null,
       casino.jackpot > 0 ? `🏺 jackpot: ${formatCoins(casino.jackpot)}` : null,

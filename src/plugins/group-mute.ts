@@ -1,11 +1,9 @@
-import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import type { ChatSettings } from '../types/database.js';
 import { getDatabase } from '../lib/database.js';
 import { mentionTag, msToTime } from '../lib/utils.js';
 import { resolveTarget, assertCanModerate, isSameParticipant } from '../lib/participants.js';
 import { getMutedUntil } from '../lib/moderation.js';
-import { automutePlugin } from './group-toggles.js';
 
 export { isMutedNow, getMutedUntil } from '../lib/moderation.js';
 
@@ -266,12 +264,3 @@ export const listMutePlugin: PluginHandler = {
     await sendMention(ctx, `🔇 *Silenciados*\n\n${status}\n\n${lines.join('\n')}`, muted);
   },
 };
-
-/** @deprecated plugins/index.ts debe registrar estos plugins desde ENTRIES.grupos (automute está en TOGGLE_ENTRIES). */
-export function registerGroupMutePlugins(handler: MessageHandler): void {
-  handler.registerPlugin('group-mute', mutePlugin);
-  handler.registerPlugin('group-tempmute', tempMutePlugin);
-  handler.registerPlugin('group-unmute', unmutePlugin);
-  handler.registerPlugin('group-automute', automutePlugin);
-  handler.registerPlugin('group-listmute', listMutePlugin);
-}

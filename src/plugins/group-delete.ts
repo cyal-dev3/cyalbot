@@ -1,31 +1,12 @@
 import { areJidsSameUser, type proto } from 'baileys';
-import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { createLogger } from '../lib/logger.js';
 import { getBotIds } from '../lib/participants.js';
-import { autoClearPlugin } from './group-toggles.js';
-
-const log = createLogger('grupos');
 
 type DeleteContext = Pick<MessageContext, 'conn' | 'handler'>;
 
-/**
- * Borra un mensaje. Pasa por handler.deleteMessage cuando existe (hoy está en
- * la clase pero no en la interfaz; ver handoff) para que anti-delete pueda
- * olvidar el mensaje y no reenviar lo que borra el propio bot.
- */
+/** Borra un mensaje vía handler.deleteMessage, que además hace que anti-delete lo olvide. */
 export async function deleteByKey(ctx: DeleteContext, chat: string, key: proto.IMessageKey): Promise<boolean> {
-  const viaHandler = (ctx.handler as unknown as {
-    deleteMessage?: (chatId: string, key: proto.IMessageKey) => Promise<boolean>;
-  }).deleteMessage;
-  if (typeof viaHandler === 'function') return viaHandler.call(ctx.handler, chat, key);
-  try {
-    await ctx.conn.sendMessage(chat, { delete: key });
-    return true;
-  } catch (error) {
-    log.warn('no se pudo borrar mensaje:', error instanceof Error ? error.message : error);
-    return false;
-  }
+  return ctx.handler.deleteMessage(chat, key);
 }
 
 /** Envía un aviso que se borra solo pasados `ms`. No se rastrea para /clear. */
@@ -118,11 +99,9 @@ export const clearPlugin: PluginHandler = {
       if (i + CLEAR_BATCH < toDelete.length) await new Promise((r) => setTimeout(r, CLEAR_BATCH_PAUSE_MS));
     }
 
-    // Solo salen del rastreo los procesados. Sin removeTrackedMessages en la interfaz
-    // (ver handoff) hay que vaciar y volver a registrar el resto, que pierde su marca de tiempo.
-    const remaining = handler.getTrackedMessages(m.chat).filter((t) => !t.key.id || !processed.has(t.key.id));
-    handler.clearTrackedMessages(m.chat);
-    for (const t of remaining) handler.trackMessage(m.chat, t.key, t.isCommand);
+    // Solo salen del rastreo los procesados; el resto conserva su marca de tiempo.
+    handler.removeTrackedMessages(m.chat, [...processed]);
+    const remaining = handler.getTrackedMessages(m.chat);
 
     await replyTemp(
       ctx,
@@ -133,10 +112,3 @@ export const clearPlugin: PluginHandler = {
     );
   },
 };
-
-/** @deprecated plugins/index.ts debe registrar deletePlugin y clearPlugin desde ENTRIES.grupos (autoclear está en TOGGLE_ENTRIES). */
-export function registerGroupDeletePlugins(handler: MessageHandler): void {
-  handler.registerPlugin('group-delete', deletePlugin);
-  handler.registerPlugin('group-clear', clearPlugin);
-  handler.registerPlugin('group-autoclear', autoClearPlugin);
-}

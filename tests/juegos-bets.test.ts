@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setLogLevel } from '../src/lib/logger.js';
 import { Database } from '../src/lib/database.js';
 import {
-  parseBet, debitBet, creditWin, holdBet, heldAmount, releaseEscrow, refundPlayer, refundAllEscrow, houseEdge,
+  parseBet, debitBet, creditWin, creditPrize, dailyPrizeLeft, holdBet, heldAmount, releaseEscrow, refundPlayer, refundAllEscrow, houseEdge,
 } from '../src/lib/games/bets.js';
 import { getCasino, CASINO_LIMITS } from '../src/lib/games/state.js';
 
@@ -33,8 +33,22 @@ test('parseBet acepta enteros, sufijos y palabras', () => {
   assert.deepEqual(parseBet('2k', { balance: 10_000 }), { ok: true, amount: 2_000 });
   assert.deepEqual(parseBet('todo', { balance: 3_000 }), { ok: true, amount: 3_000 });
   assert.deepEqual(parseBet('mitad', { balance: 3_000 }), { ok: true, amount: 1_500 });
-  // "todo" se acota al máximo de la mesa en vez de rechazarse.
+  // "mitad" y los porcentajes van sobre el saldo, no sobre el máximo de la mesa.
+  assert.deepEqual(parseBet('mitad', { balance: 40_000 }), { ok: true, amount: 20_000 });
+  assert.deepEqual(parseBet('10%', { balance: 40_000 }), { ok: true, amount: 4_000 });
+  // "todo" y "mitad" se acotan al máximo de la mesa en vez de rechazarse.
   assert.deepEqual(parseBet('all', { balance: 1_000_000 }), { ok: true, amount: CASINO_LIMITS.maxBet });
+  assert.deepEqual(parseBet('mitad', { balance: 1_000_000 }), { ok: true, amount: CASINO_LIMITS.maxBet });
+});
+
+test('parseBet solo acepta enteros: los decimales se rechazan, no se truncan', () => {
+  for (const text of ['100.5', '1.9k', '500.0', '2.5m']) {
+    const r = parseBet(text, { balance: 10_000_000 });
+    assert.equal(r.ok, false, `"${text}" debería fallar`);
+    if (!r.ok) assert.match(r.reason, /enteros/);
+  }
+  // Un literal fuera de rango se rechaza (no se acota): solo las palabras relativas se acotan.
+  assert.equal(parseBet('30000', { balance: 100_000 }).ok, false);
 });
 
 test('parseBet rechaza con razón legible', () => {
@@ -126,5 +140,26 @@ test('getCasino repara un estado corrupto en settings', async () => {
     assert.deepEqual(casino.escrow, []);
     assert.deepEqual(casino.stats, {});
     assert.equal(casino.jackpot, 0);
+    assert.deepEqual(casino.prizes, {});
+  });
+});
+
+test('creditPrize respeta el tope diario por jugador', async () => {
+  await withDb((db) => {
+    db.updateUser(A, { money: 0 });
+    const cap = CASINO_LIMITS.dailyPrizeCap;
+    assert.equal(dailyPrizeLeft(db, A), cap);
+    assert.equal(creditPrize(db, A, 300, 'trivia'), 300);
+    assert.equal(creditPrize(db, A, cap, 'ahorcado'), cap - 300, 'se acota a lo que queda del día');
+    assert.equal(creditPrize(db, A, 100, 'memoria'), 0, 'tope alcanzado');
+    assert.equal(db.getUser(A).money, cap);
+    assert.equal(dailyPrizeLeft(db, A), 0);
+    // Otro jugador tiene su propio tope.
+    assert.equal(creditPrize(db, B, 200, 'trivia'), 200);
+    // Una entrada de otro día se purga y el tope se reinicia.
+    getCasino(db).prizes[A].day = 'ayer';
+    assert.equal(dailyPrizeLeft(db, A), cap);
+    assert.equal(creditPrize(db, A, 50, 'trivia'), 50);
+    assert.equal(getCasino(db).stats.trivia.paid, 550);
   });
 });

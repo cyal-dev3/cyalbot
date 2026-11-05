@@ -26,6 +26,8 @@ export function getConn(): WASocket | null {
 // ---------------------------------------------------------------------------
 
 export interface Session<TPlayer, TState, TPhase extends string = string> {
+  /** Identificador único de la mesa: distingue una mesa cerrada de otra nueva en el mismo grupo. */
+  id: number;
   groupId: string;
   game: string;
   phase: TPhase;
@@ -58,6 +60,13 @@ export interface ActiveTable {
 }
 
 const managers: GameSessionManager<unknown, unknown, string>[] = [];
+let nextSessionId = 1;
+
+/** Barrido periódico: una mesa atascada no debe depender de que alguien abra otra. */
+const SWEEP_MS = 60_000;
+setInterval(() => {
+  for (const m of managers) m.sweepIdle();
+}, SWEEP_MS).unref();
 
 export class GameSessionManager<TPlayer, TState, TPhase extends string = string> {
   readonly game: string;
@@ -80,6 +89,7 @@ export class GameSessionManager<TPlayer, TState, TPhase extends string = string>
     if (this.sessions.has(groupId) || this.sessions.size >= this.maxTables) return null;
     const now = Date.now();
     const session: Session<TPlayer, TState, TPhase> = {
+      id: nextSessionId++,
       groupId, game: this.game, phase: init.phase, state: init.state,
       players: new Map(), order: [], turn: 0,
       createdAt: now, updatedAt: now, phaseEndsAt: 0, timer: null,
@@ -88,12 +98,28 @@ export class GameSessionManager<TPlayer, TState, TPhase extends string = string>
     return session;
   }
 
+  /** Mesa del grupo; una mesa vencida (sin actividad > idleMs) se cierra con reembolso y no se devuelve. */
   get(groupId: string): Session<TPlayer, TState, TPhase> | undefined {
-    return this.sessions.get(groupId);
+    const s = this.sessions.get(groupId);
+    if (s && Date.now() - s.updatedAt > this.idleMs) {
+      log.warn(`${this.game} ${groupId}: mesa inactiva cerrada con reembolso`);
+      this.close(groupId, { refund: true });
+      return undefined;
+    }
+    return s;
   }
 
   has(groupId: string): boolean {
-    return this.sessions.has(groupId);
+    return this.get(groupId) !== undefined;
+  }
+
+  /**
+   * True si `session` sigue siendo la mesa viva del grupo. Las resoluciones con
+   * animación (await) lo comprueban antes de pagar: un `cerrarmesa` a mitad pudo
+   * reembolsar y una mesa nueva pudo abrirse en el mismo grupo.
+   */
+  isCurrent(session: Session<TPlayer, TState, TPhase>): boolean {
+    return this.sessions.get(session.groupId) === session;
   }
 
   size(): number {

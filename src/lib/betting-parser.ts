@@ -2,7 +2,7 @@ import type { BettingPick, BettingSystem, TipsterStats } from '../types/database
 import type { MessageContext } from '../types/message.js';
 import type { UserBetting } from '../types/user.js';
 import type { BettingStore } from './betting-store.js';
-import { MAX_FAVORITE_TIPSTERS } from './betting-store.js';
+import { MAX_FAVORITE_TIPSTERS, tipsterByKey } from './betting-store.js';
 import { getDatabase } from './database.js';
 
 /**
@@ -126,10 +126,10 @@ export function renderFavoriteTipsters(
   let msg = `🎫 ${title} (${betting.favoriteTipsters.length}/${MAX_FAVORITE_TIPSTERS})\n${SEP}\n\n`;
 
   const known = betting.favoriteTipsters
-    .map((norm) => system.tipsters[norm])
-    .filter((t): t is TipsterStats => Boolean(t))
+    .map((norm) => tipsterByKey(system, norm))
+    .filter((t): t is TipsterStats => t !== null)
     .sort((a, b) => tipsterMetrics(b).winrate - tipsterMetrics(a).winrate);
-  const unknown = betting.favoriteTipsters.filter((norm) => !system.tipsters[norm]);
+  const unknown = betting.favoriteTipsters.filter((norm) => !tipsterByKey(system, norm));
 
   for (const t of known) {
     const m = tipsterMetrics(t);
@@ -169,18 +169,29 @@ export async function requireBetting(ctx: Pick<MessageContext, 'm' | 'usedPrefix
   return null;
 }
 
-/** Lista numerada de picks pendientes para que el usuario elija por número o id. */
-export function describePendingPicks(picks: BettingPick[], usedPrefix: string, command: string): string {
+/**
+ * Lista numerada de picks pendientes para que el usuario elija por número o id.
+ * Los números son la posición en la lista completa de pendientes del grupo (la
+ * misma que usan verde/roja/seguir/cancelar), aunque se muestre un subconjunto.
+ */
+export function describePendingPicks(picks: BettingPick[], usedPrefix: string, command: string, allPending: BettingPick[] = picks): string {
   if (picks.length === 0) return `📋 No hay picks pendientes. Registra uno respondiendo a un mensaje con *${usedPrefix}pick*.`;
-  const lines = picks.slice(0, 15).map((p, i) => `${i + 1}. *${p.tipsterOriginal}* · ${p.units}u · id ${p.id.slice(-8)}`);
+  const lines = picks.slice(0, 15).map((p) => `${pendingIndex(allPending, p)}. *${p.tipsterOriginal}* · ${p.units}u · id ${p.id.slice(-8)}`);
   const more = picks.length > 15 ? `\n… y ${picks.length - 15} más` : '';
   return `📋 ¿Cuál? Hay ${picks.length} picks pendientes:\n${lines.join('\n')}${more}\n\nUsa *${usedPrefix}${command} <número>*, *${usedPrefix}${command} <id>* o responde al mensaje del pick.`;
+}
+
+/** Número (desde 1) de un pick dentro de la lista de pendientes del grupo. */
+export function pendingIndex(allPending: BettingPick[], pick: BettingPick): number {
+  return allPending.findIndex((p) => p.id === pick.id) + 1;
 }
 
 /**
  * Localiza un pick pendiente: por mensaje citado, por número de la lista de
  * pendientes, por los últimos caracteres del id (mínimo 4) o por tipster.
- * Devuelve null si no hay candidato o si hay más de uno (el comando lista los pendientes).
+ * Devuelve null si no hay candidato o si hay más de uno (el comando lista los
+ * pendientes). Si se citó un mensaje que no es de ningún pick y no hay más
+ * pista, también devuelve null: el usuario señaló algo concreto que no existe.
  */
 export function findPickFromContext(
   store: BettingStore,
@@ -188,13 +199,14 @@ export function findPickFromContext(
   quotedMsgId: string | null | undefined,
   text: string | undefined,
 ): BettingPick | null {
+  const needle = (text ?? '').trim().toLowerCase();
   if (quotedMsgId) {
     const byQuote = store.getPickByMessageId(chatId, quotedMsgId);
     if (byQuote) return byQuote;
+    if (!needle) return null;
   }
 
   const pending = store.getPendingPicks(chatId);
-  const needle = (text ?? '').trim().toLowerCase();
 
   if (!needle) {
     return pending.length === 1 ? pending[0] : null;

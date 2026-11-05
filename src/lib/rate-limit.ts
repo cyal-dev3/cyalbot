@@ -39,9 +39,20 @@ export class RateLimiter {
     return this.prune(key, now).length;
   }
 
-  /** Olvida una clave (p. ej. al deshacer una acción que no llegó a ejecutarse). */
+  /** Olvida una clave entera. */
   reset(key: string): void {
     this.stamps.delete(key);
+  }
+
+  /**
+   * Devuelve el último hueco consumido de la clave (la acción no llegó a
+   * ejecutarse). Solo quita una marca, no la ventana completa.
+   */
+  undo(key: string): void {
+    const live = this.stamps.get(key);
+    if (!live) return;
+    live.pop();
+    if (live.length === 0) this.stamps.delete(key);
   }
 
   get size(): number {

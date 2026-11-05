@@ -6,6 +6,7 @@
  */
 
 import chalk from 'chalk';
+import { recordLogLine } from './runtime-stats.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -45,7 +46,10 @@ const PAINT: Record<LogLevel, (s: string) => string> = {
 
 function write(level: LogLevel, scope: string, parts: unknown[]): void {
   if (LEVELS[level] < LEVELS[currentLevel]) return;
-  const line = `${chalk.gray(timestamp())} ${PAINT[level](level.padEnd(5))} ${chalk.white(scope)} ${parts.map(format).join(' ')}`;
+  const message = parts.map(format).join(' ');
+  // El buffer de /logs se manda por WhatsApp: sin colores.
+  if (level === 'warn' || level === 'error') recordLogLine(level, scope, message);
+  const line = `${chalk.gray(timestamp())} ${PAINT[level](level.padEnd(5))} ${chalk.white(scope)} ${message}`;
   if (level === 'error') console.error(line);
   else console.log(line);
 }

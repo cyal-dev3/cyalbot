@@ -7,7 +7,9 @@ import { setLogLevel } from '../src/lib/logger.js';
 import { initDatabase, type Database } from '../src/lib/database.js';
 import { xpRange } from '../src/lib/levelling.js';
 import { ROB, PVP } from '../src/constants/rpg.js';
-import { calculateRobAttempt, applyRobTransfer, hasStealableResources, robarPlugin } from '../src/plugins/rpg-robar.js';
+import { calculateRobAttempt, applyRobTransfer, hasStealableResources, getStealableResources, robarPlugin } from '../src/plugins/rpg-robar.js';
+import { PASSIVE_MODE_NO_EXPIRY } from '../src/lib/rpg-actions.js';
+import { calculateTotalStats } from '../src/lib/rpg-utils.js';
 import { DEFAULT_USER, type UserRPG } from '../src/types/user.js';
 import type { MessageContext } from '../src/types/message.js';
 
@@ -76,6 +78,55 @@ test('hasStealableResources distingue víctimas pobres', () => {
   assert.equal(hasStealableResources(user({ money: ROB.MIN_VICTIM_RESOURCES.MONEY })), true);
 });
 
+test('la XP robable es solo la que supera el mínimo del nivel: nunca se anuncia un robo de +0', () => {
+  // Víctima recién subida de nivel: su XP está en el piso y loseExp no la bajaría
+  const floorVictim = user({ level: 20, exp: xpRange(20).min, money: 0, mana: 0 });
+  assert.equal(getStealableResources(floorVictim).exp, 0);
+  assert.equal(hasStealableResources(floorVictim), false);
+  const thief = user({ level: 20, exp: xpRange(20).min });
+  const empty = calculateRobAttempt(thief, floorVictim, { rand: scripted([1, 85]) });
+  assert.equal(empty.success, false);
+  assert.equal(empty.amount, 0);
+
+  // Con margen de 1000 XP, la cantidad se acota al margen y applyRobTransfer mueve exactamente eso
+  const victim = user({ level: 20, exp: xpRange(20).min + 1000, money: 0, mana: 0 });
+  const r = calculateRobAttempt(thief, victim, { rand: scripted([1, 85]), amountBonus: 10_000 });
+  assert.equal(r.success, true);
+  assert.equal(r.resource, 'exp');
+  assert.ok(r.amount >= 1 && r.amount <= 1000);
+  const taken = applyRobTransfer(thief, victim, 'exp', r.amount);
+  assert.equal(taken, r.amount);
+  assert.equal(victim.exp, xpRange(20).min + 1000 - taken);
+});
+
+test('el maná robable se limita al hueco del ladrón; con el maná lleno se cae a otro recurso o a bolsillos vacíos', () => {
+  const thief = user({ level: 20 });
+  thief.mana = calculateTotalStats(thief).maxMana;
+  const onlyMana = user({ level: 20, money: 0, exp: xpRange(20).min, mana: 100 });
+  assert.equal(getStealableResources(onlyMana, thief).mana, 0);
+  assert.equal(hasStealableResources(onlyMana, thief), false);
+  const r = calculateRobAttempt(thief, onlyMana, { rand: scripted([1, 100]) });
+  assert.equal(r.success, false);
+  assert.equal(r.amount, 0);
+
+  // Si además tiene dinero, el sorteo de maná cae a dinero en vez de anunciar +0 maná
+  const withMoney = user({ level: 20, money: 500, exp: xpRange(20).min, mana: 100 });
+  const fallback = calculateRobAttempt(thief, withMoney, { rand: scripted([1, 100]) });
+  assert.equal(fallback.success, true);
+  assert.equal(fallback.resource, 'money');
+  assert.ok(fallback.amount >= 1 && fallback.amount <= 500);
+
+  // Con hueco, la cantidad no supera min(maná víctima, hueco)
+  thief.mana = calculateTotalStats(thief).maxMana - 5;
+  const partial = calculateRobAttempt(thief, user({ level: 20, money: 0, exp: xpRange(20).min, mana: 100 }), { rand: scripted([1, 100]) });
+  assert.equal(partial.success, false, 'con hueco 5 < MIN_VICTIM_RESOURCES.MANA no hay nada que robar');
+  thief.mana = calculateTotalStats(thief).maxMana - 15;
+  const some = calculateRobAttempt(thief, user({ level: 20, money: 0, exp: xpRange(20).min, mana: 100 }), { rand: scripted([1, 100]) });
+  assert.equal(some.success, true);
+  assert.equal(some.resource, 'mana');
+  assert.ok(some.amount >= 1 && some.amount <= 15);
+});
+
 interface FakeCtxOptions {
   sender: string;
   target: string | null;
@@ -133,14 +184,14 @@ test('robar: el escudo anti-robo y el modo pasivo bloquean el robo sin mover rec
     assert.equal(db.getUser(thiefJid).money, 1000);
     assert.equal(db.getUser(thiefJid).lastRob, 0, 'un robo bloqueado no consume el cooldown');
 
-    db.updateUser(victimJid, { shieldRobo: 0, passiveMode: true, passiveModeUntil: 0 });
+    db.updateUser(victimJid, { shieldRobo: 0, passiveMode: true, passiveModeUntil: PASSIVE_MODE_NO_EXPIRY });
     const passive = fakeCtx(db, { sender: thiefJid, target: victimJid });
     await robarPlugin.handler(passive.ctx);
     assert.ok(passive.replies.some(r => r.includes('modo pasivo')));
     assert.equal(db.getUser(victimJid).money, 5000);
 
-    db.updateUser(victimJid, { passiveMode: false });
-    db.updateUser(thiefJid, { passiveMode: true });
+    db.updateUser(victimJid, { passiveMode: false, passiveModeUntil: 0 });
+    db.updateUser(thiefJid, { passiveMode: true, passiveModeUntil: PASSIVE_MODE_NO_EXPIRY });
     const selfPassive = fakeCtx(db, { sender: thiefJid, target: victimJid });
     await robarPlugin.handler(selfPassive.ctx);
     assert.ok(selfPassive.replies.some(r => r.includes('Estás en *modo pasivo*')));
@@ -175,6 +226,29 @@ test('robar: un robo real conserva la suma de dinero entre ladrón y víctima', 
       assert.equal(victim.money, 5000);
       assert.ok(thief.money <= 1000);
     }
+  } finally {
+    await db.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('robar: una víctima con la XP en el piso de su nivel y sin dinero ni maná no consume el cooldown', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cyalbot-rpgprog-robar3-'));
+  const db = await initDatabase(join(dir, 'database.json'));
+  try {
+    const thiefJid = 'ladron3@s.whatsapp.net';
+    const victimJid = 'victima3@s.whatsapp.net';
+    db.updateUser(thiefJid, { registered: true, name: 'Ladron', level: 20, money: 1000, exp: xpRange(20).min, lastRob: 0 });
+    db.updateUser(victimJid, { registered: true, name: 'Victima', level: 20, money: 0, exp: xpRange(20).min, mana: 0 });
+
+    const { ctx, replies, sent } = fakeCtx(db, { sender: thiefJid, target: victimJid });
+    await robarPlugin.handler(ctx);
+
+    assert.equal(sent.length, 0, 'no se anuncia ni éxito ni fallo');
+    assert.ok(replies.some(r => r.includes('no tiene nada que puedas llevarte')));
+    assert.equal(db.getUser(thiefJid).lastRob, 0);
+    assert.equal(db.getUser(thiefJid).money, 1000);
+    assert.equal(db.getUser(victimJid).exp, xpRange(20).min);
   } finally {
     await db.stop();
     await rm(dir, { recursive: true, force: true });

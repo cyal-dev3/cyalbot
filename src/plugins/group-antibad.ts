@@ -2,9 +2,6 @@ import type { PluginHandler, MessageContext } from '../types/message.js';
 import { getDatabase } from '../lib/database.js';
 import { foldText } from '../lib/moderation.js';
 
-/** @deprecated El interruptor vive en group-toggles.ts; plugins/index.ts debe importarlo de ahí. */
-export { antiBadPlugin } from './group-toggles.js';
-
 /** Las palabras se guardan plegadas (minúsculas, sin acentos) porque así compara findBadWord. */
 function normalizeWord(text: string): string {
   return foldText(text).trim().replace(/\s+/g, ' ');

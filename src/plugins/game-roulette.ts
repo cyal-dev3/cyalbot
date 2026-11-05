@@ -12,6 +12,8 @@ import { mesaPlugin } from './game-mesa.js';
 
 const GAME = 'ruleta';
 const BETTING_MS = 30_000;
+/** Tiempo mínimo de apuestas antes de que un apostador pueda adelantar el giro. */
+const MIN_SPIN_WAIT_MS = 10_000;
 const MAX_BETS_PER_PLAYER = 5;
 
 const RED = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
@@ -77,7 +79,7 @@ export const RULETA_INFO: GameInfo = {
   key: 'ruleta', name: 'Ruleta europea', emoji: '🎡', play: 'ruleta rojo 500', casino: true,
   rules: [
     '{p}ruleta <tipo> <apuesta>: abre la mesa si no existe y registra tu apuesta. 30 s de apuestas.',
-    'Escribe *girar* (sin prefijo) si no quieres esperar; {p}ruleta salir retira tus apuestas.',
+    `Escribe *girar* (sin prefijo) si no quieres esperar (tras ${MIN_SPIN_WAIT_MS / 1000} s de mesa abierta); {p}ruleta salir retira tus apuestas.`,
     ...BET_TYPES.map((t) => `${t.label}: paga ${t.payout}:1 · ej. {p}${t.example}`),
     `Hasta ${MAX_BETS_PER_PLAYER} apuestas por persona y ronda. Apuesta: ${CASINO_LIMITS.minBet} a ${CASINO_LIMITS.maxBet.toLocaleString('es-MX')}.`,
   ],
@@ -121,6 +123,11 @@ async function spin(groupId: string): Promise<void> {
   await sleep(900);
   await edit(groupId, key, `🎡 Cayó en *${numberText(result)}*`);
 
+  // Un `cerrarmesa` durante la animación ya reembolsó; la custodia que quede sería de otra mesa.
+  if (!ruleta.isCurrent(s)) {
+    await say(groupId, '🎡 La mesa se cerró durante el giro; las apuestas fueron devueltas.');
+    return;
+  }
   const db = getDatabase();
   const pay = new Map<string, number>();
   const lines: string[] = [];
@@ -250,6 +257,11 @@ export const girarPlugin: PluginHandler = {
     enter(ctx);
     if (!s.players.has(ctx.m.sender)) {
       await ctx.m.reply('Solo quien apostó puede girar.');
+      return;
+    }
+    const wait = s.createdAt + MIN_SPIN_WAIT_MS - Date.now();
+    if (wait > 0) {
+      await ctx.m.reply(`Deja que los demás apuesten: podrás girar en ${Math.ceil(wait / 1000)} s.`);
       return;
     }
     await spin(ctx.m.chat);

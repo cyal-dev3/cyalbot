@@ -32,13 +32,23 @@ export interface QueuedMessage {
 
 export interface EnqueueInput {
   id: string;
-  senderName: string;
+  /** Nombre del remitente o promesa de obtenerlo; mientras tanto se usa un marcador. */
+  senderName: string | Promise<string>;
   text: string;
   whatsappGroupId: string;
   mediaType?: MediaType;
-  mediaBuffer?: Buffer;
+  /**
+   * Media ya descargada o promesa de descargarla. Aceptar la promesa permite
+   * encolar en cuanto llega el evento (el orden queda fijado) y descargar después;
+   * si falla o resuelve vacío, la media se marca como omitida.
+   */
+  mediaBuffer?: Buffer | Promise<Buffer | undefined>;
   mediaOmitted?: boolean;
 }
+
+export type PauseReason = 'manual' | 'errors';
+
+const PLACEHOLDER_SENDER = 'Desconocido';
 
 /** Lo que la cola necesita del socket de WhatsApp. */
 export interface QueueSocket {
@@ -87,11 +97,14 @@ export function isConnectionError(error: unknown): boolean {
 export class MessageQueue {
   private queue: QueuedMessage[] = [];
   private readonly ready = new Map<string, Promise<void>>();
+  /** Resultado de prepare() por id: se calcula una vez aunque el envío se reintente. */
+  private readonly prepared = new Map<string, Delivery>();
   private readonly file: Low<QueueFile>;
   private readonly mediaDir: string;
   private sock: QueueSocket | null = null;
   private processing = false;
   private paused = false;
+  private pauseReason: PauseReason | null = null;
   private pausedByErrors = 0;
   private consecutiveErrors = 0;
   private resumeTimer: NodeJS.Timeout | null = null;
@@ -176,9 +189,16 @@ export class MessageQueue {
    * `ready` la promesa de que media y JSON están en disco. El envío espera a `ready`.
    */
   enqueue(input: EnqueueInput): { item: QueuedMessage; ready: Promise<void> } {
+    const duplicate = this.queue.find((q) => q.id === input.id);
+    if (duplicate) {
+      // Dos clientes de Telegram vivos a la vez entregarían el mismo update dos veces.
+      log.debug(`mensaje ${input.id} ya estaba en cola, se ignora el duplicado`);
+      return { item: duplicate, ready: this.ready.get(duplicate.id) ?? Promise.resolve() };
+    }
+
     const item: QueuedMessage = {
       id: input.id,
-      senderName: input.senderName,
+      senderName: typeof input.senderName === 'string' ? input.senderName : PLACEHOLDER_SENDER,
       text: input.text,
       whatsappGroupId: input.whatsappGroupId,
       mediaType: input.mediaType,
@@ -186,19 +206,22 @@ export class MessageQueue {
       timestamp: this.now(),
       retries: 0,
     };
-    if (input.mediaBuffer && input.mediaType) {
-      item.mediaPath = join(this.mediaDir, `${safeFileName(item.id)}.${MEDIA_EXT[input.mediaType]}`);
-    }
     this.queue.push(item);
 
     const ready = (async () => {
-      if (item.mediaPath && input.mediaBuffer) {
+      if (typeof input.senderName !== 'string') {
+        item.senderName = await input.senderName.catch(() => PLACEHOLDER_SENDER);
+      }
+      if (input.mediaBuffer && input.mediaType) {
+        const path = join(this.mediaDir, `${safeFileName(item.id)}.${MEDIA_EXT[input.mediaType]}`);
         try {
+          const buffer = await input.mediaBuffer;
+          if (!buffer || buffer.length === 0) throw new Error('descarga vacía');
           await mkdir(this.mediaDir, { recursive: true });
-          await writeFile(item.mediaPath, input.mediaBuffer);
+          await writeFile(path, buffer);
+          item.mediaPath = path;
         } catch (error) {
           log.warn(`no se pudo guardar la media de ${item.id}, se enviará solo texto:`, error instanceof Error ? error.message : error);
-          item.mediaPath = undefined;
           item.mediaOmitted = true;
         }
       }
@@ -244,7 +267,7 @@ export class MessageQueue {
         await (this.ready.get(item.id) ?? Promise.resolve());
         try {
           await this.deliver(item);
-          this.queue.shift();
+          this.drop(item);
           this.consecutiveErrors = 0;
           this.pausedByErrors = 0;
           void this.save();
@@ -262,7 +285,11 @@ export class MessageQueue {
     const sock = this.sock;
     if (!sock?.user) throw new Error('Connection Closed: socket no disponible');
 
-    const delivery = await this.prepare(item);
+    let delivery = this.prepared.get(item.id);
+    if (!delivery) {
+      delivery = await this.prepare(item);
+      this.prepared.set(item.id, delivery);
+    }
     let caption = delivery.caption;
     const mentions = delivery.mentions ?? [];
 
@@ -304,8 +331,7 @@ export class MessageQueue {
     const message = error instanceof Error ? error.message : String(error);
     if (!isConnectionError(error)) {
       // Un error que no es de red no se arregla reintentando: se descarta y se avisa.
-      this.queue.shift();
-      void this.save();
+      this.drop(item);
       if (item.mediaPath) unlink(item.mediaPath).catch(() => undefined);
       log.error(`mensaje de ${item.senderName} descartado: ${message}`);
       await this.safeNotify(`Puente Telegram: descarté un mensaje de ${item.senderName} por un error no recuperable: ${message.slice(0, 200)}`);
@@ -318,12 +344,20 @@ export class MessageQueue {
       this.pausedByErrors++;
       const wait = Math.min(this.autoResumeMs * 2 ** (this.pausedByErrors - 1), this.maxAutoResumeMs);
       log.warn(`${this.consecutiveErrors} errores de conexión seguidos; cola pausada ${Math.round(wait / 1000)}s con ${this.queue.length} mensajes guardados`);
-      this.pause(wait);
+      this.pause(wait, 'errors');
       return;
     }
     const delay = this.retryDelays[Math.min(item.retries - 1, this.retryDelays.length - 1)];
     log.warn(`reintento ${item.retries} en ${Math.round(delay / 1000)}s (${this.queue.length} en cola): ${message}`);
     await sleep(delay);
+  }
+
+  /** Saca el primer elemento de la cola (enviado o descartado) y olvida su preparación. */
+  private drop(item: QueuedMessage): void {
+    if (this.queue[0]?.id === item.id) this.queue.shift();
+    else this.queue = this.queue.filter((q) => q.id !== item.id);
+    this.prepared.delete(item.id);
+    void this.save();
   }
 
   private checkBacklog(): void {
@@ -352,9 +386,13 @@ export class MessageQueue {
   // Control
   // ---------------------------------------------------------------------------
 
-  /** Pausa; con `autoResumeMs` programa la reanudación automática. */
-  pause(autoResumeMs?: number): void {
+  /**
+   * Pausa; con `autoResumeMs` programa la reanudación automática. El motivo
+   * permite que una reconexión automática no deshaga una pausa manual.
+   */
+  pause(autoResumeMs?: number, reason: PauseReason = 'manual'): void {
     this.paused = true;
+    this.pauseReason = reason;
     if (this.resumeTimer) clearTimeout(this.resumeTimer);
     this.resumeTimer = null;
     if (autoResumeMs !== undefined && autoResumeMs > 0) {
@@ -372,17 +410,22 @@ export class MessageQueue {
     if (this.resumeTimer) clearTimeout(this.resumeTimer);
     this.resumeTimer = null;
     this.paused = false;
+    this.pauseReason = null;
     this.consecutiveErrors = 0;
     log.info(`cola reanudada (${this.queue.length} pendientes)`);
     this.kick();
   }
 
-  /** Detiene el procesamiento (apagado); lo encolado queda en disco. */
+  /**
+   * Detiene el procesamiento (apagado). Espera a que la media en curso llegue
+   * al disco y escribe el JSON una última vez para que nada encolado se pierda.
+   */
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.resumeTimer) clearTimeout(this.resumeTimer);
     this.resumeTimer = null;
-    await this.persist;
+    await Promise.allSettled([...this.ready.values()]);
+    await this.save();
   }
 
   get pendingCount(): number {
@@ -391,6 +434,11 @@ export class MessageQueue {
 
   get isPaused(): boolean {
     return this.paused;
+  }
+
+  /** Motivo de la pausa actual, o null si la cola corre. */
+  get pausedBy(): PauseReason | null {
+    return this.paused ? this.pauseReason : null;
   }
 
   get isProcessing(): boolean {

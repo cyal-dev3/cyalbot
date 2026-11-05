@@ -114,50 +114,62 @@ function claimableAchievements(user: UserRPG): Achievement[] {
   return ACHIEVEMENTS.filter(a => !user.achievements.includes(a.id) && checkAchievement(user, a));
 }
 
+const ACHIEVEMENT_CATEGORIES: { name: string; type: Achievement['requirement']['type'] }[] = [
+  { name: 'Nivel', type: 'level' },
+  { name: 'Dinero', type: 'money' },
+  { name: 'Combate', type: 'kills' },
+  { name: 'Exploración', type: 'dungeons' },
+  { name: 'Clase', type: 'class' }
+];
+
+function achievementLine(user: UserRPG, achievement: Achievement, detailed: boolean): string {
+  if (user.achievements.includes(achievement.id)) return `   ✅ ${achievement.emoji} ${achievement.name}`;
+  if (checkAchievement(user, achievement)) return `   🔓 ${achievement.emoji} ${achievement.name} ← *¡NUEVO!*`;
+  return `   🔒 ${achievement.emoji} ${achievement.name}${detailed ? ` — _${achievement.description}_` : ''}`;
+}
+
 const logrosPlugin: PluginHandler = {
   command: ['logros', 'achievements', 'medallas', 'trofeos'],
   tags: ['rpg'],
-  help: ['logros - Ver tus logros y cuáles puedes reclamar'],
-  usage: ['logros'],
+  help: [
+    'logros - Resumen de tus logros por categoría',
+    'logros <categoría> - Detalle de una categoría (nivel, dinero, combate, exploración, clase)'
+  ],
+  usage: ['logros', 'logros <categoría>'],
   register: true,
 
   handler: async (ctx: MessageContext) => {
-    const { m, usedPrefix } = ctx;
+    const { m, text, usedPrefix } = ctx;
     const user = getDatabase().getUser(m.sender);
+    const claimable = claimableAchievements(user).length;
 
-    const categories: Record<string, Achievement[]> = {
-      Nivel: ACHIEVEMENTS.filter(a => a.requirement.type === 'level'),
-      Dinero: ACHIEVEMENTS.filter(a => a.requirement.type === 'money'),
-      Combate: ACHIEVEMENTS.filter(a => a.requirement.type === 'kills'),
-      Exploración: ACHIEVEMENTS.filter(a => a.requirement.type === 'dungeons'),
-      Clase: ACHIEVEMENTS.filter(a => a.requirement.type === 'class')
-    };
-
-    let response = `🏆 *TUS LOGROS*\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    let completed = 0;
-    let claimable = 0;
-
-    for (const [name, list] of Object.entries(categories)) {
-      if (list.length === 0) continue;
-      response += `*${name}:*\n`;
-      for (const achievement of list) {
-        const unlocked = user.achievements.includes(achievement.id);
-        if (unlocked) {
-          completed++;
-          response += `   ✅ ${achievement.emoji} ${achievement.name}\n`;
-        } else if (checkAchievement(user, achievement)) {
-          claimable++;
-          response += `   🔓 ${achievement.emoji} ${achievement.name} ← *¡NUEVO!*\n`;
-        } else {
-          response += `   🔒 ${achievement.emoji} ${achievement.name}\n      _${achievement.description}_\n`;
-        }
+    // Detalle de una categoría bajo demanda; el resumen cabe en una pantalla
+    if (text.trim()) {
+      const category = ACHIEVEMENT_CATEGORIES.find(c => matchesIgnoreAccents(c.name, text.trim()));
+      if (!category) {
+        return m.reply(`${EMOJI.error} Categoría no válida. Opciones: ${ACHIEVEMENT_CATEGORIES.map(c => c.name.toLowerCase()).join(', ')}.`);
       }
-      response += '\n';
+      const list = ACHIEVEMENTS.filter(a => a.requirement.type === category.type);
+      return m.reply(
+        `🏆 *LOGROS · ${category.name.toUpperCase()}*\n━━━━━━━━━━━━━━━━━━━━━\n` +
+        list.map(a => achievementLine(user, a, true)).join('\n') +
+        (claimable > 0 ? `\n\n🎉 Tienes *${claimable}* logro(s) por reclamar: *${usedPrefix}reclamarlogro*.` : '')
+      );
     }
 
-    response += `━━━━━━━━━━━━━━━━━━━━━\n📊 Completados: *${completed}/${ACHIEVEMENTS.length}*`;
+    let response = `🏆 *TUS LOGROS*\n━━━━━━━━━━━━━━━━━━━━━\n`;
+    for (const { name, type } of ACHIEVEMENT_CATEGORIES) {
+      const list = ACHIEVEMENTS.filter(a => a.requirement.type === type);
+      if (list.length === 0) continue;
+      const done = list.filter(a => user.achievements.includes(a.id)).length;
+      const unlocked = list.filter(a => !user.achievements.includes(a.id) && checkAchievement(user, a));
+      response += `*${name}:* ${done}/${list.length} ✅` +
+        (unlocked.length ? ` · 🔓 ${unlocked.map(a => `${a.emoji} ${a.name}`).join(', ')}` : '') + '\n';
+    }
+
+    response += `━━━━━━━━━━━━━━━━━━━━━\n📊 Completados: *${user.achievements.length}/${ACHIEVEMENTS.length}* · *${usedPrefix}logros <categoría>* para el detalle`;
     if (claimable > 0) {
-      response += `\n\n🎉 *¡Tienes ${claimable} logro(s) nuevo(s)!* Usa *${usedPrefix}reclamarlogro*.`;
+      response += `\n🎉 *¡Tienes ${claimable} logro(s) nuevo(s)!* Usa *${usedPrefix}reclamarlogro*.`;
     }
 
     await m.reply(response);
@@ -270,21 +282,15 @@ const statsPlugin: PluginHandler = {
     const winRate = duels > 0 ? Math.floor((cs.pvpWins / duels) * 100) : 0;
 
     await m.reply(
-      `📊 *ESTADÍSTICAS DE ${user.name.toUpperCase()}*\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `🎭 *General:*\n` +
-      `   Nivel: *${user.level}*\n` +
-      `   Clase: ${classInfo ? `${classInfo.emoji} ${classInfo.name}` : '_Sin clase_'}\n` +
-      `   Título: ${user.currentTitle}\n` +
-      `   Días jugando: *${Math.floor((Date.now() - user.regTime) / 86400000)}*\n\n` +
-      `⚔️ *Combate PvE:*\n` +
-      `   Monstruos derrotados: *${formatNumber(cs.totalKills)}*\n` +
-      `   Bosses derrotados: *${formatNumber(cs.bossesKilled)}*\n` +
-      `   Daño total causado: *${formatNumber(cs.totalDamageDealt)}*\n` +
-      `   Daño total recibido: *${formatNumber(cs.totalDamageReceived)}*\n\n` +
-      `🏰 *Exploración:*\n   Dungeons completados: *${cs.dungeonsCompleted}*\n\n` +
-      `👥 *PvP:*\n   Victorias: *${cs.pvpWins}* · Derrotas: *${cs.pvpLosses}* · Win rate: *${winRate}%*\n\n` +
-      `💰 *Economía:*\n   Dinero actual: *${formatNumber(user.money)}*\n   Total ganado: *${formatNumber(user.totalEarned)}*\n\n` +
-      `🏆 *Logros:*\n   Completados: *${user.achievements.length}/${ACHIEVEMENTS.length}*\n   Títulos: *${user.titles.length}*`
+      `📊 *ESTADÍSTICAS DE ${user.name.toUpperCase()}*\n━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🎭 Nivel *${user.level}* · ${classInfo ? `${classInfo.emoji} ${classInfo.name}` : '_Sin clase_'} · ${user.currentTitle}\n` +
+      `${EMOJI.time} *${Math.floor((Date.now() - user.regTime) / 86400000)}* días jugando\n\n` +
+      `⚔️ *PvE:* *${formatNumber(cs.totalKills)}* monstruos · *${formatNumber(cs.bossesKilled)}* bosses\n` +
+      `   Daño causado *${formatNumber(cs.totalDamageDealt)}* · recibido *${formatNumber(cs.totalDamageReceived)}*\n` +
+      `🏰 *Dungeons:* *${cs.dungeonsCompleted}* completados\n` +
+      `👥 *PvP:* *${cs.pvpWins}* victorias · *${cs.pvpLosses}* derrotas · *${winRate}%* win rate\n` +
+      `💰 *Economía:* *${formatNumber(user.money)}* actual · *${formatNumber(user.totalEarned)}* ganado en total\n` +
+      `🏆 *Logros:* *${user.achievements.length}/${ACHIEVEMENTS.length}* · *${user.titles.length}* títulos`
     );
   }
 };

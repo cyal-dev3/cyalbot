@@ -6,7 +6,7 @@ import { GameSessionManager } from '../lib/games/session.js';
 import { parseBet, holdBet, releaseEscrow, formatCoins } from '../lib/games/bets.js';
 import { CASINO_LIMITS } from '../lib/games/state.js';
 import {
-  enter, requireRegistered, requireGroup, say, isRegistered, declareContext, attachContexts, type GameInfo,
+  enter, requireRegistered, requireGroup, say, isRegistered, noPrefixOnly, declareContext, attachContexts, type GameInfo,
 } from '../lib/games/common.js';
 
 const GAME = 'ttt';
@@ -132,7 +132,7 @@ export const aceptarTttPlugin: PluginHandler = {
   category: 'casino',
   async handler(ctx) {
     const s = games.get(ctx.m.chat);
-    if (!s || s.phase !== 'reto' || s.state.target !== ctx.m.sender) return;
+    if (!s || s.phase !== 'reto' || s.state.target !== ctx.m.sender || ctx.args.length > 0) return;
     enter(ctx);
     if (s.state.bet > 0 && !holdBet(getDatabase(), ctx.m.chat, ctx.m.sender, s.state.bet, GAME, { round: false })) {
       await ctx.m.reply(`Necesitas ${formatCoins(s.state.bet)} para aceptar.`);
@@ -155,7 +155,8 @@ export const jugadaTttPlugin: PluginHandler = {
   async handler(ctx) {
     const groupId = ctx.m.chat;
     const s = games.get(groupId);
-    if (!s || s.phase !== 'jugando' || games.current(groupId) !== ctx.m.sender) return;
+    // "5 minutos y juego" es charla, no una jugada.
+    if (!s || s.phase !== 'jugando' || games.current(groupId) !== ctx.m.sender || ctx.args.length > 0) return;
     enter(ctx);
     const index = parseInt(ctx.command, 10) - 1;
     if (s.state.board[index]) {
@@ -203,19 +204,24 @@ export const tttPlugin: PluginHandler = {
   },
 };
 
-const TTT_CONTEXT = declareContext({
+const TTT_ACEPTAR_CONTEXT = declareContext({
   name: 'ttt',
   isActive: (m) => {
     const s = games.get(m.chat);
-    if (!s) return false;
-    if (s.phase === 'reto') return s.state.target === m.sender;
-    return games.current(m.chat) === m.sender;
+    return Boolean(s && s.phase === 'reto' && s.state.target === m.sender);
   },
-  plugins: [aceptarTttPlugin, jugadaTttPlugin],
+  plugins: [aceptarTttPlugin],
+  noPrefix: true,
+});
+
+const TTT_JUGADA_CONTEXT = declareContext({
+  name: 'ttt-jugada',
+  isActive: noPrefixOnly((m) => games.get(m.chat)?.phase === 'jugando' && games.current(m.chat) === m.sender),
+  plugins: [jugadaTttPlugin],
   noPrefix: true,
 });
 
 export function registerTtt(handler: MessageHandler): void {
   handler.registerPlugin('game-ttt', tttPlugin);
-  attachContexts(handler, [TTT_CONTEXT]);
+  attachContexts(handler, [TTT_ACEPTAR_CONTEXT, TTT_JUGADA_CONTEXT]);
 }

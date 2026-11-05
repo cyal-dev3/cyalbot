@@ -1,7 +1,7 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { EMOJI, formatNumber, createProgressBar, msToTime, checkCooldown } from '../lib/utils.js';
 import { getLevelProgress } from '../lib/levelling.js';
-import { getRoleByLevel, getRankBenefits, formatRankBenefits, type UserRPG } from '../types/user.js';
+import { getRoleByLevel, getRankBenefits, getRankProgress, type UserRPG } from '../types/user.js';
 import { getDatabase, type Database } from '../lib/database.js';
 import { CLASSES } from '../types/rpg.js';
 import { CONFIG } from '../config.js';
@@ -21,12 +21,29 @@ const PROFILE_COOLDOWNS: { label: string; cooldown: number; last: (u: UserRPG) =
   { label: 'fumar', cooldown: COOLDOWNS.FUMAR, last: u => u.lastFumar }
 ];
 
-export function formatCooldowns(user: UserRPG, prefix: string): string {
+/** Cooldowns en una sola línea: `work 3m · minar listo · ...` */
+export function formatCooldowns(user: UserRPG): string {
   const reduction = getRankBenefits(user.level).cooldownReduction;
   return PROFILE_COOLDOWNS.map(({ label, cooldown, last }) => {
     const cd = checkCooldown(last(user) || 0, cooldown, reduction);
-    return `│  ${cd.onCooldown ? '⏳' : '✅'} ${prefix}${label}: ${cd.onCooldown ? msToTime(cd.remaining) : 'listo'}`;
-  }).join('\n');
+    return `${label} ${cd.onCooldown ? msToTime(cd.remaining) : 'listo'}`;
+  }).join(' · ');
+}
+
+/** Beneficios de rango resumidos en una línea; el detalle completo vive en /nivel */
+export function formatRankSummary(level: number): string {
+  const b = getRankBenefits(level);
+  const parts: string[] = [];
+  if (b.expMultiplier > 1) parts.push(`+${Math.round((b.expMultiplier - 1) * 100)}% XP`);
+  if (b.moneyMultiplier > 1) parts.push(`+${Math.round((b.moneyMultiplier - 1) * 100)}% 💰`);
+  if (b.dailyBonus > 0) parts.push(`+${b.dailyBonus}% daily`);
+  if (b.cooldownReduction > 0) parts.push(`-${b.cooldownReduction}% cooldowns`);
+  if (b.robSuccessBonus > 0) parts.push(`+${b.robSuccessBonus}% robo`);
+  if (parts.length === 0) {
+    const rank = getRankProgress(level);
+    return `_Sin beneficios de rango aún (${rank.nextRank} en ${rank.levelsToNext} niveles)_`;
+  }
+  return parts.join(' · ');
 }
 
 function formatPet(user: UserRPG, now: number): string {
@@ -73,64 +90,26 @@ export const perfilPlugin: PluginHandler = {
     const days = Math.floor((now - fresh.regTime) / 86400000);
     const classInfo = fresh.playerClass ? CLASSES[fresh.playerClass] : null;
 
-    let regenLine = '';
-    if (regen.healthRegen > 0 || regen.staminaRegen > 0) {
-      regenLine = `\n🔄 *Regeneración aplicada:*${regen.healthRegen > 0 ? ` ❤️+${regen.healthRegen}` : ''}${regen.staminaRegen > 0 ? ` ⚡+${regen.staminaRegen}` : ''}\n`;
-    }
+    const regenLine = regen.healthRegen > 0 || regen.staminaRegen > 0
+      ? `🔄 Regeneración aplicada:${regen.healthRegen > 0 ? ` ❤️+${regen.healthRegen}` : ''}${regen.staminaRegen > 0 ? ` ⚡+${regen.staminaRegen}` : ''}\n`
+      : '';
 
-    const profile = `
-${EMOJI.crown}═══════════════════════════${EMOJI.crown}
-      *PERFIL DE JUGADOR*
-${EMOJI.crown}═══════════════════════════${EMOJI.crown}
-${regenLine}
-${EMOJI.star} *${fresh.name}* · ${fresh.currentTitle}
-${EMOJI.info} ID: #${playerId}
-${EMOJI.time} Jugando hace: ${days} día${days === 1 ? '' : 's'}
-🎭 Clase: ${classInfo ? `${classInfo.emoji} ${classInfo.name}` : '_Sin clase_'}
-🏰 Gremio: ${formatGuild(db, targetJid, fresh)}
-🐾 Mascota: ${formatPet(fresh, now)}
-
-╭─────────────────────────╮
-│  ${EMOJI.level} *PROGRESIÓN*
-├─────────────────────────
-│  Nivel: *${fresh.level}* ${getRoleByLevel(fresh.level)}
-│  EXP: ${formatNumber(progress.current)}/${formatNumber(progress.needed)}
-│  ${createProgressBar(progress.current, progress.needed, 10)} ${progress.percent}%
-│  Para subir: *${formatNumber(progress.remaining)}* XP
-╰─────────────────────────╯
-
-╭─────────────────────────╮
-│  ${EMOJI.sword} *ESTADÍSTICAS*
-├─────────────────────────
-│  ${EMOJI.health} Salud: ${fresh.health}/${total.maxHealth}
-│  ${createProgressBar(fresh.health, total.maxHealth, 8)}
-│  ${EMOJI.stamina} Energía: ${fresh.stamina}/${total.maxStamina}
-│  ${createProgressBar(fresh.stamina, total.maxStamina, 8)}
-│  ${EMOJI.mana} Maná: ${fresh.mana}/${total.maxMana}
-│  ${createProgressBar(fresh.mana, total.maxMana, 8)}
-│  ⚔️ Ataque: ${total.attack} · 🛡️ Defensa: ${total.defense} · 💥 Crítico: ${total.critChance}%
-│  🔄 Regen: +${regenInfo.healthPerHour}❤️/h +${regenInfo.staminaPerHour}⚡/h
-╰─────────────────────────╯
-
-╭─────────────────────────╮
-│  ${EMOJI.coin} *ECONOMÍA*
-├─────────────────────────
-│  ${EMOJI.coin} Monedas: *${formatNumber(fresh.money)}*
-│  🏦 Banco: *${formatNumber(fresh.bank)}*
-│  ${EMOJI.diamond} Diamantes: *${formatNumber(fresh.limit)}*
-│  ${EMOJI.potion} Pociones: *${fresh.potion}*${fresh.debt > 0 ? `\n│  ⚠️ Deuda IMSS: *${formatNumber(fresh.debt)}*` : ''}
-╰─────────────────────────╯
-
-╭─────────────────────────╮
-│  ${EMOJI.time} *COOLDOWNS*
-├─────────────────────────
-${formatCooldowns(fresh, usedPrefix)}
-╰─────────────────────────╯
-
-${formatRankBenefits(fresh.level)}
-
-${EMOJI.sparkles} *EXP Total: ${formatNumber(fresh.exp)}*
-`.trim();
+    // Perfil en ~20 líneas: una por stat, cooldowns y rango en una sola línea; el detalle de rango está en /nivel
+    const profile =
+      `${EMOJI.crown} *PERFIL DE JUGADOR*\n━━━━━━━━━━━━━━━━━━━━━\n` +
+      regenLine +
+      `${EMOJI.star} *${fresh.name}* · ${fresh.currentTitle}\n` +
+      `${EMOJI.info} ID #${playerId} · ${EMOJI.time} ${days} día${days === 1 ? '' : 's'} jugando\n` +
+      `🎭 ${classInfo ? `${classInfo.emoji} ${classInfo.name}` : '_Sin clase_'} · 🏰 ${formatGuild(db, targetJid, fresh)} · 🐾 ${formatPet(fresh, now)}\n\n` +
+      `${EMOJI.level} Nivel *${fresh.level}* ${getRoleByLevel(fresh.level)} · ${EMOJI.sparkles} ${formatNumber(fresh.exp)} XP total\n` +
+      `${createProgressBar(progress.current, progress.needed, 10)} ${progress.percent}% · faltan *${formatNumber(progress.remaining)}* XP\n\n` +
+      `${EMOJI.health} ${fresh.health}/${total.maxHealth} · ${EMOJI.stamina} ${fresh.stamina}/${total.maxStamina} · ${EMOJI.mana} ${fresh.mana}/${total.maxMana}\n` +
+      `⚔️ ${total.attack} · 🛡️ ${total.defense} · 💥 ${total.critChance}% · 🔄 +${regenInfo.healthPerHour}❤️ +${regenInfo.staminaPerHour}⚡ /h\n\n` +
+      `${EMOJI.coin} *${formatNumber(fresh.money)}* · 🏦 *${formatNumber(fresh.bank)}* · ${EMOJI.diamond} *${formatNumber(fresh.limit)}* · ${EMOJI.potion} *${fresh.potion}*` +
+      (fresh.debt > 0 ? `\n⚠️ Deuda IMSS: *${formatNumber(fresh.debt)}*` : '') + '\n\n' +
+      `⏳ ${formatCooldowns(fresh)}\n` +
+      `🎖️ Rango: ${formatRankSummary(fresh.level)}\n` +
+      `💡 Detalle de rango y progreso: *${usedPrefix}nivel*`;
 
     await m.reply(profile);
   }

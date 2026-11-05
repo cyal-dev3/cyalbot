@@ -116,8 +116,13 @@ function getConversation(chatId: string): Conversation {
   return fresh;
 }
 
-function trimConversation(conv: Conversation): void {
-  const max = CONFIG.ai.memoryTurns * 2;
+/**
+ * Recorta el historial al máximo configurado menos `reserve` huecos (los que
+ * va a ocupar el turno que empieza). Se llama ANTES de añadir el turno, para
+ * que la longitud previa sirva como punto de retorno si el turno falla.
+ */
+function trimConversation(conv: Conversation, reserve = 0): void {
+  const max = Math.max(0, CONFIG.ai.memoryTurns * 2 - reserve);
   while (conv.messages.length > max) conv.messages.shift();
   // El historial debe empezar con un turno de usuario y nunca con un tool_result suelto.
   while (conv.messages.length && (conv.messages[0].role !== 'user' || hasToolResult(conv.messages[0]))) {
@@ -498,13 +503,15 @@ export async function respondWithAI(req: AIRequest): Promise<boolean> {
   }
 
   const conv = getConversation(m.chat);
+  // Primero se recorta (dejando sitio al turno nuevo) y después se mide: así
+  // `base` es la longitud real previa y volver a ella descarta solo este turno.
+  trimConversation(conv, 1);
   const base = conv.messages.length;
   const speaker = m.isGroup ? `[${m.pushName || m.sender.split('@')[0]}]: ` : '';
   const userContent: BetaContentBlockParam[] = [];
   if (image) userContent.push(image);
   userContent.push({ type: 'text', text: speaker + (text || '¿Qué ves en esta imagen?') });
   conv.messages.push({ role: 'user', content: userContent });
-  trimConversation(conv);
 
   await conn.sendPresenceUpdate('composing', m.chat).catch(() => undefined);
 
@@ -515,7 +522,12 @@ export async function respondWithAI(req: AIRequest): Promise<boolean> {
     return true;
   } catch (error) {
     // Si falló, se descarta todo lo añadido en este turno para no dejar el historial cojo.
-    conv.messages.length = Math.min(base, conv.messages.length);
+    rollback(conv, base);
+    if (isBrokenToolHistory(error)) {
+      // El historial guardado ya no es válido para la API; mejor empezar de cero que quedar bloqueados.
+      log.warn(`historial de ${m.chat} inválido (tool_use sin tool_result); se reinicia la memoria`);
+      resetMemory(m.chat);
+    }
     await m.reply(describeError(error));
     return true;
   } finally {
@@ -544,14 +556,13 @@ async function complete(conv: Conversation, base: number, m: SerializedMessage, 
     }, m.chat);
 
     if (response.stop_reason === 'refusal') {
-      conv.messages.length = Math.min(base, conv.messages.length);
+      rollback(conv, base);
       return 'Eso no lo puedo responder.';
     }
 
-    // Guardar la respuesta completa (texto + tool_use) para mantener coherente el historial.
-    conv.messages.push({ role: 'assistant', content: response.content });
-
     if (response.stop_reason === 'tool_use') {
+      // La respuesta completa (texto + tool_use) va al historial; sus tool_result llegan en el turno siguiente.
+      conv.messages.push({ role: 'assistant', content: response.content });
       const results: BetaContentBlockParam[] = [];
       for (const block of response.content) {
         if (block.type !== 'tool_use') continue;
@@ -567,6 +578,12 @@ async function complete(conv: Conversation, base: number, m: SerializedMessage, 
       continue;
     }
 
+    // Sin tool_use solo se guarda el texto: un tool_use cortado por max_tokens
+    // sin su tool_result invalidaría todas las llamadas siguientes del chat.
+    const textBlocks = response.content.filter((b) => b.type === 'text');
+    if (textBlocks.length > 0) conv.messages.push({ role: 'assistant', content: textBlocks });
+    else rollback(conv, base);
+
     const textOut = textOf(response);
     if (response.stop_reason === 'max_tokens') {
       return `${textOut}\n\n_(me quedé sin espacio; pregunta por partes si quieres más)_`;
@@ -578,6 +595,15 @@ async function complete(conv: Conversation, base: number, m: SerializedMessage, 
   const fallback = 'Me enredé con las herramientas. Intenta preguntarlo de otra forma.';
   conv.messages.push({ role: 'assistant', content: [{ type: 'text', text: fallback }] });
   return fallback;
+}
+
+/** Vuelve al historial previo al turno (todo lo añadido desde `base` se descarta). */
+function rollback(conv: Conversation, base: number): void {
+  if (conv.messages.length > base) conv.messages.length = base;
+}
+
+function isBrokenToolHistory(error: unknown): boolean {
+  return error instanceof Anthropic.BadRequestError && /tool_use|tool_result/i.test(error.message);
 }
 
 function describeError(error: unknown): string {

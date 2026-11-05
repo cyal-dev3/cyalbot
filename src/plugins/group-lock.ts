@@ -1,4 +1,3 @@
-import type { MessageHandler } from '../handler.js';
 import type { PluginHandler } from '../types/message.js';
 import { createLogger } from '../lib/logger.js';
 import { invalidateGroupMetadata } from '../lib/group-events.js';
@@ -44,9 +43,3 @@ export const openPlugin: PluginHandler = {
     }
   },
 };
-
-/** @deprecated plugins/index.ts debe registrar closePlugin y openPlugin desde ENTRIES.grupos. */
-export function registerGroupLockPlugins(handler: MessageHandler): void {
-  handler.registerPlugin('group-close', closePlugin);
-  handler.registerPlugin('group-open', openPlugin);
-}

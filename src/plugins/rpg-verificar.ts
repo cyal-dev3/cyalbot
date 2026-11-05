@@ -85,28 +85,15 @@ export const verificarPlugin: PluginHandler = {
     const bonus = CONFIG.rpg.registerBonus;
     const reward = grantRewards(db, m.sender, { exp: bonus.exp, money: bonus.money }, { source: 'register', rank: false, now });
 
-    const extra = reward.lines.length ? `\n${reward.lines.map(l => `├ ${l}`).join('\n')}` : '';
+    const extra = reward.lines.length ? `\n${reward.lines.join('\n')}` : '';
     await m.reply(
-      `${EMOJI.success}${EMOJI.crown} *¡REGISTRO EXITOSO!* ${EMOJI.crown}${EMOJI.success}\n\n` +
-      `${EMOJI.sparkles} *¡Bienvenido al mundo de ${CONFIG.botName}, ${name}!*\n\n` +
-      `╭─────────────────────────╮\n` +
-      `│  ${EMOJI.star} *DATOS DE REGISTRO*\n` +
-      `├─────────────────────────\n` +
-      `│  ${EMOJI.info} Nombre: *${name}*\n` +
-      `│  ${EMOJI.info} Edad: *${age} años*\n` +
-      `│  ${EMOJI.info} ID: *#${playerId}*\n` +
-      `│  ${EMOJI.time} Fecha: *${new Date(now).toLocaleDateString('es-MX')}*\n` +
-      `╰─────────────────────────╯\n\n` +
-      `${EMOJI.gift} *¡REGALO DE BIENVENIDA!*\n` +
-      `├ +${formatNumber(reward.money)} ${EMOJI.coin} Monedas\n` +
-      `├ +${formatNumber(reward.exp)} ${EMOJI.exp} Experiencia${extra}\n` +
-      `╰─────────────────────────\n\n` +
-      `${EMOJI.sword} *¡Tu aventura comienza ahora!*\n\n` +
-      `${EMOJI.info} *Comandos útiles:*\n` +
-      `• *${usedPrefix}perfil* - Ver tu perfil\n` +
-      `• *${usedPrefix}daily* - Recompensa diaria\n` +
-      `• *${usedPrefix}work* - Trabajar por XP\n` +
-      `• *${usedPrefix}misiones* - Tus misiones`
+      `${EMOJI.success}${EMOJI.crown} *¡REGISTRO EXITOSO!*\n\n` +
+      `${EMOJI.sparkles} *¡Bienvenido al mundo de ${CONFIG.botName}, ${name}!*\n` +
+      `${EMOJI.info} *${name}*, ${age} años · ID *#${playerId}* · ${new Date(now).toLocaleDateString('es-MX')}\n\n` +
+      `${EMOJI.gift} *Regalo de bienvenida:* +${formatNumber(reward.money)} ${EMOJI.coin} · +${formatNumber(reward.exp)} ${EMOJI.exp}${extra}\n\n` +
+      `${EMOJI.sword} *¡Tu aventura comienza ahora!* Comandos útiles:\n` +
+      `• *${usedPrefix}perfil* ver tu perfil · *${usedPrefix}daily* recompensa diaria\n` +
+      `• *${usedPrefix}work* trabajar por XP · *${usedPrefix}misiones* tus misiones`
     );
   }
 };

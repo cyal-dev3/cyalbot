@@ -137,6 +137,11 @@ export function createInteractionPlugin(options: InteractionPluginOptions): Plug
       const variant = pickRandom(options.types);
       const senderName = nameOf(m.sender, m.pushName, db);
       const milestone = options.milestones[result.count];
+      if (ctx.handler.isCompactMode(m.chat)) {
+        const text = `${variant.emoji} ${mentionTag(m.sender)} → ${mentionTag(target)} (${result.count})${milestone ? ` 🎉 ${milestone}` : ''}`;
+        await conn.sendMessage(m.chat, { text, mentions: [m.sender, target] }, { quoted: m.rawMessage });
+        return;
+      }
       const lines = [
         `${variant.emoji} *${options.title}* ${variant.emoji}`,
         '',

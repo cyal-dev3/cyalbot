@@ -64,6 +64,10 @@ async function run(groupId: string): Promise<void> {
     await edit(groupId, key, `🏁 *Paso ${step}/${STEPS}*\n${trackText(positions)}`);
   }
   const winner = pickWinner(positions, (n) => rollInt(0, n - 1));
+  if (!races.isCurrent(s)) {
+    await say(groupId, '🏁 La carrera se canceló a mitad (mesa cerrada); las apuestas fueron devueltas.');
+    return;
+  }
 
   const db = getDatabase();
   const pay = new Map<string, number>();

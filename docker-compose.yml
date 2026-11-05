@@ -9,8 +9,8 @@ services:
     env_file: .env
     environment:
       DOWNLOADER_API_URL: http://downloader:3002
-      # Algo mayor que DOWNLOAD_TIMEOUT_MS del downloader: el bot no debe abortar antes que el servicio.
-      DOWNLOADER_API_TIMEOUT_MS: "130000"
+      # Igual que DOWNLOAD_TIMEOUT_MS del downloader; el cliente del bot nunca espera menos de 120 s.
+      DOWNLOADER_API_TIMEOUT_MS: "120000"
     volumes:
       - ./data:/app/data
     depends_on:

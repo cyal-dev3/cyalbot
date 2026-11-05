@@ -7,10 +7,13 @@ import { DEFAULT_USER, DEFAULT_USER_BETTING, type UserRPG, type UserBetting } fr
 import { CLASSES } from '../types/rpg.js';
 import { BettingStore } from './betting-store.js';
 import { createLogger } from './logger.js';
+import * as scheduler from './scheduler.js';
 
 const log = createLogger('db');
 
 const AUTOSAVE_INTERVAL_MS = 30_000;
+/** Cada instancia tiene su propia tarea de autoguardado (los tests abren varias a la vez). */
+let instanceCounter = 0;
 const BACKUP_MIN_INTERVAL_MS = 60_000;
 const MAX_WARNINGS_PER_GROUP = 1000;
 const MAX_STOP_SAVE_ATTEMPTS = 3;
@@ -164,7 +167,7 @@ export function removeClassBaseStats(user: UserRPG): boolean {
  */
 export class Database {
   private db: Low<DatabaseSchema>;
-  private saveInterval: NodeJS.Timeout | null = null;
+  private readonly autosaveTask = `db:autosave:${++instanceCounter}`;
   private dirty = false;
   private saving: Promise<boolean> | null = null;
   private lastBackupAt = 0;
@@ -182,9 +185,9 @@ export class Database {
     this.ensureStructure();
     this.runMigrations();
 
-    this.saveInterval = setInterval(() => {
+    scheduler.every(this.autosaveTask, AUTOSAVE_INTERVAL_MS, () => {
       if (this.dirty) void this.save();
-    }, AUTOSAVE_INTERVAL_MS);
+    });
 
     const size = await this.fileSize();
     log.info(`base de datos inicializada (${this.filepath}, ${(size / 1024).toFixed(1)} KB, ${Object.keys(this.db.data.users).length} usuarios)`);
@@ -417,10 +420,7 @@ export class Database {
    * disco falla de forma persistente).
    */
   async stop(): Promise<void> {
-    if (this.saveInterval) {
-      clearInterval(this.saveInterval);
-      this.saveInterval = null;
-    }
+    scheduler.stop(this.autosaveTask);
     if (this.saving) await this.saving;
     for (let attempt = 0; attempt < MAX_STOP_SAVE_ATTEMPTS && this.dirty; attempt++) {
       if (!(await this.save())) break;

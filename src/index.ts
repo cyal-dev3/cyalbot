@@ -10,8 +10,11 @@ import { MessageHandler } from './handler.js';
 import { initDatabase, type Database } from './lib/database.js';
 import { loadPlugins } from './plugins/index.js';
 import { CONFIG } from './config.js';
-import { startAutoEvents, stopAutoEvents } from './lib/auto-events.js';
+import { startAutoEvents, stopAutoEvents, updateAutoEventsSocket } from './lib/auto-events.js';
 import { startAutoRegen, stopAutoRegen } from './lib/auto-regen.js';
+import { startReminders, stopReminders, setRemindersConnection } from './lib/reminders.js';
+import { setActiveConnection } from './lib/games/session.js';
+import { recordReconnect, recordReconnectAttempt, recordError } from './lib/runtime-stats.js';
 import {
   startTelegramBridge, stopTelegramBridge, pauseMessageQueue, resumeMessageQueue, updateQueueSocket,
 } from './lib/telegram-bridge.js';
@@ -31,27 +34,12 @@ let handler: MessageHandler | null = null;
 let currentConn: WASocket | null = null;
 let isFirstConnection = true;
 let isReconnecting = false;
+/** Cierres seguidos sin llegar a 'open'; gobierna el backoff (las estadísticas van a runtime-stats). */
 let reconnectAttempts = 0;
-let reconnectCount = 0;
 let reconnectTimeout: NodeJS.Timeout | null = null;
-let lastError: string | null = null;
-let lastErrorAt: number | null = null;
 const RECONNECT_BACKOFF_MS = [3000, 6000, 12000, 24000, 30000];
 /** Cierres seguidos sin llegar a 'open' antes de rendirse y dejar que pm2 reinicie el proceso. */
 const MAX_CONSECUTIVE_FAILURES = 10;
-
-export interface ReconnectStats {
-  /** Reconexiones completadas con éxito. */
-  count: number;
-  /** Intentos desde la última conexión abierta. */
-  attempts: number;
-  lastError: string | null;
-  lastErrorAt: number | null;
-}
-
-export function getReconnectStats(): ReconnectStats {
-  return { count: reconnectCount, attempts: reconnectAttempts, lastError, lastErrorAt };
-}
 
 async function logIncoming(conn: WASocket, message: proto.IWebMessageInfo): Promise<void> {
   const key = message.key;
@@ -97,6 +85,7 @@ function scheduleReconnect(): void {
   }
   const delay = RECONNECT_BACKOFF_MS[Math.min(reconnectAttempts, RECONNECT_BACKOFF_MS.length - 1)];
   reconnectAttempts++;
+  recordReconnectAttempt();
   log.warn(`reconectando en ${Math.round(delay / 1000)}s (intento ${reconnectAttempts})`);
   if (reconnectTimeout) clearTimeout(reconnectTimeout);
   reconnectTimeout = setTimeout(async () => {
@@ -104,8 +93,7 @@ function scheduleReconnect(): void {
     try {
       await connectBot();
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      lastErrorAt = Date.now();
+      recordError(error, 'conexion');
       log.error('error al reconectar:', error);
       isReconnecting = false;
       scheduleReconnect();
@@ -154,10 +142,7 @@ async function connectBot(): Promise<WASocket> {
   conn.ev.on('connection.update', ({ connection, lastDisconnect }) => {
     if (connection === 'close') {
       pauseMessageQueue();
-      if (lastDisconnect?.error) {
-        lastError = lastDisconnect.error.message;
-        lastErrorAt = Date.now();
-      }
+      if (lastDisconnect?.error) recordError(lastDisconnect.error, 'conexion');
       if (shouldReconnect(lastDisconnect?.error)) {
         scheduleReconnect();
       } else {
@@ -170,19 +155,22 @@ async function connectBot(): Promise<WASocket> {
     if (connection === 'open') {
       isReconnecting = false;
       reconnectAttempts = 0;
+      // Los temporizadores de las mesas de juego envían mensajes con esta conexión.
+      setActiveConnection(conn);
 
       if (isFirstConnection) {
         isFirstConnection = false;
         startAutoEvents(conn);
         startAutoRegen();
+        startReminders(conn);
         startTelegramBridge(conn).catch((error) => log.error('telegram bridge:', error));
       } else {
-        reconnectCount++;
+        recordReconnect();
         updateQueueSocket(conn);
         resumeMessageQueue();
-        // auto-events guarda el socket con el que anuncia; el anterior ya está cerrado.
-        stopAutoEvents();
-        startAutoEvents(conn);
+        // auto-events y recordatorios guardan el socket con el que envían; el anterior ya está cerrado.
+        updateAutoEventsSocket(conn);
+        setRemindersConnection(conn);
       }
     }
   });
@@ -209,8 +197,14 @@ async function main(): Promise<void> {
   }
 }
 
-process.on('uncaughtException', (error) => log.error('excepción no capturada:', error));
-process.on('unhandledRejection', (reason) => log.error('promesa rechazada:', reason));
+process.on('uncaughtException', (error) => {
+  recordError(error);
+  log.error('excepción no capturada:', error);
+});
+process.on('unhandledRejection', (reason) => {
+  recordError(reason);
+  log.error('promesa rechazada:', reason);
+});
 
 let shuttingDown = false;
 
@@ -225,6 +219,7 @@ async function gracefulShutdown(reason: string, exitCode = 0): Promise<void> {
     stopCleanupScheduler();
     stopAutoRegen();
     stopAutoEvents();
+    stopReminders();
     stopScheduledTasks();
     await stopTelegramBridge();
     if (db) await db.stop();

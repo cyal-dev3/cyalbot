@@ -35,6 +35,12 @@ export interface MessageHandlerInterface {
   getAliasCollisions(): readonly AliasCollision[];
   /** Plugin del registro global que responde a un alias (índice O(1)), o null. */
   findPlugin(alias: string): { name: string; plugin: PluginHandler } | null;
+  /** Borra un mensaje y hace que anti-delete lo olvide (no se reenvía lo que borra el bot). */
+  deleteMessage(chatId: string, key: proto.IMessageKey): Promise<boolean>;
+  /** Quita del rastreo de /clear solo esos ids (clear N no debe vaciar todo). */
+  removeTrackedMessages(chatId: string, ids: string[]): void;
+  /** Identificadores del bot (número y LID). */
+  botIds(): string[];
 }
 
 /**
@@ -172,16 +178,3 @@ export interface PluginHandler {
  * Registro de plugins cargados
  */
 export type PluginRegistry = Map<string, PluginHandler>;
-
-/**
- * Configuración de mute por grupo
- */
-export interface MuteConfig {
-  enabled: boolean;
-  mutedUsers: Set<string>;
-}
-
-/**
- * Registro de mutes por grupo
- */
-export type MuteRegistry = Map<string, MuteConfig>;

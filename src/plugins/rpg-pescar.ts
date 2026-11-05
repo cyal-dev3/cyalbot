@@ -71,7 +71,7 @@ export const pescarPlugin: PluginHandler = {
     const cd = checkCooldown(user.lastFish ?? 0, FISH_COOLDOWN, getRankBenefits(user.level).cooldownReduction);
     if (cd.onCooldown) {
       return replyCooldown(ctx, cd.remaining, [
-        { cmd: 'cazar', desc: 'Salir de caza' },
+        { cmd: 'caceria', desc: 'Salir de caza' },
         { cmd: 'minar', desc: 'Minar minerales' }
       ]);
     }
@@ -114,7 +114,7 @@ export const pescarPlugin: PluginHandler = {
     await m.reply(formatReward(ctx, '🎣 Pesca completada', lines, {
       intro: `🌊 *${pickRandom(FISHING_MESSAGES)}*`,
       footer: `${EMOJI.level} Nivel *${fresh.level}* · ${EMOJI.coin} ${formatNumber(fresh.money)}\n` +
-        `${EMOJI.time} Próxima pesca en *${Math.floor(cd.effectiveCooldown / 60000)} minutos*. Prueba *${usedPrefix}cazar* mientras tanto.`
+        `${EMOJI.time} Próxima pesca en *${Math.floor(cd.effectiveCooldown / 60000)} minutos*. Prueba *${usedPrefix}caceria* mientras tanto.`
     }));
   }
 };

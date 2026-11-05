@@ -5,7 +5,7 @@ import { COOLDOWNS } from '../constants/rpg.js';
 import { loseExp } from '../lib/levelling.js';
 import { calculateTotalStats } from '../lib/rpg-utils.js';
 import { getRankBenefits, type UserRPG } from '../types/user.js';
-import { grantRewards, replyCooldown, formatReward, type RewardInput } from '../lib/rpg-actions.js';
+import { grantRewards, replyCooldown, formatReward, type RewardInput, type RewardResult } from '../lib/rpg-actions.js';
 import { ensureDebtTimestamps } from './rpg-economia.js';
 
 const PIEDRA_COST = 100;
@@ -210,13 +210,15 @@ export const fumarPlugin: PluginHandler = {
       if (lost < outcome.expLoss) lines.push(`_Solo perdiste ${formatNumber(lost)} XP: no bajas de nivel_`);
     }
 
-    const questLines = grantRewards(
+    const result = grantRewards(
       db,
       m.sender,
       { ...(outcome.rewards ?? {}), questObjectives: [{ objective: 'fumar', amount: 1 }] },
       { source: 'fumar', now }
-    ).lines;
-    lines.push(...questLines);
+    );
+    // La línea del efecto muestra lo recibido tras rango, modos y esclavitud, no la cantidad base
+    lines.unshift(`${effect.emoji} *${effect.name}*: ${outcome.rewards ? describeDelivered(result) : outcome.message ?? ''}`);
+    lines.push(...result.lines);
 
     const title = isPositive ? '✅ ¡Te pusiste bien, Luisin!' : '❌ ¡Te pusiste mal, Luisin!';
     await m.reply(formatReward(ctx, title, lines, {

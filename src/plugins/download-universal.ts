@@ -99,17 +99,6 @@ export const audioDownloadPlugin: PluginHandler = {
     ),
 };
 
-/**
- * @deprecated /cobalt se retiró: el bot solo usa el servicio propio. Sin
- * comandos no registra nada; quítalo de plugins/index.ts y borra este export.
- */
-export const cobaltPlugin: PluginHandler = {
-  command: [],
-  description: 'Retirado',
-  category: 'download',
-  handler: async () => undefined,
-};
-
 function formatUptime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const min = Math.floor((seconds % 3600) / 60);

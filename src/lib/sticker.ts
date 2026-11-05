@@ -90,11 +90,7 @@ function createExif(packname: string, author: string, categories: string[]): Buf
   return Buffer.concat([header, json]);
 }
 
-type WebpmuxImage = import('node-webpmux').Image & {
-  readonly hasAnim: boolean;
-  readonly frames?: { delay: number }[];
-  demux(options: { buffers: true }): Promise<Buffer[]>;
-};
+type WebpmuxImage = import('node-webpmux').Image;
 
 /** node-webpmux es CommonJS: según el cargador la clase llega como export con nombre o dentro de default. */
 async function loadWebp(buffer: Buffer): Promise<WebpmuxImage> {

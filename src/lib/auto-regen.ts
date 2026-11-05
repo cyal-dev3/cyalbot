@@ -2,6 +2,7 @@ import { getDatabase } from './database.js';
 import { calculateTotalStats } from './rpg-utils.js';
 import { REGEN } from '../constants/rpg.js';
 import { createLogger } from './logger.js';
+import * as scheduler from './scheduler.js';
 import type { UserRPG } from '../types/user.js';
 
 const log = createLogger('regen');
@@ -20,7 +21,7 @@ export const regenConfig: RegenConfig = {
   checkIntervalMs: REGEN.CHECK_INTERVAL_MS
 };
 
-let regenTimer: NodeJS.Timeout | null = null;
+const REGEN_TASK = 'rpg:regen';
 
 /** Milisegundos que tarda en regenerarse un punto */
 function pointIntervalMs(regenPerHour: number): number {
@@ -181,20 +182,16 @@ export function getRegenInfo(jid: string): {
 }
 
 export function startAutoRegen(): void {
-  if (regenTimer) {
+  if (scheduler.has(REGEN_TASK)) {
     log.warn('el sistema ya está activo');
     return;
   }
 
   log.info(`regeneración pasiva activada: +${regenConfig.healthPerHour} vida/h, +${regenConfig.staminaPerHour} energía/h`);
   applyRegenToAllUsers();
-  regenTimer = setInterval(applyRegenToAllUsers, regenConfig.checkIntervalMs);
+  scheduler.every(REGEN_TASK, regenConfig.checkIntervalMs, applyRegenToAllUsers);
 }
 
 export function stopAutoRegen(): void {
-  if (regenTimer) {
-    clearInterval(regenTimer);
-    regenTimer = null;
-    log.info('regeneración pasiva detenida');
-  }
+  if (scheduler.stop(REGEN_TASK)) log.info('regeneración pasiva detenida');
 }

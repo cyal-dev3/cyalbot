@@ -1,5 +1,4 @@
 import { proto } from 'baileys';
-import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -96,9 +95,3 @@ export const unpinPlugin: PluginHandler = {
     }
   },
 };
-
-/** @deprecated plugins/index.ts debe registrar pinPlugin y unpinPlugin desde ENTRIES.grupos. */
-export function registerGroupPinPlugins(handler: MessageHandler): void {
-  handler.registerPlugin('group-pin', pinPlugin);
-  handler.registerPlugin('group-unpin', unpinPlugin);
-}

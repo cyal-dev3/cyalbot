@@ -123,22 +123,40 @@ async function startRound(groupId: string): Promise<void> {
   await promptTurn(groupId, next);
 }
 
+/**
+ * Anuncia el turno (solo en mesa: en solo el jugador ya tiene su mano en la
+ * respuesta) y arma el temporizador. `markDone` deja el estado listo antes de
+ * cualquier await, así un segundo mensaje del mismo jugador no toca su mano.
+ */
 async function promptTurn(groupId: string, jid: string): Promise<void> {
   const s = bj.get(groupId);
   const p = s?.players.get(jid);
   if (!s || !p) return;
-  const extra = p.hand.length === 2 && !p.doubled ? ', *doblar*' : '';
-  const value = handValue(p.hand).total;
+  armTurnTimer(groupId, jid);
   if (s.players.size > 1 || s.state.mode === 'mesa') {
+    const extra = p.hand.length === 2 && !p.doubled ? ', *doblar*' : '';
+    const value = handValue(p.hand).total;
     await say(groupId, `👉 Turno de ${mentionTag(jid)}: ${handText(p.hand)} (${value}). Escribe *pedir*, *plantarse*${extra}. ${TURN_MS / 1000} s.`, [jid]);
   }
+}
+
+function armTurnTimer(groupId: string, jid: string): void {
   bj.setTimer(groupId, TURN_MS, async () => {
-    const current = bj.get(groupId)?.players.get(jid);
-    if (!current || current.done) return;
-    current.done = true;
+    const s = bj.get(groupId);
+    const current = s?.players.get(jid);
+    // El turno pudo avanzar mientras el temporizador seguía armado para este jugador.
+    if (!s || !current || current.done || bj.current(groupId) !== jid) return;
+    markDone(groupId, current);
     await say(groupId, `⏰ ${mentionTag(jid)} tardó demasiado y se planta con ${handValue(current.hand).total}.`, [jid]);
     await proceed(groupId);
   });
+}
+
+/** Cierra la mano y pasa el turno de forma síncrona (antes de responder). */
+function markDone(groupId: string, p: BjPlayer): void {
+  p.done = true;
+  bj.clearTimer(groupId);
+  nextPending(groupId);
 }
 
 async function proceed(groupId: string): Promise<void> {
@@ -307,13 +325,15 @@ export const bjPlugin: PluginHandler = {
 
 async function currentPlayer(ctx: MessageContext): Promise<BjPlayer | null> {
   const s = bj.get(ctx.m.chat);
-  if (!s || s.phase !== 'turnos') return null;
-  if (bj.current(ctx.m.chat) !== ctx.m.sender) {
-    if (bj.isPlayerIn(ctx.m.chat, ctx.m.sender)) await ctx.m.reply('Aún no es tu turno.');
+  if (!s || s.phase !== 'turnos' || ctx.args.length > 0) return null;
+  const p = s.players.get(ctx.m.sender);
+  if (!p) return null;
+  if (bj.current(ctx.m.chat) !== ctx.m.sender || p.done) {
+    await ctx.m.reply(p.done ? 'Ya terminaste tu mano.' : 'Aún no es tu turno.');
     return null;
   }
   enter(ctx);
-  return s.players.get(ctx.m.sender) ?? null;
+  return p;
 }
 
 export const pedirPlugin: PluginHandler = {
@@ -326,20 +346,15 @@ export const pedirPlugin: PluginHandler = {
     if (!p || !s) return;
     p.hand.push(s.state.deck.pop() as Card);
     const value = handValue(p.hand).total;
-    if (isBust(p.hand)) {
-      p.done = true;
-      await ctx.m.reply(`💥 ${handText(p.hand)} (${value}). Te pasaste.`);
+    if (isBust(p.hand) || value === 21) {
+      markDone(ctx.m.chat, p);
+      await ctx.m.reply(isBust(p.hand) ? `💥 ${handText(p.hand)} (${value}). Te pasaste.` : `✨ ${handText(p.hand)} (21). Te plantas.`);
       await proceed(ctx.m.chat);
       return;
     }
-    if (value === 21) {
-      p.done = true;
-      await ctx.m.reply(`✨ ${handText(p.hand)} (21). Te plantas.`);
-      await proceed(ctx.m.chat);
-      return;
-    }
+    // Solo se rearma el temporizador: la mano ya va en la respuesta, sin repetir el aviso de turno.
+    armTurnTimer(ctx.m.chat, ctx.m.sender);
     await ctx.m.reply(`${handText(p.hand)} (${value}). ¿*pedir* o *plantarse*?`);
-    await promptTurn(ctx.m.chat, ctx.m.sender);
   },
 };
 
@@ -350,7 +365,7 @@ export const plantarsePlugin: PluginHandler = {
   async handler(ctx) {
     const p = await currentPlayer(ctx);
     if (!p) return;
-    p.done = true;
+    markDone(ctx.m.chat, p);
     await ctx.m.reply(`🛑 Te plantas con ${handValue(p.hand).total}.`);
     await proceed(ctx.m.chat);
   },
@@ -379,8 +394,8 @@ export const doblarPlugin: PluginHandler = {
     }
     p.bet *= 2;
     p.doubled = true;
-    p.done = true;
     p.hand.push(s.state.deck.pop() as Card);
+    markDone(ctx.m.chat, p);
     const value = handValue(p.hand).total;
     await ctx.m.reply(`💰 Doblaste a ${formatCoins(p.bet)}: ${handText(p.hand)} (${value})${isBust(p.hand) ? '. Te pasaste.' : '.'}`);
     await proceed(ctx.m.chat);

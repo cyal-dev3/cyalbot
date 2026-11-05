@@ -5,6 +5,8 @@ import { ITEMS, type Item, type ItemRarity } from '../types/rpg.js';
 import { PVP, SPECIAL_ITEMS } from '../constants/rpg.js';
 import { isOwnerId, sameUser } from '../config.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveGroupRoles } from '../lib/group-events.js';
+import { isPassiveActive } from '../lib/rpg-actions.js';
 import { calculateTotalStats } from '../lib/rpg-utils.js';
 import { EMOJI, formatNumber, getTargetUser, msToTime, randomInt } from '../lib/utils.js';
 import { addItem, isEquipable, removeItem } from '../lib/rpg-inventory.js';
@@ -61,24 +63,46 @@ export function permanentExpStacks(user: UserRPG): number {
   return Math.max(0, Math.round((buff.value - 1) / SPECIAL_ITEMS.PERMANENT_EXP.PER_STACK));
 }
 
-function isProtectedJid(ctx: MessageContext, jid: string): boolean {
+interface GroupInfo {
+  isBotAdmin: boolean;
+  participants: string[];
+  admins: string[];
+}
+
+/**
+ * Roles del grupo. El handler solo los resuelve para plugins que declaran
+ * admin/botAdmin/group y /usar no lo hace (sirve en privado), así que aquí se
+ * leen a demanda de la metadata cacheada. null si WhatsApp no la devolvió.
+ */
+async function groupInfo(ctx: MessageContext): Promise<GroupInfo | null> {
+  if (ctx.participants) return { isBotAdmin: ctx.isBotAdmin, participants: ctx.participants, admins: ctx.groupAdmins ?? [] };
+  const roles = await resolveGroupRoles(ctx.conn, ctx.m.chat, ctx.m.sender);
+  if (!roles.metadata) return null;
+  return { isBotAdmin: roles.isBotAdmin, participants: roles.participants, admins: roles.admins };
+}
+
+function isProtectedJid(ctx: MessageContext, info: GroupInfo, jid: string): boolean {
   if (isOwnerId(jid)) return true;
-  if (ctx.groupAdmins?.some(admin => sameUser(admin, jid))) return true;
+  if (info.admins.some(admin => sameUser(admin, jid))) return true;
   const botId = ctx.conn?.user?.id;
   return Boolean(botId && sameUser(botId, jid));
 }
 
+const NO_METADATA = `${EMOJI.warning} No pude leer los datos del grupo, inténtalo en unos segundos.`;
+
 /** Valida el objetivo de los tickets de grupo; devuelve el JID o el mensaje de error */
-function resolveGroupTarget(input: SpecialItemInput, usage: string): { jid: string } | { error: string } {
+async function resolveGroupTarget(input: SpecialItemInput, usage: string): Promise<{ jid: string } | { error: string }> {
   const { ctx } = input;
   if (!ctx.isGroup) return { error: `${EMOJI.error} Este item solo se puede usar en un grupo.` };
-  if (!ctx.isBotAdmin) return { error: `${EMOJI.error} Necesito ser admin del grupo para usar este item.` };
+  const info = await groupInfo(ctx);
+  if (!info) return { error: NO_METADATA };
+  if (!info.isBotAdmin) return { error: `${EMOJI.error} Necesito ser admin del grupo para usar este item.` };
 
   const target = getTargetUser({ mentionedJid: ctx.m.mentionedJid, quoted: ctx.m.quoted, chat: ctx.m.chat, sender: ctx.m.sender }, { args: ctx.args });
   if (!target) return { error: `${EMOJI.error} ¿Contra quién? Menciona o cita a alguien.\n\n📝 *Uso:* ${usage}` };
   if (sameUser(target, ctx.m.sender)) return { error: `${EMOJI.error} No puedes usarlo contra ti mismo.` };
-  if (isProtectedJid(ctx, target)) return { error: `${EMOJI.error} No puedes usar este item contra admins, el owner o el bot.` };
-  if (ctx.participants && !ctx.participants.some(p => sameUser(p, target))) {
+  if (isProtectedJid(ctx, info, target)) return { error: `${EMOJI.error} No puedes usar este item contra admins, el owner o el bot.` };
+  if (!info.participants.some(p => sameUser(p, target))) {
     return { error: `${EMOJI.error} Ese usuario no está en el grupo.` };
   }
   return { jid: target };
@@ -90,8 +114,8 @@ function extendProtection(current: number | undefined, duration: number, now: nu
 
 const HANDLERS: Record<string, SpecialItemHandler> = {
   ticket_muteo: async (input) => {
-    const { ctx, db, now } = input;
-    const target = resolveGroupTarget(input, '/usar ticket muteo @usuario');
+    const { ctx, db } = input;
+    const target = await resolveGroupTarget(input, '/usar ticket muteo @usuario');
     if ('error' in target) return { ok: false, message: target.error };
 
     const chat = ctx.m.chat;

@@ -184,6 +184,77 @@ export const hazanaPlugin: PluginHandler = {
   },
 };
 
+/**
+ * Texto del mensaje tras el prefijo y las primeras `skip` palabras. Se toma de
+ * m.text (no de args) para conservar saltos de línea en las frases guardadas.
+ */
+function textAfter(ctx: MessageContext, skip: number): string {
+  const body = ctx.m.text.slice(ctx.usedPrefix.length).trimStart();
+  const match = body.match(new RegExp(`^(?:\\S+\\s+){${skip}}`));
+  return match ? body.slice(match[0].length).trim() : '';
+}
+
+async function runFrases(ctx: MessageContext, set: string, action: string, rest: string): Promise<void> {
+  const { m } = ctx;
+  const p = ctx.usedPrefix || '/';
+  if (set !== 'poka' && set !== 'ctm') {
+    await m.reply(`📝 *Frases*\n• ${p}frases poka list\n• ${p}frases ctm add <texto> ({name} y {target})\n• ${p}frases poka del <n>\n• ${p}frases ctm clear\n\nAñadir, borrar y limpiar es solo para admins.`);
+    return;
+  }
+  const db = getDatabase();
+  const field = PHRASE_FIELD[set];
+  const phrases = [...(db.getChatSettings(m.chat)[field] ?? [])];
+
+  if (action === 'list' || action === 'ver') {
+    if (phrases.length === 0) {
+      await m.reply(`📋 Sin frases personalizadas para ${set}; se usan las de serie. Añade con *${p}frases ${set} add <texto>*.`);
+      return;
+    }
+    await m.reply(`📋 *Frases de ${set}* (${phrases.length}/${MAX_PHRASES})\n\n${phrases.map((f, i) => `${i + 1}. ${f}`).join('\n\n')}`);
+    return;
+  }
+  if (!ctx.isAdmin && !ctx.isOwner) {
+    await m.reply('❌ Solo los administradores pueden cambiar las frases.');
+    return;
+  }
+  if (action === 'add' || action === 'agregar') {
+    const phrase = rest.trim();
+    if (!phrase) {
+      await m.reply(`Uso: *${p}frases ${set} add <texto>*. Variables: {name}${set === 'ctm' ? ' y {target}' : ''}.`);
+      return;
+    }
+    if (phrase.length > MAX_PHRASE_LENGTH) {
+      await m.reply(`❌ Máximo ${MAX_PHRASE_LENGTH} caracteres por frase.`);
+      return;
+    }
+    if (phrases.length >= MAX_PHRASES) {
+      await m.reply(`❌ Ya hay ${MAX_PHRASES} frases; borra alguna con *${p}frases ${set} del <n>*.`);
+      return;
+    }
+    phrases.push(phrase);
+    db.updateChatSettings(m.chat, { [field]: phrases });
+    await m.reply(`✅ Frase ${phrases.length} añadida a ${set}.`);
+    return;
+  }
+  if (action === 'del' || action === 'borrar') {
+    const index = parseInt(rest, 10) - 1;
+    if (!(index >= 0 && index < phrases.length)) {
+      await m.reply(phrases.length === 0 ? 'No hay frases que borrar.' : `❌ Indica un número del 1 al ${phrases.length}.`);
+      return;
+    }
+    const [removed] = phrases.splice(index, 1);
+    db.updateChatSettings(m.chat, { [field]: phrases });
+    await m.reply(`✅ Frase eliminada: "${removed}". Quedan ${phrases.length}.`);
+    return;
+  }
+  if (action === 'clear' || action === 'limpiar') {
+    db.updateChatSettings(m.chat, { [field]: [] });
+    await m.reply(`✅ Frases de ${set} borradas; vuelven las de serie.`);
+    return;
+  }
+  await m.reply(`Acciones: list, add <texto>, del <n>, clear. Ej: *${p}frases ${set} list*`);
+}
+
 /** `frases <poka|ctm> add <texto> | list | del <n> | clear` */
 export const frasesPlugin: PluginHandler = {
   command: ['frases'],
@@ -191,78 +262,17 @@ export const frasesPlugin: PluginHandler = {
   category: 'fun',
   group: true,
   usage: ['frases poka list', 'frases ctm add 🤬 {name} le dice a {target}...', 'frases poka del 2', 'frases ctm clear'],
-  async handler(ctx) {
-    const { m, args } = ctx;
-    const p = ctx.usedPrefix || '/';
-    const set = (args[0] ?? '').toLowerCase();
-    const action = (args[1] ?? 'list').toLowerCase();
-    if (set !== 'poka' && set !== 'ctm') {
-      await m.reply(`📝 *Frases*\n• ${p}frases poka list\n• ${p}frases ctm add <texto> ({name} y {target})\n• ${p}frases poka del <n>\n• ${p}frases ctm clear\n\nAñadir, borrar y limpiar es solo para admins.`);
-      return;
-    }
-    const db = getDatabase();
-    const field = PHRASE_FIELD[set as PhraseSet];
-    const phrases = [...(db.getChatSettings(m.chat)[field] ?? [])];
-
-    if (action === 'list' || action === 'ver') {
-      if (phrases.length === 0) {
-        await m.reply(`📋 Sin frases personalizadas para ${set}; se usan las de serie. Añade con *${p}frases ${set} add <texto>*.`);
-        return;
-      }
-      await m.reply(`📋 *Frases de ${set}* (${phrases.length}/${MAX_PHRASES})\n\n${phrases.map((f, i) => `${i + 1}. ${f}`).join('\n\n')}`);
-      return;
-    }
-    if (!ctx.isAdmin && !ctx.isOwner) {
-      await m.reply('❌ Solo los administradores pueden cambiar las frases.');
-      return;
-    }
-    if (action === 'add' || action === 'agregar') {
-      const phrase = args.slice(2).join(' ').trim();
-      if (!phrase) {
-        await m.reply(`Uso: *${p}frases ${set} add <texto>*. Variables: {name}${set === 'ctm' ? ' y {target}' : ''}.`);
-        return;
-      }
-      if (phrase.length > MAX_PHRASE_LENGTH) {
-        await m.reply(`❌ Máximo ${MAX_PHRASE_LENGTH} caracteres por frase.`);
-        return;
-      }
-      if (phrases.length >= MAX_PHRASES) {
-        await m.reply(`❌ Ya hay ${MAX_PHRASES} frases; borra alguna con *${p}frases ${set} del <n>*.`);
-        return;
-      }
-      phrases.push(phrase);
-      db.updateChatSettings(m.chat, { [field]: phrases });
-      await m.reply(`✅ Frase ${phrases.length} añadida a ${set}.`);
-      return;
-    }
-    if (action === 'del' || action === 'borrar') {
-      const index = parseInt(args[2] ?? '', 10) - 1;
-      if (!(index >= 0 && index < phrases.length)) {
-        await m.reply(phrases.length === 0 ? 'No hay frases que borrar.' : `❌ Indica un número del 1 al ${phrases.length}.`);
-        return;
-      }
-      const [removed] = phrases.splice(index, 1);
-      db.updateChatSettings(m.chat, { [field]: phrases });
-      await m.reply(`✅ Frase eliminada: "${removed}". Quedan ${phrases.length}.`);
-      return;
-    }
-    if (action === 'clear' || action === 'limpiar') {
-      db.updateChatSettings(m.chat, { [field]: [] });
-      await m.reply(`✅ Frases de ${set} borradas; vuelven las de serie.`);
-      return;
-    }
-    await m.reply(`Acciones: list, add <texto>, del <n>, clear. Ej: *${p}frases ${set} list*`);
-  },
+  handler: (ctx) => runFrases(ctx, (ctx.args[0] ?? '').toLowerCase(), (ctx.args[1] ?? 'list').toLowerCase(), textAfter(ctx, 3)),
 };
 
-/** Alias viejos (addpoka, delctm...) como atajos de `frases`. */
+/** Alias viejos (addpoka, delctm...) como atajos de `frases`; no copian ctx para no disparar el getter perezoso `user`. */
 function frasesShortcut(aliases: string[], set: PhraseSet, action: string): PluginHandler {
   return {
     command: aliases,
     description: `Atajo de frases ${set} ${action}`,
     category: 'fun',
     group: true,
-    handler: (ctx) => frasesPlugin.handler({ ...ctx, args: [set, action, ...ctx.args], text: [set, action, ...ctx.args].join(' ') }),
+    handler: (ctx) => runFrases(ctx, set, action, textAfter(ctx, 1)),
   };
 }
 

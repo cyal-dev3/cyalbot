@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
+import { areJidsSameUser } from 'baileys';
 import type { WASocket, proto, GroupMetadata, AnyMessageContent, MiscMessageGenerationOptions } from 'baileys';
 import type {
-  MessageContext, SerializedMessage, PluginHandler, PluginRegistry, MuteRegistry, CommandContext, AliasCollision, TargetOptions,
+  MessageContext, SerializedMessage, PluginHandler, PluginRegistry, CommandContext, AliasCollision, TargetOptions,
 } from './types/message.js';
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings } from './types/database.js';
 import type { UserRPG } from './types/user.js';
@@ -9,14 +10,19 @@ import type { Database } from './lib/database.js';
 import { CONFIG, isOwnerId, sameUser } from './config.js';
 import { createSticker } from './lib/sticker.js';
 import { handleAutoDownload } from './lib/autodownload.js';
-import { findBadWord } from './lib/moderation.js';
+import {
+  findBadWord, isForbiddenLink, getAntiLinkMode, getMaxWarnings, getMutedUntil, isMutedNow, applyAutoWarning,
+} from './lib/moderation.js';
 import { createLogger } from './lib/logger.js';
 import { LRUCache } from './lib/lru-cache.js';
 import { unwrapMessage, getText, getMentions, getQuoted, downloadMedia } from './lib/wa-message.js';
 import { commandAliases, suggestCommand } from './lib/command-suggest.js';
 import { resolveGroupRoles, getGroupMetadataCached, invalidateGroupMetadata, botIdentities, type GroupRoles } from './lib/group-events.js';
+import { canonicalJid } from './lib/participants.js';
+import { forgetMessage } from './lib/anti-delete.js';
 import { getTargetUser } from './lib/utils.js';
 import * as scheduler from './lib/scheduler.js';
+import { isBotEnabled, parseToggle, botTogglePlugin } from './plugins/group-toggles.js';
 
 const log = createLogger('handler');
 
@@ -64,8 +70,8 @@ const MESSAGE_EXPIRY_MS = 60 * 60 * 1000;
 const AUTOCLEAR_DELAY_MS = 2 * 60 * 1000;
 const SUGGEST_COOLDOWN_MS = 10_000;
 const MAX_ECHOED_COMMAND = 30;
-/** Comandos de limpieza cuyo mensaje no debe rastrearse (hasta que group-delete marque `untracked`). */
-const UNTRACKED_COMMANDS = new Set(['clear', 'limpiar', 'clean', 'autoclear', 'autolimpiar', 'autoclean']);
+/** Alias con los que un admin vuelve a encender el bot en un grupo apagado. */
+const BOT_TOGGLE_ALIASES = new Set(commandAliases(botTogglePlugin));
 
 export class MessageHandler {
   private plugins: PluginRegistry = new Map();
@@ -76,7 +82,6 @@ export class MessageHandler {
   private registrationOrder = 0;
   private contexts: CommandContext[] = [];
   private autoClearRunning = false;
-  private muteRegistry: MuteRegistry = new Map();
   private spamTracker = new Map<string, number[]>();
   private messageTracker = new Map<string, TrackedMessage[]>();
   private suggestionCooldown = new LRUCache<string, number>(500);
@@ -89,7 +94,6 @@ export class MessageHandler {
   ) {
     this.spamTrackerExpiry = CONFIG.protection.intervalMs * 10;
     this.timerPrefix = `handler:${randomBytes(2).toString('hex')}`;
-    this.loadMuteDataFromDB();
     scheduler.every(`${this.timerPrefix}:cleanup`, 5 * 60 * 1000, () => this.cleanupOldMessages());
     scheduler.every(`${this.timerPrefix}:autoclear`, 30 * 1000, () => this.processAutoClear());
   }
@@ -123,6 +127,13 @@ export class MessageHandler {
 
   clearTrackedMessages(chatId: string): void {
     this.messageTracker.delete(chatId);
+  }
+
+  removeTrackedMessages(chatId: string, ids: string[]): void {
+    const wanted = new Set(ids);
+    const remaining = (this.messageTracker.get(chatId) ?? []).filter((t) => !t.key.id || !wanted.has(t.key.id));
+    if (remaining.length === 0) this.messageTracker.delete(chatId);
+    else this.messageTracker.set(chatId, remaining);
   }
 
   private cleanupOldMessages(): void {
@@ -208,42 +219,39 @@ export class MessageHandler {
   }
 
   // ---------------------------------------------------------------------------
-  // Mute
+  // Mute (la BD es la única fuente; los vencimientos de /tempmute viven en mutedUntil)
   // ---------------------------------------------------------------------------
 
-  private loadMuteDataFromDB(): void {
-    for (const [chatId, settings] of Object.entries(this.db.data.chats)) {
-      if (settings.mutedUsers && settings.mutedUsers.length > 0) {
-        this.muteRegistry.set(chatId, { enabled: true, mutedUsers: new Set(settings.mutedUsers) });
-      }
-    }
-  }
-
-  private saveMuteToDB(groupId: string): void {
-    const config = this.muteRegistry.get(groupId);
-    this.db.updateChatSettings(groupId, { mutedUsers: config ? Array.from(config.mutedUsers) : [] });
-  }
-
   muteUser(groupId: string, userId: string): void {
-    let config = this.muteRegistry.get(groupId);
-    if (!config) {
-      config = { enabled: true, mutedUsers: new Set() };
-      this.muteRegistry.set(groupId, config);
-    }
-    config.mutedUsers.add(userId);
-    this.saveMuteToDB(groupId);
+    const muted = this.db.getChatSettings(groupId).mutedUsers ?? [];
+    if (muted.some((u) => areJidsSameUser(u, userId))) return;
+    this.db.updateChatSettings(groupId, { mutedUsers: [...muted, userId] });
   }
 
+  /** Quita el mute (en cualquier formato de id) y su vencimiento. Devuelve true si estaba silenciado. */
   unmuteUser(groupId: string, userId: string): boolean {
-    const config = this.muteRegistry.get(groupId);
-    if (!config) return false;
-    const result = config.mutedUsers.delete(userId);
-    this.saveMuteToDB(groupId);
-    return result;
+    const settings = this.readChatSettings(groupId);
+    const muted = settings.mutedUsers ?? [];
+    const remaining = muted.filter((u) => !areJidsSameUser(u, userId));
+    const until = { ...getMutedUntil(settings) };
+    const expiredKeys = Object.keys(until).filter((u) => areJidsSameUser(u, userId));
+    if (remaining.length === muted.length && expiredKeys.length === 0) return false;
+    for (const key of expiredKeys) delete until[key];
+    // mutedUntil todavía no está en ChatSettings (lo añade datos en la ronda 2).
+    this.db.updateChatSettings(groupId, { mutedUsers: remaining, mutedUntil: until } as Partial<ChatSettings>);
+    return remaining.length !== muted.length;
   }
 
   isUserMuted(groupId: string, userId: string): boolean {
-    return this.muteRegistry.get(groupId)?.mutedUsers.has(userId) || false;
+    return isMutedNow(this.readChatSettings(groupId), userId);
+  }
+
+  /** Como isUserMuted, pero un mute temporal ya vencido se retira de la BD al detectarlo. */
+  private isMutedOrExpire(groupId: string, userId: string): boolean {
+    const settings = this.readChatSettings(groupId);
+    if (isMutedNow(settings, userId)) return true;
+    if (settings.mutedUsers?.some((u) => areJidsSameUser(u, userId))) this.unmuteUser(groupId, userId);
+    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -356,6 +364,7 @@ export class MessageHandler {
   }
 
   async deleteMessage(chatId: string, messageKey: proto.IMessageKey): Promise<boolean> {
+    if (messageKey.id) forgetMessage(chatId, messageKey.id);
     try {
       await this.conn.sendMessage(chatId, { delete: messageKey });
       return true;
@@ -447,54 +456,47 @@ export class MessageHandler {
     }
   }
 
-  /** Antilink, antispam y antibad. Devuelve true si el mensaje fue eliminado. */
-  private async applyProtections(m: SerializedMessage, settings: ChatSettings): Promise<boolean> {
-    const mention = { mentions: [m.sender] };
-    const tag = `@${m.sender.split('@')[0]}`;
-
-    // search() ignora el flag g y lastIndex, a diferencia de test().
-    if (settings.antiLink && m.text.search(CONFIG.protection.linkRegex) !== -1) {
-      await this.deleteMessage(m.chat, m.key);
-      await this.conn.sendMessage(m.chat, { text: `⚠️ ${tag} los enlaces de grupos no están permitidos aquí.`, ...mention });
-      log.debug(`antilink: enlace eliminado de ${m.sender}`);
-      const warnings = this.db.addWarning(m.chat, { odBy: 'SISTEMA', odTo: m.sender, reason: 'Enviar enlace de grupo', timestamp: Date.now() });
-      if (warnings >= CONFIG.protection.maxWarnings) {
-        try {
-          await this.conn.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
-          await this.conn.sendMessage(m.chat, { text: `🚫 ${tag} fue expulsado por acumular ${CONFIG.protection.maxWarnings} advertencias.`, ...mention });
-          this.db.clearWarnings(m.chat, m.sender);
-        } catch (error) {
-          log.error('error expulsando usuario:', error);
-        }
-      }
-      return true;
-    }
-
-    if (settings.antiSpam) {
-      const now = Date.now();
-      const userKey = `${m.chat}:${m.sender}`;
-      const recent = (this.spamTracker.get(userKey) ?? []).filter((t) => now - t < CONFIG.protection.intervalMs);
-      recent.push(now);
+  /** true si el remitente superó el máximo de mensajes por intervalo; al detectarlo se reinicia su ventana. */
+  private isSpamming(m: SerializedMessage): boolean {
+    const now = Date.now();
+    const userKey = `${m.chat}:${m.sender}`;
+    const recent = (this.spamTracker.get(userKey) ?? []).filter((t) => now - t < CONFIG.protection.intervalMs);
+    recent.push(now);
+    if (recent.length <= CONFIG.protection.maxMessagesPerInterval) {
       this.spamTracker.set(userKey, recent);
-      if (recent.length > CONFIG.protection.maxMessagesPerInterval) {
-        await this.deleteMessage(m.chat, m.key);
-        await this.conn.sendMessage(m.chat, { text: `⚠️ ${tag} deja de hacer spam o serás advertido.`, ...mention });
-        log.debug(`antispam: spam detectado de ${m.sender}`);
-        this.spamTracker.set(userKey, [now]);
-        return true;
-      }
+      return false;
     }
+    this.spamTracker.set(userKey, [now]);
+    return true;
+  }
 
-    if (settings.antiBad && settings.badWords?.length) {
-      const found = findBadWord(m.text, settings.badWords);
-      if (found) {
-        await this.deleteMessage(m.chat, m.key);
-        await this.conn.sendMessage(m.chat, { text: `⚠️ ${tag} las groserías no están permitidas aquí.`, ...mention });
-        log.debug(`antibad: grosería de ${m.sender}: ${found}`);
-        return true;
-      }
+  /** Antilink, antispam y antibad con advertencias reales. Devuelve true si el mensaje fue eliminado. */
+  private async applyProtections(m: SerializedMessage, settings: ChatSettings, metadata: GroupMetadata | null): Promise<boolean> {
+    const deps = { db: this.db, conn: this.conn, metadata, maxWarnings: getMaxWarnings(settings) };
+    let reason: string | null = null;
+
+    if (settings.antiLink && isForbiddenLink(m.text, getAntiLinkMode(settings))) {
+      reason = 'Enviar enlace';
+    } else if (settings.antiSpam && this.isSpamming(m)) {
+      reason = 'Spam de mensajes';
+    } else if (settings.antiBad) {
+      const found = findBadWord(m.text, settings.badWords ?? []);
+      if (found) reason = `Palabra prohibida (${found})`;
     }
-    return false;
+    if (!reason) return false;
+
+    await this.deleteMessage(m.chat, m.key);
+    const result = await applyAutoWarning(deps, m.chat, m.sender, reason);
+    log.debug(`protección: ${reason} de ${m.sender} (${result.count}/${result.max}${result.kicked ? ', expulsado' : ''})`);
+    return true;
+  }
+
+  /** Con el bot apagado en el grupo solo pasa "botgrupo on" (y sus sinónimos), para poder reactivarlo. */
+  private isBotReactivation(text: string): boolean {
+    const prefix = text.match(CONFIG.prefix);
+    if (!prefix) return false;
+    const [cmd = '', arg] = text.slice(prefix[0].length).trim().toLowerCase().split(/\s+/);
+    return BOT_TOGGLE_ALIASES.has(cmd) && parseToggle(arg) === 'on';
   }
 
   // ---------------------------------------------------------------------------
@@ -522,27 +524,40 @@ export class MessageHandler {
     if (botMode === 'inbox' && m.isGroup) return;
 
     const chatSettings = this.readChatSettings(m.chat);
+    if (m.isGroup && !isOwner && !isBotEnabled(chatSettings) && !this.isBotReactivation(m.text)) return;
+
     let cachedRoles: GroupRoles | null = null;
-    const roles = async (): Promise<GroupRoles> => (cachedRoles ??= await resolveGroupRoles(this.conn, m.chat, m.sender));
+    const roles = async (): Promise<GroupRoles> => {
+      if (!cachedRoles) {
+        cachedRoles = await resolveGroupRoles(this.conn, m.chat, m.sender);
+        // El remitente puede llegar como LID o como número; se guarda como lo conoce el grupo.
+        if (cachedRoles.metadata) m.sender = canonicalJid(cachedRoles.metadata, m.sender);
+      }
+      return cachedRoles;
+    };
 
     if (m.isGroup) {
       const needsProtection = chatSettings.autoMuteEnabled || chatSettings.antiLink || chatSettings.antiSpam || chatSettings.antiBad;
       if (needsProtection) {
         const r = await roles();
-        if (chatSettings.autoMuteEnabled && this.isUserMuted(m.chat, m.sender)) {
+        if (chatSettings.autoMuteEnabled && this.isMutedOrExpire(m.chat, m.sender)) {
           if (r.isBotAdmin) {
             await this.deleteMessage(m.chat, m.key);
             log.debug(`mensaje eliminado de usuario muteado: ${m.sender}`);
           }
           return;
         }
-        if (r.isBotAdmin && !r.isAdmin && m.text && (await this.applyProtections(m, chatSettings))) return;
+        // Owner y admins quedan exentos de las protecciones automáticas.
+        if (r.isBotAdmin && !r.isAdmin && !isOwner && m.text && (await this.applyProtections(m, chatSettings, r.metadata))) return;
       }
 
       const hasPrefix = Boolean(m.text) && CONFIG.prefix.test(m.text);
       if (!hasPrefix) {
         if (chatSettings.autoSticker && m.message?.imageMessage) await this.handleAutoSticker(m, rawMessage);
-        if (chatSettings.autoDownload && m.text) await handleAutoDownload(this.conn, m, m.text);
+        // Una descarga puede tardar minutos: no bloquea el resto de mensajes (la reserva por chat evita solapes).
+        if (chatSettings.autoDownload && m.text) {
+          handleAutoDownload(this.conn, m, m.text).catch((error) => log.error('autodownload:', error));
+        }
       }
     }
 
@@ -704,9 +719,7 @@ export class MessageHandler {
       target: (options?: TargetOptions) => getTargetUser(m, { args, ...options }),
     };
 
-    if (!plugin.untracked && !UNTRACKED_COMMANDS.has(command)) {
-      this.trackMessage(m.chat, m.key, true);
-    }
+    if (!plugin.untracked) this.trackMessage(m.chat, m.key, true);
 
     const who = m.pushName || m.sender.split('@')[0];
     log.info(`${dispatch.context ? `[${dispatch.context}] ` : ''}${usedPrefix}${command} de ${who}`);

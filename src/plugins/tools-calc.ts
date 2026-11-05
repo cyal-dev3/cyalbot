@@ -1,8 +1,12 @@
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { create, all, type MathJsInstance } from 'mathjs';
 import type { PluginHandler } from '../types/message.js';
 
 export const MAX_EXPRESSION_LENGTH = 200;
 const EVAL_TIMEOUT_MS = 2_000;
+/** Memoria del hilo de cálculo; una matriz gigante mata el hilo, no el bot. */
+const WORKER_HEAP_MB = 256;
+const WORKER_ROLE = 'calc-worker';
 
 const math: MathJsInstance = create(all);
 const evaluateUnrestricted = math.evaluate.bind(math);
@@ -13,7 +17,9 @@ function disabled(name: string): () => never {
   };
 }
 
-// Las expresiones del usuario no deben poder redefinir el entorno ni volver a evaluar texto arbitrario.
+// Las expresiones del usuario no deben poder redefinir el entorno, volver a
+// evaluar texto arbitrario ni cambiar la configuración compartida (config
+// persiste entre llamadas y alteraría los resultados de todos los usuarios).
 math.import(
   {
     import: disabled('import'),
@@ -23,19 +29,26 @@ math.import(
     simplify: disabled('simplify'),
     derivative: disabled('derivative'),
     compile: disabled('compile'),
+    config: disabled('config'),
+    parser: disabled('parser'),
   },
   { override: true },
 );
 
-/** Pasa a sintaxis de mathjs lo que la gente escribe a mano: "15% de 2400", "×", "÷", comas decimales. */
+/**
+ * Pasa a sintaxis de mathjs lo que la gente escribe a mano: "15% de 2400",
+ * "×", "÷", comas decimales. La coma solo se toma como decimal entre dígitos y
+ * cuando no separa argumentos o elementos de lista (max(3,5), [1,2,3]); el "%"
+ * solo es porcentaje si no le sigue un número (10 % 3 sigue siendo módulo).
+ */
 export function preprocessExpression(input: string): string {
   return input
     .trim()
     .replace(/×/g, '*')
     .replace(/÷/g, '/')
-    .replace(/,(?=\d{1,2}(?:\D|$))/g, '.')
+    .replace(/(\d),(\d{1,2})(?![\d,)\]])/g, '$1.$2')
     .replace(/(\d+(?:\.\d+)?)\s*%\s*de\s+/gi, '($1/100)*')
-    .replace(/(\d+(?:\.\d+)?)\s*%/g, '($1/100)');
+    .replace(/(\d+(?:\.\d+)?)\s*%(?!\s*\d)/g, '($1/100)');
 }
 
 export type CalcResult = { ok: true; result: string } | { ok: false; error: string };
@@ -52,7 +65,7 @@ function translateError(error: unknown): string {
   return 'No pude calcular eso.';
 }
 
-/** Evalúa una expresión en un entorno sin import/evaluate/parse. Síncrona. */
+/** Evalúa una expresión en un entorno sin import/evaluate/parse/config. Síncrona y sin tope de tiempo. */
 export function calculate(expression: string): CalcResult {
   const expr = preprocessExpression(expression);
   if (!expr) return { ok: false, error: 'Escribe una expresión.' };
@@ -69,26 +82,108 @@ export function calculate(expression: string): CalcResult {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Evaluación en un hilo aparte con tope de tiempo y de memoria
+// ---------------------------------------------------------------------------
+
+interface WorkerRequest {
+  id: number;
+  expression: string;
+}
+
+interface WorkerReply {
+  id: number;
+  result: CalcResult;
+}
+
+const TIMEOUT_RESULT: CalcResult = { ok: false, error: 'El cálculo tardó demasiado.' };
+const CRASH_RESULT: CalcResult = { ok: false, error: 'El cálculo era demasiado grande para resolverlo.' };
+
+let worker: Worker | null = null;
+let nextId = 0;
+const inflight = new Map<number, { resolve: (r: CalcResult) => void; timer: NodeJS.Timeout }>();
+
 /**
- * Como calculate, pero con tope de tiempo. La evaluación de mathjs es
- * síncrona, así que la carrera solo acota la espera del llamador: la promesa
- * resuelve con error si el cálculo sigue atascado al vencer el plazo.
+ * El hilo se crea perezosamente y se reutiliza (cargar mathjs cuesta cientos
+ * de ms); solo se reemplaza cuando hay que matarlo por tiempo o memoria.
+ */
+function getWorker(): Worker {
+  if (worker) return worker;
+  const created = new Worker(new URL(import.meta.url), {
+    workerData: { role: WORKER_ROLE },
+    resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
+  });
+  created.on('message', (reply: WorkerReply) => settle(reply.id, reply.result));
+  created.on('error', () => dropWorker(created, CRASH_RESULT));
+  created.on('exit', () => dropWorker(created, CRASH_RESULT));
+  created.unref();
+  worker = created;
+  return created;
+}
+
+function settle(id: number, result: CalcResult): void {
+  const entry = inflight.get(id);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  inflight.delete(id);
+  // Sin peticiones en vuelo el hilo no debe mantener vivo el proceso.
+  if (inflight.size === 0) worker?.unref();
+  entry.resolve(result);
+}
+
+/** Olvida (y termina) el hilo; las peticiones que esperaban reciben `result`. */
+function dropWorker(which: Worker, result: CalcResult): void {
+  if (worker !== which) return;
+  worker = null;
+  void which.terminate().catch(() => undefined);
+  for (const id of [...inflight.keys()]) settle(id, result);
+}
+
+/**
+ * Como calculate, pero en un worker_thread: si la expresión bloquea (matrices
+ * enormes, primalidad de números gigantes) el hilo se termina al vencer el
+ * plazo o al agotar su memoria y el bot sigue respondiendo.
  */
 export function calculateWithTimeout(expression: string, timeoutMs = EVAL_TIMEOUT_MS): Promise<CalcResult> {
-  const timeout = new Promise<CalcResult>((resolve) => {
-    const t = setTimeout(() => resolve({ ok: false, error: 'El cálculo tardó demasiado.' }), timeoutMs);
-    t.unref();
+  const expr = preprocessExpression(expression);
+  if (!expr) return Promise.resolve({ ok: false, error: 'Escribe una expresión.' });
+  if (expr.length > MAX_EXPRESSION_LENGTH) return Promise.resolve({ ok: false, error: `Máximo ${MAX_EXPRESSION_LENGTH} caracteres.` });
+
+  return new Promise<CalcResult>((resolve) => {
+    const id = ++nextId;
+    const active = getWorker();
+    const timer = setTimeout(() => {
+      settle(id, TIMEOUT_RESULT);
+      dropWorker(active, TIMEOUT_RESULT);
+    }, timeoutMs);
+    inflight.set(id, { resolve, timer });
+    active.ref();
+    active.postMessage({ id, expression } satisfies WorkerRequest);
   });
-  const work = new Promise<CalcResult>((resolve) => setImmediate(() => resolve(calculate(expression))));
-  return Promise.race([work, timeout]);
+}
+
+/** Termina el hilo de cálculo si existe (apagado y tests). */
+export async function stopCalcWorker(): Promise<void> {
+  const active = worker;
+  if (!active) return;
+  worker = null;
+  for (const id of [...inflight.keys()]) settle(id, CRASH_RESULT);
+  await active.terminate().catch(() => undefined);
+}
+
+if (!isMainThread && parentPort && (workerData as { role?: string } | null)?.role === WORKER_ROLE) {
+  const port = parentPort;
+  port.on('message', (request: WorkerRequest) => {
+    port.postMessage({ id: request.id, result: calculate(request.expression) } satisfies WorkerReply);
+  });
 }
 
 export const calcPlugin: PluginHandler = {
   command: ['calc', 'calcular', 'calculadora', 'mat'],
   description: 'Calculadora: aritmética, porcentajes, funciones y unidades',
   category: 'herramientas',
-  help: ['calc <expresión> - Calcula algo: 2^10, sqrt(144), 15% de 2400, 5 km to m'],
-  usage: ['calc 15% de 2400', 'calc sqrt(2) * pi', 'calc 100 usd to mxn'],
+  help: ['calc <expresión> - Calcula algo: 2^10, sqrt(144), 15% de 2400, 5 km to mi'],
+  usage: ['calc 15% de 2400', 'calc sqrt(2) * pi', 'calc 72 degF to degC'],
 
   handler: async ({ m, text, usedPrefix }) => {
     const expression = text.trim() || m.quoted?.text?.trim() || '';

@@ -112,6 +112,38 @@ test('mesas inactivas se barren con reembolso', (t) => {
   assert.equal(db.getUser(B).money, 500);
 });
 
+test('get/has cierran con reembolso una mesa vencida aunque nadie cree otra', (t) => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  t.after(() => mock.timers.reset());
+
+  const mgr = new GameSessionManager<never, null>({ game: 't5', label: 'Test 5', idleMs: 60_000 });
+  const s = mgr.create(G, { phase: 'x', state: null });
+  assert.ok(s);
+  db.updateUser(A, { money: 500 });
+  holdBet(db, G, A, 200, 't5');
+  mock.timers.tick(30_000);
+  assert.equal(mgr.has(G), true, 'aún no vence');
+  assert.equal(mgr.isCurrent(s), true);
+  mock.timers.tick(31_000);
+  assert.equal(mgr.has(G), false, 'vencida: se cierra al consultarla');
+  assert.equal(mgr.get(G), undefined);
+  assert.equal(mgr.isCurrent(s), false);
+  assert.equal(db.getUser(A).money, 500, 'la custodia se devolvió');
+});
+
+test('isCurrent distingue una mesa cerrada de otra nueva en el mismo grupo', () => {
+  const mgr = new GameSessionManager<never, null>({ game: 't6', label: 'Test 6' });
+  const first = mgr.create(G, { phase: 'x', state: null });
+  assert.ok(first);
+  mgr.close(G);
+  const second = mgr.create(G, { phase: 'x', state: null });
+  assert.ok(second);
+  assert.notEqual(first.id, second.id);
+  assert.equal(mgr.isCurrent(first), false);
+  assert.equal(mgr.isCurrent(second), true);
+  mgr.close(G);
+});
+
 test('registro global: listActiveTables, closeAllTables y activeGameOf', () => {
   const H = 'otro@g.us';
   const m1 = new GameSessionManager<never, null>({ game: 'trivia-test', label: 'Trivia T' });

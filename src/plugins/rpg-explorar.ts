@@ -126,7 +126,7 @@ export const explorarPlugin: PluginHandler = {
     const cd = checkCooldown(user.lastExplore ?? 0, CONFIG.cooldowns.adventure, getRankBenefits(user.level).cooldownReduction);
     if (cd.onCooldown) {
       return replyCooldown(ctx, cd.remaining, [
-        { cmd: 'cazar', desc: 'Salir de caza' },
+        { cmd: 'caceria', desc: 'Salir de caza' },
         { cmd: 'pescar', desc: 'Ir a pescar' }
       ]);
     }

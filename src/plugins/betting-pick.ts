@@ -5,9 +5,9 @@
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import type { BettingPick } from '../types/database.js';
 import { getDatabase } from '../lib/database.js';
-import { MAX_FAVORITE_TIPSTERS, TELEGRAM_BRIDGE_AUTHOR } from '../lib/betting-store.js';
+import { MAX_FAVORITE_TIPSTERS, MAX_TIPSTER_NAME_CHARS, TELEGRAM_BRIDGE_AUTHOR } from '../lib/betting-store.js';
 import {
-  extractTipsterNameLegacy, findPickFromContext, describePendingPicks, requireBetting, formatRecord, formatStreak, BETTING_SEPARATOR,
+  extractTipsterNameLegacy, findPickFromContext, describePendingPicks, pendingIndex, requireBetting, formatRecord, formatStreak, BETTING_SEPARATOR,
 } from '../lib/betting-parser.js';
 
 /**
@@ -53,6 +53,9 @@ export const pickPlugin: PluginHandler = {
     }
 
     const normalizedTipster = store.normalizeTipsterName(tipsterName);
+    if (!normalizedTipster || tipsterName.length > MAX_TIPSTER_NAME_CHARS) {
+      return m.reply(`❌ "${tipsterName.slice(0, 40)}" no sirve como nombre de tipster: usa letras o números (máximo ${MAX_TIPSTER_NAME_CHARS} caracteres).`);
+    }
     if (m.quoted.key.id) {
       const existingPick = store.getPickByMessageId(m.chat, m.quoted.key.id);
       if (existingPick && existingPick.tipster === normalizedTipster && existingPick.status === 'pending') {
@@ -156,24 +159,27 @@ export const pendientesPlugin: PluginHandler = {
     const store = getDatabase().betting;
     if (!(await requireBetting(ctx))) return;
 
-    const picks = store.getPendingPicks(m.chat, text.trim() || undefined);
+    const filter = text.trim();
+    const allPending = store.getPendingPicks(m.chat);
+    const picks = filter ? store.getPendingPicks(m.chat, filter) : allPending;
     if (picks.length === 0) {
-      return m.reply(text.trim() ? `📋 No hay picks pendientes de ${text.trim()}.` : '📋 No hay picks pendientes.');
+      return m.reply(filter ? `📋 No hay picks pendientes de ${filter}.` : '📋 No hay picks pendientes.');
     }
 
-    let msg = `📋 *PICKS PENDIENTES* (${picks.length})\n${BETTING_SEPARATOR}\n\n`;
-    picks.slice(0, 15).forEach((pick, i) => {
+    // Los números son los de la lista completa: así coinciden con verde/roja/cancelar <n> aunque haya filtro.
+    let msg = `📋 *PICKS PENDIENTES* (${picks.length}${filter ? ` de ${allPending.length}` : ''})\n${BETTING_SEPARATOR}\n\n`;
+    picks.slice(0, 15).forEach((pick) => {
       const elapsed = Date.now() - pick.createdAt;
       const hours = Math.floor(elapsed / 3_600_000);
       const mins = Math.floor((elapsed % 3_600_000) / 60_000);
       const timeStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
       const lock = canManagePick(pick, ctx) ? '🔓' : '🔒';
-      msg += `${i + 1}. 🎫 *${pick.tipsterOriginal}* ${lock}\n`;
+      msg += `${pendingIndex(allPending, pick)}. 🎫 *${pick.tipsterOriginal}* ${lock}\n`;
       msg += `   💰 ${pick.units}u · 👥 ${pick.followers.length} · ⏰ ${timeStr} · id ${pick.id.slice(-8)}\n`;
     });
     if (picks.length > 15) msg += `\n… y ${picks.length - 15} más\n`;
     msg += `\n🔓 puedes resolverlo · 🔒 solo su autor o un admin\n`;
-    msg += `*${usedPrefix}verde <n>* / *${usedPrefix}roja <n>* para resolver, *${usedPrefix}cancelar <n>* para anular.`;
+    msg += `*${usedPrefix}verde <n>* / *${usedPrefix}roja <n>* para resolver, *${usedPrefix}cancelar <n>* para anular (o usa el id, que no cambia).`;
     await m.reply(msg);
   },
 };

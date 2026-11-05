@@ -3,6 +3,7 @@ import { globalModes, AUTO_ACTIVATOR, type GlobalModeKey, type GlobalModes } fro
 import { msToTime, pickRandom, randomInt, weightedRandom } from './utils.js';
 import { getDatabase } from './database.js';
 import { createLogger } from './logger.js';
+import * as scheduler from './scheduler.js';
 
 const log = createLogger('events');
 
@@ -240,15 +241,12 @@ _Usa /eventos para ver los modos activos y su tiempo restante_
 
 // ==================== SISTEMA PRINCIPAL ====================
 
-let eventTimer: NodeJS.Timeout | null = null;
+const EVENT_TASK = 'rpg:auto-event';
 let nextEventAt: number | null = null;
 let connInstance: WASocket | null = null;
 
 function clearEventTimer(): void {
-  if (eventTimer) {
-    clearTimeout(eventTimer);
-    eventTimer = null;
-  }
+  scheduler.stop(EVENT_TASK);
   nextEventAt = null;
 }
 
@@ -260,8 +258,7 @@ function scheduleNextEvent(): void {
   nextEventAt = Date.now() + nextEventIn;
   log.info(`próximo evento en ${msToTime(nextEventIn)}`);
 
-  eventTimer = setTimeout(async () => {
-    eventTimer = null;
+  scheduler.after(EVENT_TASK, nextEventIn, async () => {
     nextEventAt = null;
     try {
       await triggerRandomEvent();
@@ -269,7 +266,7 @@ function scheduleNextEvent(): void {
       log.error('error al disparar evento:', error);
     }
     scheduleNextEvent();
-  }, nextEventIn);
+  });
 }
 
 async function announce(event: GeneratedEvent): Promise<void> {
@@ -314,6 +311,11 @@ export function stopAutoEvents(): void {
   log.info('eventos automáticos detenidos');
 }
 
+/** Tras una reconexión el socket anterior está cerrado; se cambia sin reprogramar el próximo evento. */
+export function updateAutoEventsSocket(conn: WASocket): void {
+  connInstance = conn;
+}
+
 /** Idempotente: activar dos veces no reprograma el evento pendiente */
 export function toggleAutoEvents(enabled: boolean): void {
   const changed = autoEventConfig.enabled !== enabled;
@@ -321,7 +323,7 @@ export function toggleAutoEvents(enabled: boolean): void {
   if (changed) saveConfig();
 
   if (enabled) {
-    if (!eventTimer) scheduleNextEvent();
+    if (!scheduler.has(EVENT_TASK)) scheduleNextEvent();
   } else {
     stopAutoEvents();
   }

@@ -115,9 +115,3 @@ export const setByePlugin: PluginHandler = {
     await m.reply(`✅ Mensaje de despedida actualizado.\n\n${text}\n\n_Pruébalo con ${usedPrefix}bye test_`);
   },
 };
-
-/**
- * @deprecated Los interruptores viven en group-toggles.ts; plugins/index.ts debe
- * importarlos de ahí. Se mantiene hasta que lo migre el dueño de index.ts.
- */
-export { welcomeTogglePlugin, byeTogglePlugin } from './group-toggles.js';

@@ -2,12 +2,13 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { CONFIG } from '../config.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('media');
 
-/** Carpeta de temporales. CONFIG.tmpDir cuando el núcleo la exponga; mientras, TMP_DIR o ./tmp. */
-export const TMP_DIR = process.env.TMP_DIR || join(process.cwd(), 'tmp');
+/** Carpeta de temporales (CONFIG.tmpDir: TMP_DIR o ./tmp). */
+export const TMP_DIR = CONFIG.tmpDir;
 
 const MAX_BUFFER = 4 * 1024 * 1024;
 // ffprobe no acepta -nostdin.

@@ -151,3 +151,35 @@ test('renderQuestList cuenta las pendientes de cobrar y las nuevas diarias tiene
   const objectives = new Set(ALL_DAILY_QUESTS.map(q => q.objective));
   for (const o of ['mine', 'daily', 'fumar', 'transfer', 'fish']) assert.ok(objectives.has(o as never), o);
 });
+
+test('claimCompletedQuests cobra el progreso heredado aunque haya pasado el reset, y después renueva', async () => {
+  await withDb((db) => {
+    const now = Date.now();
+    const user = seed(db, now - 25 * 60 * 60 * 1000);
+    user.dailyQuests[0].progress = 3;
+    const reward = getQuestById('daily_work_3')!.rewards;
+
+    const r = claimCompletedQuests(db, JID, now);
+    assert.equal(r.completed.length, 1);
+    assert.equal(r.completed[0].id, 'daily_work_3');
+    assert.equal(user.money, reward.money);
+    // Tras cobrar, las diarias se reasignaron (reset de 24 h) sin perder lo cobrado
+    assert.equal(user.lastDailyReset, now);
+    assert.equal(user.dailyQuests.length, DAILY_QUEST_COUNT);
+    assert.ok(user.dailyQuests.every(q => q.progress === 0 && !q.claimedAt));
+  });
+});
+
+test('updateQuestProgress también cobra lo heredado antes del reset', async () => {
+  await withDb((db) => {
+    const now = Date.now();
+    const user = seed(db, now - 25 * 60 * 60 * 1000);
+    user.dailyQuests[1].progress = 3;
+    const reward = getQuestById('daily_mine_3')!.rewards;
+
+    const r = updateQuestProgress(db, JID, 'work', 1, now);
+    assert.ok(r.completed.some(q => q.id === 'daily_mine_3'));
+    assert.equal(user.money, reward.money);
+    assert.equal(user.lastDailyReset, now);
+  });
+});
