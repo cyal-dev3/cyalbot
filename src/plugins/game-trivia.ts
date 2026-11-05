@@ -67,9 +67,9 @@ async function askNext(groupId: string): Promise<void> {
 
 async function reveal(groupId: string): Promise<void> {
   const s = games.get(groupId);
-  if (!s || !s.state.question) return;
+  const q = s?.state.question;
+  if (!s || !q) return;
   const st = s.state;
-  const q = st.question;
   games.setPhase(groupId, 'pausa');
   const others = st.correct.length - 1;
   const winner = st.firstCorrect
@@ -144,7 +144,8 @@ export const respuestaTriviaPlugin: PluginHandler = {
   async handler(ctx) {
     const groupId = ctx.m.chat;
     const s = games.get(groupId);
-    if (!s || s.phase !== 'pregunta' || !s.state.question) return;
+    const q = s?.state.question;
+    if (!s || !q || s.phase !== 'pregunta') return;
     const st = s.state;
     if (st.answered.has(ctx.m.sender)) return;
     enter(ctx);
@@ -153,7 +154,7 @@ export const respuestaTriviaPlugin: PluginHandler = {
     // La misma reacción para todos: los aciertos se revelan al cerrar la pregunta.
     await ctx.m.react('👀');
     const choice = LETTERS.indexOf(ctx.command.toUpperCase());
-    if (choice !== st.question.correcta) return;
+    if (choice !== q.correcta) return;
     const db = getDatabase();
     const first = st.firstCorrect === null;
     if (first) {

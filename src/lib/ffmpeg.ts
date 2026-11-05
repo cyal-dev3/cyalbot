@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdir, unlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createLogger } from './logger.js';
 
@@ -10,7 +10,11 @@ const log = createLogger('media');
 export const TMP_DIR = process.env.TMP_DIR || join(process.cwd(), 'tmp');
 
 const MAX_BUFFER = 4 * 1024 * 1024;
-const QUIET_ARGS = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
+// ffprobe no acepta -nostdin.
+const QUIET_ARGS: Record<'ffmpeg' | 'ffprobe', string[]> = {
+  ffmpeg: ['-hide_banner', '-loglevel', 'error', '-nostdin'],
+  ffprobe: ['-hide_banner', '-loglevel', 'error'],
+};
 
 export interface RunOptions {
   timeoutMs?: number;
@@ -27,7 +31,7 @@ function run(tool: 'ffmpeg' | 'ffprobe', args: string[], timeoutMs: number): Pro
   return new Promise((resolve, reject) => {
     execFile(
       tool,
-      [...QUIET_ARGS, ...args],
+      [...QUIET_ARGS[tool], ...args],
       { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: MAX_BUFFER, windowsHide: true },
       (error, stdout, stderr) => {
         if (!error) {
@@ -77,5 +81,16 @@ export async function withTempFiles<T>(exts: string[], fn: (paths: string[]) => 
     return await fn(paths);
   } finally {
     await Promise.all(paths.map((p) => unlink(p).catch(() => undefined)));
+  }
+}
+
+/** Carpeta temporal propia (para secuencias de fotogramas) que se borra entera al terminar. */
+export async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  await ensureTmpDir();
+  const dir = await mkdtemp(join(TMP_DIR, 'frames_'));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }

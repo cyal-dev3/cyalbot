@@ -4,9 +4,10 @@ import { DownloadError, toDownloadError } from './errors.js';
 import { FileStore, TOKEN_RE, cacheKey, newToken, publicFileUrl, serveFile, type StoredEntry } from './files.js';
 import { log } from './logger.js';
 import { Queue } from './queue.js';
-import { assertPublicHost, validateUrl } from './validate.js';
+import { assertPublicHost, assertPublicUrl, validateUrl } from './validate.js';
 import {
   Deadline,
+  activeProcessCount,
   collectImageUrls,
   downloadImages,
   downloadWithGalleryDl,
@@ -15,11 +16,14 @@ import {
   errorFromWarnings,
   estimatedSize,
   fetchInfo,
+  firstPlaylistEntryUrl,
   formatSelector,
   getYtdlpVersion,
+  hasAudioFormats,
   hasVideoFormats,
   normalizeMetadata,
   searchYoutube,
+  type InfoResult,
   type Metadata,
   type Quality,
 } from './ytdlp.js';
@@ -27,13 +31,18 @@ import {
 export interface AppContext {
   config: Config;
   store: FileStore;
+  /** Descargas (MAX_CONCURRENT). */
   queue: Queue;
+  /** Metadata y busquedas (META_CONCURRENT): tambien lanzan yt-dlp y necesitan limite. */
+  metaQueue: Queue;
   startedAt: number;
 }
 
 export interface RequestContext {
   requestId: string;
   startedAt: number;
+  /** Se aborta cuando el cliente cierra la conexion antes de recibir la respuesta. */
+  signal?: AbortSignal;
 }
 
 export interface DownloadRequest {
@@ -113,34 +122,43 @@ export async function handleDownload(app: AppContext, body: unknown, req: Reques
   const cached = app.store.fromCache(key);
   if (cached) {
     log.debug('Cache hit', { requestId: req.requestId, token: cached.token });
-    const meta = metaCache.get(cached.token) ?? null;
-    return { data: buildDownloadData(app.config.publicUrl, cached, meta), engine: 'cache', cached: true };
+    return { data: buildDownloadData(app.config.publicUrl, cached, cached.meta), engine: 'cache', cached: true };
   }
   await assertPublicHost(new URL(request.url).hostname);
-  const outcome = await app.queue.run(() => performDownload(app, request, key, req));
+  const outcome = await app.queue.run(() => performDownload(app, request, key, req), req.signal);
   return { data: buildDownloadData(app.config.publicUrl, outcome.entry, outcome.meta), engine: outcome.engine, cached: outcome.cached };
 }
-
-// Metadata asociada a cada token para poder responder igual en los aciertos de cache.
-const metaCache = new Map<string, Metadata>();
 
 async function performDownload(app: AppContext, request: DownloadRequest, key: string, req: RequestContext): Promise<DownloadOutcome> {
   // Otra peticion identica pudo completarse mientras esta esperaba en la cola.
   const cached = app.store.fromCache(key);
-  if (cached) return { entry: cached, meta: metaCache.get(cached.token) ?? null, engine: 'cache', cached: true };
+  if (cached) return { entry: cached, meta: cached.meta, engine: 'cache', cached: true };
 
   const { config, store } = app;
-  const deadline = new Deadline(config.downloadTimeoutMs);
+  const deadline = new Deadline(config.downloadTimeoutMs, req.signal);
   const token = newToken();
   const dir = await store.createDir(token);
   let engine = 'yt-dlp';
   try {
-    const { info, warnings } = await fetchInfo(config, request.url, { playlist: false, format: formatSelector(request.quality, request.audioOnly) }, deadline);
+    const infoOptions = { playlist: false, format: formatSelector(request.quality, request.audioOnly) };
+    let url = request.url;
+    let result: InfoResult = await fetchInfo(config, url, infoOptions, deadline);
+    // Playlist pura (lista de YouTube, canal, album): se descarga solo la primera entrada.
+    const firstEntry = firstPlaylistEntryUrl(result.info);
+    if (firstEntry) {
+      log.info('Playlist: se usa solo la primera entrada', { requestId: req.requestId, entry: firstEntry });
+      url = (await assertPublicUrl(firstEntry)).toString();
+      result = await fetchInfo(config, url, infoOptions, deadline);
+    }
+    const { info, warnings } = result;
     const meta = normalizeMetadata(info);
     if (!hasVideoFormats(info)) {
       // Sin formatos, el motivo real (no existe, login, limite) viene como aviso del -J.
       const known = errorFromWarnings(warnings);
       if (known) throw known;
+    }
+    if (request.audioOnly && hasVideoFormats(info) && !hasAudioFormats(info)) {
+      throw new DownloadError('UNSUPPORTED', 'El video no tiene pista de audio');
     }
     const estimate = estimatedSize(info);
     if (estimate !== null && estimate > config.maxFileBytes) {
@@ -151,7 +169,7 @@ async function performDownload(app: AppContext, request: DownloadRequest, key: s
     }
 
     if (hasVideoFormats(info)) {
-      await downloadWithYtdlp(config, { url: request.url, outDir: dir, quality: request.quality, audioOnly: request.audioOnly }, deadline);
+      await downloadWithYtdlp(config, { url, outDir: dir, quality: request.quality, audioOnly: request.audioOnly }, deadline);
     }
     let files = await store.collect(token, dir);
 
@@ -191,8 +209,7 @@ async function performDownload(app: AppContext, request: DownloadRequest, key: s
       files = await store.collect(token, dir);
     }
 
-    const entry = store.register(token, dir, files, key);
-    metaCache.set(token, meta);
+    const entry = store.register(token, dir, files, key, meta);
     return { entry, meta, engine, cached: false };
   } catch (err) {
     await store.discard(token).catch(() => undefined);
@@ -200,22 +217,24 @@ async function performDownload(app: AppContext, request: DownloadRequest, key: s
   }
 }
 
-export async function handleInfo(app: AppContext, body: unknown): Promise<Metadata> {
+export async function handleInfo(app: AppContext, body: unknown, req: RequestContext): Promise<Metadata> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new DownloadError('BAD_REQUEST', 'El body debe ser un objeto JSON');
   }
   const url = validateUrl((body as Record<string, unknown>).url).toString();
   await assertPublicHost(new URL(url).hostname);
-  const deadline = new Deadline(Math.min(app.config.downloadTimeoutMs, 60_000));
-  const { info, warnings } = await fetchInfo(app.config, url, { playlist: true }, deadline);
-  if (!hasVideoFormats(info) && !info.entries?.length) {
-    const known = errorFromWarnings(warnings);
-    if (known) throw known;
-  }
-  return normalizeMetadata(info);
+  return app.metaQueue.run(async () => {
+    const deadline = new Deadline(Math.min(app.config.downloadTimeoutMs, 60_000), req.signal);
+    const { info, warnings } = await fetchInfo(app.config, url, { playlist: true }, deadline);
+    if (!hasVideoFormats(info) && !info.entries?.length) {
+      const known = errorFromWarnings(warnings);
+      if (known) throw known;
+    }
+    return normalizeMetadata(info);
+  }, req.signal);
 }
 
-export async function handleSearch(app: AppContext, query: URLSearchParams): Promise<{ results: Awaited<ReturnType<typeof searchYoutube>> }> {
+export async function handleSearch(app: AppContext, query: URLSearchParams, req: RequestContext): Promise<{ results: Awaited<ReturnType<typeof searchYoutube>> }> {
   const q = query.get('q') ?? '';
   const limitRaw = query.get('limit');
   let limit = 5;
@@ -223,9 +242,12 @@ export async function handleSearch(app: AppContext, query: URLSearchParams): Pro
     limit = Number.parseInt(limitRaw, 10);
     if (!Number.isFinite(limit) || limit < 1) throw new DownloadError('BAD_REQUEST', 'limit debe ser un entero positivo');
   }
-  const deadline = new Deadline(Math.min(app.config.downloadTimeoutMs, 60_000));
-  const results = await searchYoutube(app.config, q, limit, deadline);
-  return { results };
+  if (!q.trim()) throw new DownloadError('BAD_REQUEST', 'Falta el parametro "q"');
+  return app.metaQueue.run(async () => {
+    const deadline = new Deadline(Math.min(app.config.downloadTimeoutMs, 60_000), req.signal);
+    const results = await searchYoutube(app.config, q, limit, deadline);
+    return { results };
+  }, req.signal);
 }
 
 export async function handleHealth(app: AppContext): Promise<Record<string, unknown>> {
@@ -235,6 +257,8 @@ export async function handleHealth(app: AppContext): Promise<Record<string, unkn
     ytdlp: await getYtdlpVersion(app.config),
     uptimeSeconds: Math.floor((Date.now() - app.startedAt) / 1000),
     queue: { active: app.queue.activeCount, waiting: app.queue.waitingCount },
+    metaQueue: { active: app.metaQueue.activeCount, waiting: app.metaQueue.waitingCount },
+    processes: activeProcessCount(),
   };
 }
 

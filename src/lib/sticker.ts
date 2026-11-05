@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
-import { runFfmpeg, withTempFiles } from './ffmpeg.js';
+import { join } from 'node:path';
+import { runFfmpeg, withTempDir, withTempFiles } from './ffmpeg.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('sticker');
@@ -78,12 +79,26 @@ function createExif(packname: string, author: string, categories: string[]): Buf
   return Buffer.concat([header, json]);
 }
 
+type WebpmuxImage = import('node-webpmux').Image & {
+  readonly hasAnim: boolean;
+  readonly frames?: { delay: number }[];
+  demux(options: { buffers: true }): Promise<Buffer[]>;
+};
+
+/** node-webpmux es CommonJS: según el cargador la clase llega como export con nombre o dentro de default. */
+async function loadWebp(buffer: Buffer): Promise<WebpmuxImage> {
+  const mod = (await import('node-webpmux')) as unknown as { Image?: new () => WebpmuxImage; default?: { Image?: new () => WebpmuxImage } };
+  const Image = mod.Image ?? mod.default?.Image;
+  if (!Image) throw new Error('node-webpmux no expone Image');
+  const img = new Image();
+  await img.load(buffer);
+  return img;
+}
+
 /** Inserta el EXIF de pack/autor en un WebP. Si node-webpmux falla devuelve el original. */
 export async function addExif(webp: Buffer, packname = 'CYALTRONIC', author = 'Bot', categories: string[] = ['']): Promise<Buffer> {
   try {
-    const { Image } = await import('node-webpmux');
-    const img = new Image();
-    await img.load(webp);
+    const img = await loadWebp(webp);
     img.exif = createExif(packname, author, categories);
     return Buffer.from(await img.save(null));
   } catch (error) {
@@ -159,23 +174,54 @@ export async function videoToSticker(buffer: Buffer, metadata: StickerMetadata =
   return addExif(webp, metadata.packname, metadata.author, metadata.categories);
 }
 
+/**
+ * ffmpeg (hasta 7.0) no decodifica WebP animado. Para stickers animados se
+ * separan los fotogramas con node-webpmux y se entregan como lista concat con
+ * la duración real de cada uno; un WebP estático se pasa directo.
+ */
+async function stickerInputArgs(buffer: Buffer, dir: string): Promise<string[]> {
+  const inPath = join(dir, 'in.webp');
+  await writeFile(inPath, buffer);
+  if (!isAnimatedWebp(buffer)) return ['-i', inPath];
+
+  const img = await loadWebp(buffer);
+  const frames = img.hasAnim ? await img.demux({ buffers: true }) : [];
+  if (!frames.length) return ['-i', inPath];
+
+  const lines = ['ffconcat version 1.0'];
+  for (const [i, frame] of frames.entries()) {
+    const name = `f_${String(i).padStart(4, '0')}.webp`;
+    await writeFile(join(dir, name), frame);
+    // El delay viene en ms; WhatsApp usa 0 para "lo más rápido posible".
+    const delayMs = Math.max(20, img.frames?.[i]?.delay ?? 100);
+    lines.push(`file '${name}'`, `duration ${(delayMs / 1000).toFixed(3)}`);
+  }
+  // El concat ignora la duración del último fotograma salvo que se repita.
+  lines.push(`file 'f_${String(frames.length - 1).padStart(4, '0')}.webp'`);
+  const listPath = join(dir, 'list.txt');
+  await writeFile(listPath, `${lines.join('\n')}\n`);
+  return ['-f', 'concat', '-safe', '0', '-i', listPath];
+}
+
 /** Primer fotograma del sticker como PNG. */
 export function stickerToImage(buffer: Buffer): Promise<Buffer> {
-  return withTempFiles(['webp', 'png'], async ([inPath, outPath]) => {
-    await writeFile(inPath, buffer);
-    await runFfmpeg(['-i', inPath, '-frames:v', '1', outPath]);
+  return withTempDir(async (dir) => {
+    const input = await stickerInputArgs(buffer, dir);
+    const outPath = join(dir, 'out.png');
+    await runFfmpeg([...input, '-frames:v', '1', outPath]);
     return readFile(outPath);
   });
 }
 
 /** Sticker animado a mp4 H.264 (fondo negro donde había transparencia). */
 export function stickerToVideo(buffer: Buffer): Promise<Buffer> {
-  return withTempFiles(['webp', 'mp4'], async ([inPath, outPath]) => {
-    await writeFile(inPath, buffer);
+  return withTempDir(async (dir) => {
+    const input = await stickerInputArgs(buffer, dir);
+    const outPath = join(dir, 'out.mp4');
     await runFfmpeg([
-      '-i', inPath,
-      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-preset', 'fast', '-movflags', '+faststart',
+      ...input,
+      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p',
+      '-fps_mode', 'vfr', '-c:v', 'libx264', '-crf', '23', '-preset', 'fast', '-movflags', '+faststart',
       outPath,
     ]);
     return readFile(outPath);
@@ -184,9 +230,10 @@ export function stickerToVideo(buffer: Buffer): Promise<Buffer> {
 
 /** Sticker animado a GIF con paleta propia. */
 export function stickerToGif(buffer: Buffer): Promise<Buffer> {
-  return withTempFiles(['webp', 'gif'], async ([inPath, outPath]) => {
-    await writeFile(inPath, buffer);
-    await runFfmpeg(['-i', inPath, '-vf', 'split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse', '-loop', '0', outPath]);
+  return withTempDir(async (dir) => {
+    const input = await stickerInputArgs(buffer, dir);
+    const outPath = join(dir, 'out.gif');
+    await runFfmpeg([...input, '-vf', 'split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse', '-loop', '0', outPath]);
     return readFile(outPath);
   });
 }

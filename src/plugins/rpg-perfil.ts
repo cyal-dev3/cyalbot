@@ -1,46 +1,42 @@
-/**
- * Plugin de Perfil
- * Muestra el perfil y estadísticas del jugador
- */
-
-import { createHash } from 'crypto';
 import type { PluginHandler, MessageContext } from '../types/message.js';
-import { EMOJI, formatNumber, createProgressBar, msToTime } from '../lib/utils.js';
-import { getLevelProgress, MULTIPLIER } from '../lib/levelling.js';
-import { getRoleByLevel, type UserRPG } from '../types/user.js';
-import { getDatabase } from '../lib/database.js';
-import { ITEMS, CLASSES } from '../types/rpg.js';
+import { EMOJI, formatNumber, createProgressBar, msToTime, checkCooldown } from '../lib/utils.js';
+import { getLevelProgress } from '../lib/levelling.js';
+import { getRoleByLevel, getRankBenefits, formatRankBenefits, type UserRPG } from '../types/user.js';
+import { getDatabase, type Database } from '../lib/database.js';
+import { CLASSES } from '../types/rpg.js';
+import { CONFIG } from '../config.js';
+import { COOLDOWNS } from '../constants/rpg.js';
+import { calculateTotalStats } from '../lib/rpg-utils.js';
 import { applyRegenToUser, getRegenInfo } from '../lib/auto-regen.js';
+import { getPlayerId } from '../lib/rpg-actions.js';
+import { getUserGuild } from './rpg-gremios.js';
+import { getPetHunger } from './rpg-mascotas.js';
 
-/**
- * Calcula los stats máximos reales del jugador (incluyendo clase y equipamiento)
- */
-function getRealMaxStats(user: UserRPG): { maxHealth: number; maxMana: number; maxStamina: number } {
-  // Stats base
-  let maxHealth = user.maxHealth;
-  let maxMana = user.maxMana;
-  let maxStamina = user.maxStamina;
+/** Cooldowns visibles en el perfil; `last` lee el timestamp del usuario */
+const PROFILE_COOLDOWNS: { label: string; cooldown: number; last: (u: UserRPG) => number }[] = [
+  { label: 'work', cooldown: CONFIG.cooldowns.work, last: u => u.lastWork },
+  { label: 'minar', cooldown: CONFIG.cooldowns.mine, last: u => u.lastMine },
+  { label: 'daily', cooldown: CONFIG.cooldowns.daily, last: u => u.lastClaim },
+  { label: 'robar', cooldown: CONFIG.cooldowns.rob, last: u => u.lastRob },
+  { label: 'fumar', cooldown: COOLDOWNS.FUMAR, last: u => u.lastFumar }
+];
 
-  // Bonus de clase
-  if (user.playerClass && CLASSES[user.playerClass]) {
-    const classInfo = CLASSES[user.playerClass];
-    maxHealth += classInfo.baseStats.healthBonus;
-    maxMana += classInfo.baseStats.manaBonus;
-    maxStamina += classInfo.baseStats.staminaBonus;
-  }
+export function formatCooldowns(user: UserRPG, prefix: string): string {
+  const reduction = getRankBenefits(user.level).cooldownReduction;
+  return PROFILE_COOLDOWNS.map(({ label, cooldown, last }) => {
+    const cd = checkCooldown(last(user) || 0, cooldown, reduction);
+    return `│  ${cd.onCooldown ? '⏳' : '✅'} ${prefix}${label}: ${cd.onCooldown ? msToTime(cd.remaining) : 'listo'}`;
+  }).join('\n');
+}
 
-  // Bonus de equipamiento
-  const equipmentSlots = [user.equipment.weapon, user.equipment.armor, user.equipment.accessory];
-  for (const itemId of equipmentSlots) {
-    if (itemId && ITEMS[itemId]?.stats) {
-      const stats = ITEMS[itemId].stats;
-      if (stats.health) maxHealth += stats.health;
-      if (stats.mana) maxMana += stats.mana;
-      if (stats.stamina) maxStamina += stats.stamina;
-    }
-  }
+function formatPet(user: UserRPG, now: number): string {
+  if (!user.pet) return '_Sin mascota_';
+  return `${user.pet.name} (Nv.${user.pet.level}, 🍖 ${getPetHunger(user.pet, now)}/100)`;
+}
 
-  return { maxHealth, maxMana, maxStamina };
+function formatGuild(db: Database, jid: string, user: UserRPG): string {
+  const guild = getUserGuild(db, jid, user);
+  return guild ? `[${guild.tag}] ${guild.name} (Nv.${guild.level})` : '_Sin gremio_';
 }
 
 export const perfilPlugin: PluginHandler = {
@@ -48,111 +44,92 @@ export const perfilPlugin: PluginHandler = {
   tags: ['rpg'],
   help: [
     'perfil - Ver tu perfil',
-    'perfil @usuario - Ver perfil de otro jugador'
+    'perfil @usuario - Ver el perfil de otro jugador'
   ],
+  usage: ['perfil', 'perfil @usuario'],
 
   handler: async (ctx: MessageContext) => {
-    const { m, usedPrefix } = ctx;
+    const { m, args, usedPrefix } = ctx;
     const db = getDatabase();
 
-    // Determinar a quién ver el perfil
-    const targetJid = m.mentionedJid[0] || m.quoted?.sender || m.sender;
+    const targetJid = ctx.target({ args, allowSelf: true }) ?? m.sender;
     const isSelf = targetJid === m.sender;
     const user = db.getUser(targetJid);
 
-    // Verificar si está registrado
     if (!user.registered) {
-      if (isSelf) {
-        return m.reply(
-          `${EMOJI.error} *¡No estás registrado!*\n\n` +
-          `${EMOJI.info} Usa *${usedPrefix}verificar nombre.edad* para comenzar tu aventura.`
-        );
-      } else {
-        return m.reply(
-          `${EMOJI.error} *Este usuario no está registrado.*`
-        );
-      }
+      return m.reply(isSelf
+        ? `${EMOJI.error} *¡No estás registrado!*\n\n${EMOJI.info} Usa *${usedPrefix}verificar nombre edad* para comenzar tu aventura.`
+        : `${EMOJI.error} *Este usuario no está registrado.*`);
     }
 
-    // Aplicar regeneración pasiva antes de mostrar el perfil
+    const now = Date.now();
     const regen = applyRegenToUser(targetJid);
     const regenInfo = getRegenInfo(targetJid);
+    const fresh = db.getUser(targetJid);
 
-    // Recargar usuario después de la regeneración
-    const updatedUser = db.getUser(targetJid);
+    const progress = getLevelProgress(fresh.level, fresh.exp);
+    const total = calculateTotalStats(fresh);
+    const playerId = getPlayerId(db, targetJid, fresh);
+    const days = Math.floor((now - fresh.regTime) / 86400000);
+    const classInfo = fresh.playerClass ? CLASSES[fresh.playerClass] : null;
 
-    // Calcular información de nivel
-    const progress = getLevelProgress(updatedUser.level, updatedUser.exp, MULTIPLIER);
-    const role = getRoleByLevel(updatedUser.level);
-
-    // Calcular stats máximos reales (incluyendo clase y equipamiento)
-    const realMax = getRealMaxStats(updatedUser);
-
-    // Generar ID único
-    const serialNumber = createHash('md5')
-      .update(targetJid)
-      .digest('hex')
-      .slice(0, 12)
-      .toUpperCase();
-
-    // Calcular tiempo jugando
-    const registeredDays = Math.floor((Date.now() - updatedUser.regTime) / (1000 * 60 * 60 * 24));
-
-    // Mensaje de regeneración si hubo
-    let regenMessage = '';
+    let regenLine = '';
     if (regen.healthRegen > 0 || regen.staminaRegen > 0) {
-      regenMessage = `\n🔄 *Regeneración aplicada:*`;
-      if (regen.healthRegen > 0) regenMessage += ` ❤️+${regen.healthRegen}`;
-      if (regen.staminaRegen > 0) regenMessage += ` ⚡+${regen.staminaRegen}`;
-      regenMessage += '\n';
+      regenLine = `\n🔄 *Regeneración aplicada:*${regen.healthRegen > 0 ? ` ❤️+${regen.healthRegen}` : ''}${regen.staminaRegen > 0 ? ` ⚡+${regen.staminaRegen}` : ''}\n`;
     }
 
-    // Barra de progreso visual
-    const expBar = createProgressBar(progress.current, progress.needed, 10);
-
-    // Construir perfil
     const profile = `
 ${EMOJI.crown}═══════════════════════════${EMOJI.crown}
       *PERFIL DE JUGADOR*
 ${EMOJI.crown}═══════════════════════════${EMOJI.crown}
-${regenMessage}
-${EMOJI.star} *${updatedUser.name}*
-${EMOJI.info} ID: #${serialNumber}
-${EMOJI.time} Jugando hace: ${registeredDays} días
+${regenLine}
+${EMOJI.star} *${fresh.name}* · ${fresh.currentTitle}
+${EMOJI.info} ID: #${playerId}
+${EMOJI.time} Jugando hace: ${days} día${days === 1 ? '' : 's'}
+🎭 Clase: ${classInfo ? `${classInfo.emoji} ${classInfo.name}` : '_Sin clase_'}
+🏰 Gremio: ${formatGuild(db, targetJid, fresh)}
+🐾 Mascota: ${formatPet(fresh, now)}
 
 ╭─────────────────────────╮
 │  ${EMOJI.level} *PROGRESIÓN*
 ├─────────────────────────
-│  Nivel: *${updatedUser.level}* ${role}
+│  Nivel: *${fresh.level}* ${getRoleByLevel(fresh.level)}
 │  EXP: ${formatNumber(progress.current)}/${formatNumber(progress.needed)}
-│  ${expBar} ${progress.percent}%
+│  ${createProgressBar(progress.current, progress.needed, 10)} ${progress.percent}%
 │  Para subir: *${formatNumber(progress.remaining)}* XP
 ╰─────────────────────────╯
 
 ╭─────────────────────────╮
 │  ${EMOJI.sword} *ESTADÍSTICAS*
 ├─────────────────────────
-│  ${EMOJI.health} Salud: ${updatedUser.health}/${realMax.maxHealth}
-│  ${createProgressBar(updatedUser.health, realMax.maxHealth, 8)}
-│
-│  ${EMOJI.stamina} Energía: ${updatedUser.stamina}/${realMax.maxStamina}
-│  ${createProgressBar(updatedUser.stamina, realMax.maxStamina, 8)}
-│
-│  ${EMOJI.mana} Maná: ${updatedUser.mana}/${realMax.maxMana}
-│  ${createProgressBar(updatedUser.mana, realMax.maxMana, 8)}
-│
+│  ${EMOJI.health} Salud: ${fresh.health}/${total.maxHealth}
+│  ${createProgressBar(fresh.health, total.maxHealth, 8)}
+│  ${EMOJI.stamina} Energía: ${fresh.stamina}/${total.maxStamina}
+│  ${createProgressBar(fresh.stamina, total.maxStamina, 8)}
+│  ${EMOJI.mana} Maná: ${fresh.mana}/${total.maxMana}
+│  ${createProgressBar(fresh.mana, total.maxMana, 8)}
+│  ⚔️ Ataque: ${total.attack} · 🛡️ Defensa: ${total.defense} · 💥 Crítico: ${total.critChance}%
 │  🔄 Regen: +${regenInfo.healthPerHour}❤️/h +${regenInfo.staminaPerHour}⚡/h
 ╰─────────────────────────╯
 
 ╭─────────────────────────╮
 │  ${EMOJI.coin} *ECONOMÍA*
 ├─────────────────────────
-│  ${EMOJI.coin} Monedas: *${formatNumber(updatedUser.money)}*
-│  ${EMOJI.diamond} Diamantes: *${formatNumber(updatedUser.limit)}*
-│  ${EMOJI.potion} Pociones: *${updatedUser.potion}*
+│  ${EMOJI.coin} Monedas: *${formatNumber(fresh.money)}*
+│  🏦 Banco: *${formatNumber(fresh.bank)}*
+│  ${EMOJI.diamond} Diamantes: *${formatNumber(fresh.limit)}*
+│  ${EMOJI.potion} Pociones: *${fresh.potion}*${fresh.debt > 0 ? `\n│  ⚠️ Deuda IMSS: *${formatNumber(fresh.debt)}*` : ''}
 ╰─────────────────────────╯
 
-${EMOJI.sparkles} *EXP Total: ${formatNumber(updatedUser.exp)}*
+╭─────────────────────────╮
+│  ${EMOJI.time} *COOLDOWNS*
+├─────────────────────────
+${formatCooldowns(fresh, usedPrefix)}
+╰─────────────────────────╯
+
+${formatRankBenefits(fresh.level)}
+
+${EMOJI.sparkles} *EXP Total: ${formatNumber(fresh.exp)}*
 `.trim();
 
     await m.reply(profile);

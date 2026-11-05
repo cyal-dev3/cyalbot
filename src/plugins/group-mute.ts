@@ -1,30 +1,13 @@
-import { areJidsSameUser } from 'baileys';
 import type { MessageHandler } from '../handler.js';
 import type { PluginHandler, MessageContext } from '../types/message.js';
 import type { ChatSettings } from '../types/database.js';
 import { getDatabase } from '../lib/database.js';
 import { mentionTag, msToTime } from '../lib/utils.js';
 import { resolveTarget, assertCanModerate } from '../lib/participants.js';
+import { getMutedUntil } from '../lib/moderation.js';
 import { automutePlugin } from './group-toggles.js';
 
-/** Campo pendiente en types/database.ts (ver handoff): vencimiento por jid de los mutes temporales. */
-type MuteSettings = ChatSettings & { mutedUntil?: Record<string, number> };
-
-export function getMutedUntil(settings: ChatSettings): Record<string, number> {
-  const until = (settings as MuteSettings).mutedUntil;
-  return until && typeof until === 'object' ? until : {};
-}
-
-/**
- * true si el jid está silenciado y, si el mute es temporal, aún no venció.
- * Es pura: no limpia nada. handler.isUserMuted debería usarla (ver handoff).
- */
-export function isMutedNow(settings: ChatSettings, jid: string, now = Date.now()): boolean {
-  const muted = settings.mutedUsers?.find((u) => areJidsSameUser(u, jid));
-  if (!muted) return false;
-  const until = getMutedUntil(settings)[muted];
-  return until === undefined || until > now;
-}
+export { isMutedNow, getMutedUntil } from '../lib/moderation.js';
 
 const MIN_MUTE_MS = 60_000;
 const MAX_MUTE_MS = 30 * 24 * 3_600_000;

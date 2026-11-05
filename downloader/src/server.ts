@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { loadConfig, type Config } from './config.js';
-import { DownloadError, toDownloadError } from './errors.js';
+import { DownloadError, STATUS_BY_CODE, toDownloadError } from './errors.js';
 import { FileStore } from './files.js';
 import { log, setLogLevel } from './logger.js';
 import { Queue } from './queue.js';
+import { killAllProcesses } from './ytdlp.js';
 import {
   handleDownload,
   handleFiles,
@@ -19,20 +20,38 @@ import {
 
 const MAX_BODY_BYTES = 64 * 1024;
 
+function tooLarge(): DownloadError {
+  return new DownloadError('TOO_LARGE', `El body supera ${MAX_BODY_BYTES / 1024} KB`);
+}
+
+/**
+ * Lee el body JSON con limite de 64 KB. Al superarlo no se destruye la conexion: se deja de
+ * acumular y se drena lo que falte para que el cliente reciba el 413 en vez de un reset.
+ */
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      req.resume();
+      reject(tooLarge());
+      return;
+    }
     const chunks: Buffer[] = [];
     let total = 0;
+    let rejected = false;
     req.on('data', (chunk: Buffer) => {
+      if (rejected) return;
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
-        reject(new DownloadError('TOO_LARGE', `El body supera ${MAX_BODY_BYTES / 1024} KB`));
-        req.destroy();
+        rejected = true;
+        chunks.length = 0;
+        reject(tooLarge());
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
+      if (rejected) return;
       if (total === 0) {
         reject(new DownloadError('BAD_REQUEST', 'Falta el body JSON'));
         return;
@@ -82,11 +101,11 @@ async function route(app: AppContext, req: IncomingMessage, res: ServerResponse,
   }
   if (pathname === '/v1/info' && method === 'POST') {
     const body = await readJsonBody(req);
-    const data = await handleInfo(app, body);
+    const data = await handleInfo(app, body, ctx);
     return sendJson(res, 200, { success: true, data, meta: { engine: 'yt-dlp', requestId: ctx.requestId, durationMs: Date.now() - ctx.startedAt } });
   }
   if (pathname === '/v1/search' && method === 'GET') {
-    const data = await handleSearch(app, url.searchParams);
+    const data = await handleSearch(app, url.searchParams, ctx);
     return sendJson(res, 200, { success: true, data, meta: { engine: 'yt-dlp', requestId: ctx.requestId, durationMs: Date.now() - ctx.startedAt } });
   }
   if (['/v1/download', '/v1/info', '/v1/search'].includes(pathname)) {
@@ -107,15 +126,30 @@ export async function createApp(config: Config): Promise<App> {
   const store = new FileStore(config.downloadDir, config.fileTtlMs, config.cacheTtlMs);
   await store.init();
   store.startCleanup();
-  const context: AppContext = { config, store, queue: new Queue(config.maxConcurrent, config.queueMax), startedAt: Date.now() };
+  const context: AppContext = {
+    config,
+    store,
+    queue: new Queue(config.maxConcurrent, config.queueMax),
+    metaQueue: new Queue(config.metaConcurrent, config.queueMax),
+    startedAt: Date.now(),
+  };
 
   const server = createServer((req, res) => {
-    const ctx: RequestContext = { requestId: randomBytes(6).toString('hex'), startedAt: Date.now() };
+    const aborter = new AbortController();
+    const ctx: RequestContext = { requestId: randomBytes(6).toString('hex'), startedAt: Date.now(), signal: aborter.signal };
     res.setHeader('X-Request-Id', ctx.requestId);
+    // Si el cliente se va antes de la respuesta, se cancela el trabajo pendiente (cola y procesos).
+    res.on('close', () => {
+      if (!res.writableFinished) aborter.abort();
+    });
     route(context, req, res, ctx)
       .catch((err: unknown) => {
         const mapped = toDownloadError(err);
         if (mapped.code === 'INTERNAL') log.error('Error interno', { requestId: ctx.requestId, error: mapped.message });
+        if (aborter.signal.aborted || mapped.code === 'CLIENT_CLOSED') {
+          res.destroy();
+          return STATUS_BY_CODE.CLIENT_CLOSED;
+        }
         if (res.headersSent) {
           res.destroy();
           return mapped.status;
@@ -137,9 +171,12 @@ export async function createApp(config: Config): Promise<App> {
   server.headersTimeout = 30_000;
   server.keepAliveTimeout = 10_000;
 
-  const close = () =>
-    new Promise<void>((resolve) => {
-      store.stopCleanup();
+  const close = async () => {
+    store.stopCleanup();
+    // Primero se matan los hijos (yt-dlp/ffmpeg) para que no queden huerfanos al salir del proceso.
+    const killed = await killAllProcesses();
+    if (killed) log.info('Procesos hijos terminados', { killed });
+    await new Promise<void>((resolve) => {
       server.closeIdleConnections();
       server.close(() => resolve());
       setTimeout(() => {
@@ -147,6 +184,7 @@ export async function createApp(config: Config): Promise<App> {
         resolve();
       }, 5000).unref();
     });
+  };
 
   return { server, context, close };
 }

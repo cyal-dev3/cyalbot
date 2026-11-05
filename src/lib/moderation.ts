@@ -7,7 +7,7 @@
  * "vínculo", pero sí detecta "PUTA", "pùta" o "puta," con signos pegados.
  */
 
-import type { GroupMetadata, WASocket } from 'baileys';
+import { areJidsSameUser, type GroupMetadata, type WASocket } from 'baileys';
 import type { ChatSettings, UserWarning } from '../types/database.js';
 import { CONFIG } from '../config.js';
 import { mentionTag } from './utils.js';
@@ -71,6 +71,23 @@ export function getAntiLinkMode(settings: ChatSettings): AntiLinkMode {
 export function getMaxWarnings(settings: ChatSettings): number {
   const value = (settings as ChatSettings & { maxWarnings?: number }).maxWarnings;
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : CONFIG.protection.maxWarnings;
+}
+
+/** Lee ChatSettings.mutedUntil (campo pendiente en types/database.ts): vencimiento por jid de los mutes temporales. */
+export function getMutedUntil(settings: ChatSettings): Record<string, number> {
+  const until = (settings as ChatSettings & { mutedUntil?: Record<string, number> }).mutedUntil;
+  return until && typeof until === 'object' ? until : {};
+}
+
+/**
+ * true si el jid está silenciado y, si el mute es temporal, aún no venció.
+ * Es pura: no limpia nada. handler.isUserMuted debería usarla (ver handoff).
+ */
+export function isMutedNow(settings: ChatSettings, jid: string, now = Date.now()): boolean {
+  const muted = settings.mutedUsers?.find((u) => areJidsSameUser(u, jid));
+  if (!muted) return false;
+  const until = getMutedUntil(settings)[muted];
+  return until === undefined || until > now;
 }
 
 export const SYSTEM_WARNER = 'SISTEMA';

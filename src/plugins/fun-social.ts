@@ -1,29 +1,88 @@
-/**
- * Plugin de Interacciones Sociales
- * Comandos: abrazo, kissall, gudmornin, poka, chingatumadre, hazaña
- */
-
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { PluginHandler, MessageContext } from '../types/message.js';
+import type { MessageHandler } from '../handler.js';
 import { getDatabase } from '../lib/database.js';
-import { pickRandom } from '../lib/utils.js';
-import { LIMITS } from '../constants/rpg.js';
-import * as fs from 'fs';
-import * as path from 'path';
+import { getTargetUser, mentionTag, msToTime, pickRandom } from '../lib/utils.js';
+import { createInteractionPlugin, nameOf } from '../lib/social.js';
 
-// Tipos de abrazos con diferentes niveles de intensidad
-const HUG_TYPES = [
-  { emoji: '🤗', type: 'cálido', desc: 'un abrazo cálido y reconfortante' },
-  { emoji: '🫂', type: 'fuerte', desc: 'un abrazo fuerte y protector' },
-  { emoji: '💕', type: 'tierno', desc: 'un abrazo tierno y dulce' },
-  { emoji: '🥰', type: 'cariñoso', desc: 'un abrazo lleno de cariño' },
-  { emoji: '😊', type: 'amistoso', desc: 'un abrazo amistoso' },
-  { emoji: '🌟', type: 'especial', desc: 'un abrazo muy especial' },
-  { emoji: '✨', type: 'mágico', desc: 'un abrazo mágico que ilumina el día' },
-  { emoji: '🐻', type: 'de oso', desc: 'un abrazo de oso gigante' },
-];
+// ---------------------------------------------------------------------------
+// Abrazo
+// ---------------------------------------------------------------------------
 
-// Mensajes de buenos días
-const GOOD_MORNING_MESSAGES = [
+export const abrazoPlugin = createInteractionPlugin({
+  command: ['abrazo', 'hug', 'abrazar', 'apapacho'],
+  description: 'Dale un abrazo a alguien especial',
+  kind: 'hug',
+  title: '¡ABRAZO!',
+  noun: 'Abrazos',
+  types: [
+    { emoji: '🤗', desc: 'un abrazo cálido y reconfortante' },
+    { emoji: '🫂', desc: 'un abrazo fuerte y protector' },
+    { emoji: '💕', desc: 'un abrazo tierno y dulce' },
+    { emoji: '🥰', desc: 'un abrazo lleno de cariño' },
+    { emoji: '😊', desc: 'un abrazo amistoso' },
+    { emoji: '🌟', desc: 'un abrazo muy especial' },
+    { emoji: '✨', desc: 'un abrazo mágico que ilumina el día' },
+    { emoji: '🐻', desc: 'un abrazo de oso gigante' },
+  ],
+  milestones: {
+    1: '¡Primer abrazo! El inicio de una bonita amistad...',
+    10: '¡10 abrazos! Son muy buenos amigos',
+    50: '¡50 abrazos! Mejores amigos confirmados',
+    100: '¡100 abrazos! Amistad legendaria',
+  },
+  selfReply: '🤗 *Te das un auto-abrazo*\n\n_A veces uno mismo es su mejor compañía..._',
+  usage: '🤗 *Abrazos*\n• {p}abrazo @usuario\n• Cita un mensaje + {p}abrazo',
+});
+
+// ---------------------------------------------------------------------------
+// Kissall: un beso simbólico a los registrados del grupo
+// ---------------------------------------------------------------------------
+
+const KISSALL_COOLDOWN_MS = 60 * 60_000;
+const KISSALL_MAX_MENTIONS = 20;
+const kissallLast = new Map<string, number>();
+
+export const kissallPlugin: PluginHandler = {
+  command: ['kissall', 'besartodos', 'besoatodos'],
+  description: 'Da un beso a los registrados del grupo (una vez por hora)',
+  category: 'fun',
+  group: true,
+  register: true,
+  async handler(ctx) {
+    const { m } = ctx;
+    const last = kissallLast.get(m.sender) ?? 0;
+    if (Date.now() - last < KISSALL_COOLDOWN_MS) {
+      await m.reply(`💋 Ya repartiste besos hace poco. Vuelve en ${msToTime(KISSALL_COOLDOWN_MS - (Date.now() - last))}.`);
+      return;
+    }
+    const db = getDatabase();
+    const participants = ctx.participants ?? (await ctx.conn.groupMetadata(m.chat)).participants.map((p) => p.id);
+    const kissed = participants.filter((jid) => jid !== m.sender && db.hasUser(jid) && db.getUser(jid).registered);
+    if (kissed.length === 0) {
+      await m.reply('😢 No hay otros usuarios registrados en el grupo para besar.');
+      return;
+    }
+    kissallLast.set(m.sender, Date.now());
+    // Cuenta como un solo beso dado en el ranking; cada receptor recibe uno.
+    const giver = db.getUser(m.sender);
+    giver.kissStats.totalGiven += 1;
+    for (const jid of kissed) db.getUser(jid).kissStats.totalReceived += 1;
+    db.markDirty();
+
+    const mentioned = kissed.slice(0, KISSALL_MAX_MENTIONS);
+    const rest = kissed.length - mentioned.length;
+    const text = `💋 *¡Beso masivo!*\n\n${mentionTag(m.sender)} le dio un beso a *${kissed.length}* personas:\n${mentioned.map(mentionTag).join(' ')}${rest > 0 ? ` y ${rest} más` : ''}\n\n_¡Mucho amor en este grupo!_ 💕`;
+    await ctx.conn.sendMessage(m.chat, { text, mentions: [m.sender, ...mentioned] }, { quoted: m.rawMessage });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Buenos días
+// ---------------------------------------------------------------------------
+
+const GOOD_MORNING = [
   'Buenos días {target}, espero que tengas un día increíble!',
   'Buen día {target}! Que la fuerza te acompañe hoy!',
   'Despierta {target}! El mundo te necesita hoy!',
@@ -34,702 +93,195 @@ const GOOD_MORNING_MESSAGES = [
   'Buenos días {target}! A romperla hoy!',
 ];
 
-// Insultos multilingües para .chingatumadre
-const INSULTS = {
-  spanish: [
-    '¡Chinga tu madre, {target}!',
-    '¡Vete a la verga, {target}!',
-    '¡Que te folle un pez, {target}!',
-  ],
-  english: [
-    'Go f*ck yourself, {target}!',
-    'Screw you, {target}!',
-    'Kiss my a**, {target}!',
-  ],
-  french: [
-    'Va te faire foutre, {target}!',
-    'Nique ta mère, {target}!',
-    'Casse-toi, {target}!',
-  ],
-  german: [
-    'Leck mich am Arsch, {target}!',
-    'Verpiss dich, {target}!',
-    'Du Hurensohn, {target}!',
-  ],
-  italian: [
-    'Vaffanculo, {target}!',
-    'Figlio di puttana, {target}!',
-    'Vai a farti fottere, {target}!',
-  ],
-};
-
-/**
- * Comando /abrazo - Dar un abrazo a alguien
- */
-export const abrazoPlugin: PluginHandler = {
-  command: ['abrazo', 'hug', 'abrazar', 'apapacho'],
-  description: 'Dale un abrazo a alguien especial',
-  category: 'fun',
-
-  async handler(ctx: MessageContext) {
-    const { m, conn } = ctx;
-    const db = getDatabase();
-
-    // Obtener usuario objetivo
-    let targetJid: string | null = null;
-    let targetName: string;
-
-    if (m.mentionedJid && m.mentionedJid.length > 0) {
-      targetJid = m.mentionedJid[0];
-      targetName = targetJid.split('@')[0];
-    } else if (m.quoted) {
-      targetJid = m.quoted.sender;
-      targetName = targetJid.split('@')[0];
-    } else {
-      await m.reply(
-        `🤗 *SISTEMA DE ABRAZOS*\n\n` +
-        `📝 Uso:\n` +
-        `• /abrazo @usuario\n` +
-        `• Citar mensaje + /abrazo\n\n` +
-        `💡 ¡Da un abrazo para alegrar el día de alguien!`
-      );
-      return;
-    }
-
-    // No puedes abrazarte a ti mismo
-    if (targetJid === m.sender) {
-      await m.reply('🤗 *Te das un auto-abrazo*\n\n_A veces uno mismo es su mejor compañía..._');
-      return;
-    }
-
-    const senderName = m.pushName || m.sender.split('@')[0];
-
-    // Obtener datos de ambos usuarios
-    const senderData = db.getUser(m.sender);
-    const targetData = db.getUser(targetJid);
-
-    // Inicializar hugStats si no existe
-    if (!senderData.hugStats) {
-      senderData.hugStats = { totalGiven: 0, totalReceived: 0, hugHistory: [] };
-    }
-    if (!targetData.hugStats) {
-      targetData.hugStats = { totalGiven: 0, totalReceived: 0, hugHistory: [] };
-    }
-
-    // Actualizar estadísticas del que da el abrazo
-    senderData.hugStats.totalGiven++;
-
-    // Buscar o crear registro en historial del sender
-    let senderRecord = senderData.hugStats.hugHistory.find(r => r.jid === targetJid);
-    if (!senderRecord) {
-      senderRecord = { jid: targetJid, count: 0, lastHug: 0 };
-      senderData.hugStats.hugHistory.push(senderRecord);
-
-      // Limitar tamaño del historial
-      if (senderData.hugStats.hugHistory.length > (LIMITS?.MAX_KISS_HISTORY || 50)) {
-        senderData.hugStats.hugHistory.sort((a, b) => b.lastHug - a.lastHug);
-        senderData.hugStats.hugHistory = senderData.hugStats.hugHistory.slice(0, LIMITS?.MAX_KISS_HISTORY || 50);
-      }
-    }
-    senderRecord.count++;
-    senderRecord.lastHug = Date.now();
-
-    // Actualizar estadísticas del que recibe el abrazo
-    targetData.hugStats.totalReceived++;
-
-    // Guardar cambios
-    db.updateUser(m.sender, { hugStats: senderData.hugStats });
-    db.updateUser(targetJid, { hugStats: targetData.hugStats });
-
-    // Generar respuesta
-    const hug = pickRandom(HUG_TYPES);
-    const hugCount = senderRecord.count;
-
-    let response =
-      `${hug.emoji} *¡ABRAZO!* ${hug.emoji}\n\n` +
-      `👤 *${senderName}* le dio ${hug.desc} a *${targetName}*\n\n` +
-      `🤗 Abrazos entre ustedes: *${hugCount}*\n`;
-
-    if (hugCount === 1) {
-      response += `\n🎉 *¡Primer abrazo! El inicio de una bonita amistad...*`;
-    } else if (hugCount === 10) {
-      response += `\n🎉 *¡10 abrazos! Son muy buenos amigos*`;
-    } else if (hugCount === 50) {
-      response += `\n🎉 *¡50 abrazos! Mejores amigos confirmados*`;
-    } else if (hugCount === 100) {
-      response += `\n🎉 *¡100 abrazos! Amistad legendaria*`;
-    }
-
-    response += `\n\n📊 Total de abrazos dados por ${senderName}: *${senderData.hugStats.totalGiven}*`;
-
-    await conn.sendMessage(m.chat, {
-      text: response,
-      mentions: [m.sender, targetJid]
-    }, { quoted: m.rawMessage });
-  }
-};
-
-/**
- * Comando /kissall - Besar a todos los registrados
- */
-export const kissallPlugin: PluginHandler = {
-  command: ['kissall', 'besartodos', 'besoatodos'],
-  description: 'Da un beso a todos los registrados del grupo',
-  category: 'fun',
-  group: true,
-
-  async handler(ctx: MessageContext) {
-    const { m, conn } = ctx;
-    const db = getDatabase();
-
-    // Obtener participantes del grupo
-    const groupMetadata = await conn.groupMetadata(m.chat);
-    const participants = groupMetadata.participants.map(p => p.id);
-
-    const senderName = m.pushName || m.sender.split('@')[0];
-    const senderData = db.getUser(m.sender);
-
-    // Inicializar kissStats si no existe
-    if (!senderData.kissStats) {
-      senderData.kissStats = { totalGiven: 0, totalReceived: 0, kissHistory: [] };
-    }
-
-    // Contar usuarios registrados
-    let registeredCount = 0;
-    const kissedUsers: string[] = [];
-
-    for (const jid of participants) {
-      if (jid === m.sender) continue; // No te besas a ti mismo
-
-      const userData = db.getUser(jid);
-      if (!userData.registered) continue;
-
-      registeredCount++;
-      kissedUsers.push(jid);
-
-      // Actualizar estadísticas del sender
-      senderData.kissStats.totalGiven++;
-
-      // Buscar o crear registro en historial
-      let senderRecord = senderData.kissStats.kissHistory.find(r => r.jid === jid);
-      if (!senderRecord) {
-        senderRecord = { jid, count: 0, lastKiss: 0 };
-        senderData.kissStats.kissHistory.push(senderRecord);
-      }
-      senderRecord.count++;
-      senderRecord.lastKiss = Date.now();
-
-      // Actualizar al receptor
-      if (!userData.kissStats) {
-        userData.kissStats = { totalGiven: 0, totalReceived: 0, kissHistory: [] };
-      }
-      userData.kissStats.totalReceived++;
-      db.updateUser(jid, { kissStats: userData.kissStats });
-    }
-
-    // Limitar historial del sender
-    if (senderData.kissStats.kissHistory.length > (LIMITS?.MAX_KISS_HISTORY || 50)) {
-      senderData.kissStats.kissHistory.sort((a, b) => b.lastKiss - a.lastKiss);
-      senderData.kissStats.kissHistory = senderData.kissStats.kissHistory.slice(0, LIMITS?.MAX_KISS_HISTORY || 50);
-    }
-
-    db.updateUser(m.sender, { kissStats: senderData.kissStats });
-
-    if (registeredCount === 0) {
-      await m.reply('😢 No hay otros usuarios registrados en el grupo para besar.');
-      return;
-    }
-
-    const response =
-      `💋💋💋 *¡BESO MASIVO!* 💋💋💋\n\n` +
-      `👤 *${senderName}* le dio un beso a *${registeredCount}* personas!\n\n` +
-      `📊 Total de besos dados: *${senderData.kissStats.totalGiven}*\n\n` +
-      `_¡Mucho amor en este grupo!_ 💕`;
-
-    await conn.sendMessage(m.chat, {
-      text: response,
-      mentions: [m.sender, ...kissedUsers]
-    }, { quoted: m.rawMessage });
-  }
-};
-
-/**
- * Comando /gudmornin - Buenos días personalizado
- */
 export const gudmorninPlugin: PluginHandler = {
   command: ['gudmornin', 'buenosdias', 'gm', 'goodmorning'],
-  description: 'Desea buenos días a alguien',
+  description: 'Desea buenos días a alguien o al grupo',
   category: 'fun',
-
-  async handler(ctx: MessageContext) {
-    const { m, conn } = ctx;
-
-    // Obtener usuario objetivo
-    let targetJid: string | null = null;
-    let targetName: string;
-
-    if (m.mentionedJid && m.mentionedJid.length > 0) {
-      targetJid = m.mentionedJid[0];
-      targetName = '@' + targetJid.split('@')[0];
-    } else if (m.quoted) {
-      targetJid = m.quoted.sender;
-      targetName = '@' + targetJid.split('@')[0];
-    } else {
-      // Sin objetivo = buenos días al grupo
-      targetName = 'a todos';
-    }
-
-    const senderName = m.pushName || m.sender.split('@')[0];
-    const message = pickRandom(GOOD_MORNING_MESSAGES).replace('{target}', targetName);
-
-    const response =
-      `☀️ *BUENOS DÍAS* ☀️\n\n` +
-      `👤 *${senderName}* dice:\n\n` +
-      `"${message}"\n\n` +
-      `🌅 _Que tengan un excelente día!_`;
-
-    const mentions = targetJid ? [m.sender, targetJid] : [m.sender];
-
-    await conn.sendMessage(m.chat, {
-      text: response,
-      mentions
-    }, { quoted: m.rawMessage });
-  }
+  async handler(ctx) {
+    const { m } = ctx;
+    const target = getTargetUser(m);
+    const message = pickRandom(GOOD_MORNING).replace('{target}', target ? mentionTag(target) : 'a todos');
+    const text = `☀️ *Buenos días*\n\n${mentionTag(m.sender)} dice:\n"${message}"\n\n🌅 _Que tengan un excelente día!_`;
+    await ctx.conn.sendMessage(m.chat, { text, mentions: target ? [m.sender, target] : [m.sender] }, { quoted: m.rawMessage });
+  },
 };
 
-// Frases por defecto para poka
-const DEFAULT_POKA_RESPONSES = [
-  `🥫💰 *{name}* está pidiendo limosna...\n\n_"Una monedita para el taco, jefe..."_`,
-  `🥫🪙 *{name}* sacó su latita...\n\n_"Cualquier cosa ayuda, mi buen..."_`,
-  `🥫💵 *{name}* extiende la mano...\n\n_"Pa' la coca, carnal..."_`,
-  `🥫🤲 *{name}* hace cara de perrito triste...\n\n_"Ando bien poka, ayuda..."_`,
-  `🥫😢 *{name}* muestra su cartera vacía...\n\n_"No me alcanza ni pa'l camión..."_`,
+// ---------------------------------------------------------------------------
+// Poka y ctm con frases personalizables por grupo
+// ---------------------------------------------------------------------------
+
+const DEFAULT_POKA = [
+  '🥫💰 *{name}* está pidiendo limosna...\n\n_"Una monedita para el taco, jefe..."_',
+  '🥫🪙 *{name}* sacó su latita...\n\n_"Cualquier cosa ayuda, mi buen..."_',
+  '🥫💵 *{name}* extiende la mano...\n\n_"Pa\' la coca, carnal..."_',
+  '🥫🤲 *{name}* hace cara de perrito triste...\n\n_"Ando bien poka, ayuda..."_',
+  '🥫😢 *{name}* muestra su cartera vacía...\n\n_"No me alcanza ni pa\'l camión..."_',
 ];
 
-/**
- * Comando /poka - Pedir limosna
- */
+const INSULTS: { flag: string; lang: string; lines: string[] }[] = [
+  { flag: '🇲🇽', lang: 'Español', lines: ['¡Chinga tu madre, {target}!', '¡Vete a la verga, {target}!', '¡Que te folle un pez, {target}!'] },
+  { flag: '🇺🇸', lang: 'English', lines: ['Go f*ck yourself, {target}!', 'Screw you, {target}!', 'Kiss my a**, {target}!'] },
+  { flag: '🇫🇷', lang: 'Français', lines: ['Va te faire foutre, {target}!', 'Nique ta mère, {target}!', 'Casse-toi, {target}!'] },
+  { flag: '🇩🇪', lang: 'Deutsch', lines: ['Leck mich am Arsch, {target}!', 'Verpiss dich, {target}!', 'Du Hurensohn, {target}!'] },
+  { flag: '🇮🇹', lang: 'Italiano', lines: ['Vaffanculo, {target}!', 'Figlio di puttana, {target}!', 'Vai a farti fottere, {target}!'] },
+];
+
+type PhraseSet = 'poka' | 'ctm';
+const PHRASE_FIELD: Record<PhraseSet, 'customPoka' | 'customCtm'> = { poka: 'customPoka', ctm: 'customCtm' };
+const MAX_PHRASES = 30;
+const MAX_PHRASE_LENGTH = 300;
+
+function customPhrases(ctx: MessageContext, set: PhraseSet): string[] {
+  if (!ctx.m.isGroup) return [];
+  return getDatabase().getChatSettings(ctx.m.chat)[PHRASE_FIELD[set]] ?? [];
+}
+
 export const pokaPlugin: PluginHandler = {
   command: ['poka', 'limosna', 'pobre'],
   description: 'Pide limosna con estilo',
   category: 'fun',
-
-  async handler(ctx: MessageContext) {
-    const { m } = ctx;
-    const db = getDatabase();
-    const senderName = m.pushName || m.sender.split('@')[0];
-
-    // Obtener frases personalizadas del grupo si existen
-    let responses: string[];
-    if (m.isGroup) {
-      const chatSettings = db.getChatSettings(m.chat);
-      if (chatSettings.customPoka && chatSettings.customPoka.length > 0) {
-        responses = chatSettings.customPoka;
-      } else {
-        responses = DEFAULT_POKA_RESPONSES;
-      }
-    } else {
-      responses = DEFAULT_POKA_RESPONSES;
-    }
-
-    // Reemplazar {name} con el nombre del usuario
-    const selectedResponse = pickRandom(responses).replace(/{name}/g, senderName);
-    await m.reply(selectedResponse);
-  }
+  async handler(ctx) {
+    const custom = customPhrases(ctx, 'poka');
+    const name = nameOf(ctx.m.sender, ctx.m.pushName);
+    await ctx.m.reply(pickRandom(custom.length > 0 ? custom : DEFAULT_POKA).replace(/\{name\}/g, name));
+  },
 };
 
-// Frases por defecto para ctm (si hay personalizadas, reemplazan todo)
-const DEFAULT_CTM_RESPONSE = (senderName: string, targetName: string) => {
-  let response = `🤬 *${senderName}* le menta la madre a *${targetName}* en 5 idiomas:\n\n`;
-  response += `🇲🇽 *Español:*\n${pickRandom(INSULTS.spanish).replace('{target}', targetName)}\n\n`;
-  response += `🇺🇸 *English:*\n${pickRandom(INSULTS.english).replace('{target}', targetName)}\n\n`;
-  response += `🇫🇷 *Français:*\n${pickRandom(INSULTS.french).replace('{target}', targetName)}\n\n`;
-  response += `🇩🇪 *Deutsch:*\n${pickRandom(INSULTS.german).replace('{target}', targetName)}\n\n`;
-  response += `🇮🇹 *Italiano:*\n${pickRandom(INSULTS.italian).replace('{target}', targetName)}`;
-  return response;
-};
-
-/**
- * Comando /chingatumadre - Insulto multilingüe
- */
 export const chingatumadrePlugin: PluginHandler = {
   command: ['chingatumadre', 'ctm', 'fuck', 'insultar'],
   description: 'Insulta a alguien en 5 idiomas',
   category: 'fun',
-
-  async handler(ctx: MessageContext) {
-    const { m, conn } = ctx;
-    const db = getDatabase();
-
-    // Obtener usuario objetivo
-    let targetJid: string | null = null;
-    let targetName: string;
-
-    if (m.mentionedJid && m.mentionedJid.length > 0) {
-      targetJid = m.mentionedJid[0];
-      targetName = '@' + targetJid.split('@')[0];
-    } else if (m.quoted) {
-      targetJid = m.quoted.sender;
-      targetName = '@' + targetJid.split('@')[0];
-    } else {
-      await m.reply(
-        `🤬 *INSULTO MULTILINGÜE*\n\n` +
-        `📝 Uso: /chingatumadre @usuario\n\n` +
-        `_Porque a veces las palabras duelen más en varios idiomas..._`
-      );
+  async handler(ctx) {
+    const { m } = ctx;
+    const target = getTargetUser(m);
+    if (!target) {
+      await m.reply(`🤬 Uso: *${ctx.usedPrefix || '/'}ctm @usuario*\n_Porque a veces las palabras duelen más en varios idiomas..._`);
       return;
     }
-
-    // No puedes insultarte a ti mismo
-    if (targetJid === m.sender) {
-      await m.reply('🤔 ¿Te quieres insultar a ti mismo? Eso es muy sad...');
-      return;
-    }
-
-    const senderName = m.pushName || m.sender.split('@')[0];
-
-    // Verificar si hay frases personalizadas del grupo
-    let response: string;
-    if (m.isGroup) {
-      const chatSettings = db.getChatSettings(m.chat);
-      if (chatSettings.customCtm && chatSettings.customCtm.length > 0) {
-        // Usar frase personalizada aleatoria
-        response = pickRandom(chatSettings.customCtm)
-          .replace(/{name}/g, senderName)
-          .replace(/{target}/g, targetName);
-      } else {
-        response = DEFAULT_CTM_RESPONSE(senderName, targetName);
-      }
-    } else {
-      response = DEFAULT_CTM_RESPONSE(senderName, targetName);
-    }
-
-    await conn.sendMessage(m.chat, {
-      text: response,
-      mentions: [m.sender, targetJid]
-    }, { quoted: m.rawMessage });
-  }
+    const custom = customPhrases(ctx, 'ctm');
+    const senderTag = mentionTag(m.sender);
+    const targetTag = mentionTag(target);
+    const text = custom.length > 0
+      ? pickRandom(custom).replace(/\{name\}/g, senderTag).replace(/\{target\}/g, targetTag)
+      : `🤬 ${senderTag} le menta la madre a ${targetTag} en 5 idiomas:\n\n`
+        + INSULTS.map((i) => `${i.flag} *${i.lang}:*\n${pickRandom(i.lines).replace('{target}', targetTag)}`).join('\n\n');
+    await ctx.conn.sendMessage(m.chat, { text, mentions: [m.sender, target] }, { quoted: m.rawMessage });
+  },
 };
 
-/**
- * Comando /hazaña - Enviar sticker de Carlitos
- */
 export const hazanaPlugin: PluginHandler = {
   command: ['hazana', 'hazaña', 'carlitos', 'feria'],
   description: 'Muestra el sticker de Carlitos ganando feria',
   category: 'fun',
-
-  async handler(ctx: MessageContext) {
+  async handler(ctx) {
     const { m, conn } = ctx;
-
-    // Buscar el sticker de Carlitos
     const stickerPath = path.join(process.cwd(), 'assets', 'stickers', 'carlitos.webp');
-
-    // Si existe el sticker, enviarlo
     if (fs.existsSync(stickerPath)) {
-      const stickerBuffer = fs.readFileSync(stickerPath);
-      await conn.sendMessage(m.chat, {
-        sticker: stickerBuffer
-      }, { quoted: m.rawMessage });
-    } else {
-      // Si no existe, enviar mensaje de texto alternativo
-      await m.reply(
-        `🏆💰 *¡HAZAÑA LEGENDARIA!* 💰🏆\n\n` +
-        `Carlitos acaba de ganar un chingo de feria!\n\n` +
-        `💵💵💵💵💵💵💵💵💵💵\n` +
-        `🎰 JACKPOT 🎰\n` +
-        `💵💵💵💵💵💵💵💵💵💵\n\n` +
-        `_El sticker de Carlitos no está disponible, pero el espíritu sí!_\n\n` +
-        `💡 Para agregar el sticker, coloca un archivo 'carlitos.webp' en assets/stickers/`
-      );
+      await conn.sendMessage(m.chat, { sticker: fs.readFileSync(stickerPath) }, { quoted: m.rawMessage });
+      return;
     }
-  }
+    await m.reply('🏆💰 *¡Hazaña legendaria!*\n\nCarlitos acaba de ganar un chingo de feria!\n🎰 JACKPOT 🎰\n\n_Falta el sticker: coloca carlitos.webp en assets/stickers/_');
+  },
 };
 
-/**
- * Comando /addpoka - Agregar frase personalizada para poka
- */
-export const addPokaPlugin: PluginHandler = {
-  command: ['addpoka', 'agregarpoka'],
-  description: 'Agrega una frase personalizada para .poka',
+/** `frases <poka|ctm> add <texto> | list | del <n> | clear` */
+export const frasesPlugin: PluginHandler = {
+  command: ['frases'],
+  description: 'Frases personalizadas de poka y ctm del grupo',
   category: 'fun',
   group: true,
-  admin: true,
-
-  async handler(ctx: MessageContext) {
+  usage: ['frases poka list', 'frases ctm add 🤬 {name} le dice a {target}...', 'frases poka del 2', 'frases ctm clear'],
+  async handler(ctx) {
     const { m, args } = ctx;
-    const db = getDatabase();
-
-    const phrase = args.join(' ').trim();
-    if (!phrase) {
-      await m.reply(
-        `📝 *AGREGAR FRASE POKA*\n\n` +
-        `Uso: /addpoka <frase>\n\n` +
-        `Variables disponibles:\n` +
-        `• {name} - Nombre del usuario\n\n` +
-        `Ejemplo: /addpoka 🥫 *{name}* anda bien poka...`
-      );
+    const p = ctx.usedPrefix || '/';
+    const set = (args[0] ?? '').toLowerCase();
+    const action = (args[1] ?? 'list').toLowerCase();
+    if (set !== 'poka' && set !== 'ctm') {
+      await m.reply(`📝 *Frases*\n• ${p}frases poka list\n• ${p}frases ctm add <texto> ({name} y {target})\n• ${p}frases poka del <n>\n• ${p}frases ctm clear\n\nAñadir, borrar y limpiar es solo para admins.`);
       return;
     }
-
-    const chatSettings = db.getChatSettings(m.chat);
-    if (!chatSettings.customPoka) {
-      chatSettings.customPoka = [];
-    }
-
-    chatSettings.customPoka.push(phrase);
-    db.updateChatSettings(m.chat, { customPoka: chatSettings.customPoka });
-
-    await m.reply(
-      `✅ *Frase agregada para .poka*\n\n` +
-      `📝 "${phrase}"\n\n` +
-      `📊 Total de frases: *${chatSettings.customPoka.length}*`
-    );
-  }
-};
-
-/**
- * Comando /listpoka - Ver frases personalizadas de poka
- */
-export const listPokaPlugin: PluginHandler = {
-  command: ['listpoka', 'verpoka', 'frasespoka'],
-  description: 'Ver frases personalizadas de .poka',
-  category: 'fun',
-  group: true,
-
-  async handler(ctx: MessageContext) {
-    const { m } = ctx;
     const db = getDatabase();
+    const field = PHRASE_FIELD[set as PhraseSet];
+    const phrases = [...(db.getChatSettings(m.chat)[field] ?? [])];
 
-    const chatSettings = db.getChatSettings(m.chat);
-    const phrases = chatSettings.customPoka || [];
-
-    if (phrases.length === 0) {
-      await m.reply(
-        `📋 *FRASES POKA*\n\n` +
-        `No hay frases personalizadas.\n` +
-        `Se usan las frases por defecto.\n\n` +
-        `💡 Usa /addpoka para agregar frases.`
-      );
+    if (action === 'list' || action === 'ver') {
+      if (phrases.length === 0) {
+        await m.reply(`📋 Sin frases personalizadas para ${set}; se usan las de serie. Añade con *${p}frases ${set} add <texto>*.`);
+        return;
+      }
+      await m.reply(`📋 *Frases de ${set}* (${phrases.length}/${MAX_PHRASES})\n\n${phrases.map((f, i) => `${i + 1}. ${f}`).join('\n\n')}`);
       return;
     }
-
-    let response = `📋 *FRASES POKA PERSONALIZADAS*\n\n`;
-    phrases.forEach((phrase, i) => {
-      response += `${i + 1}. ${phrase}\n\n`;
-    });
-    response += `\n💡 Usa /delpoka <número> para eliminar una frase.`;
-
-    await m.reply(response);
-  }
-};
-
-/**
- * Comando /delpoka - Eliminar frase de poka
- */
-export const delPokaPlugin: PluginHandler = {
-  command: ['delpoka', 'borrarpoka', 'removepoka'],
-  description: 'Elimina una frase personalizada de .poka',
-  category: 'fun',
-  group: true,
-  admin: true,
-
-  async handler(ctx: MessageContext) {
-    const { m, args } = ctx;
-    const db = getDatabase();
-
-    const index = parseInt(args[0]) - 1;
-    const chatSettings = db.getChatSettings(m.chat);
-
-    if (!chatSettings.customPoka || chatSettings.customPoka.length === 0) {
-      await m.reply('❌ No hay frases personalizadas para eliminar.');
+    if (!ctx.isAdmin && !ctx.isOwner) {
+      await m.reply('❌ Solo los administradores pueden cambiar las frases.');
       return;
     }
-
-    if (isNaN(index) || index < 0 || index >= chatSettings.customPoka.length) {
-      await m.reply(`❌ Número inválido. Usa un número del 1 al ${chatSettings.customPoka.length}`);
+    if (action === 'add' || action === 'agregar') {
+      const phrase = args.slice(2).join(' ').trim();
+      if (!phrase) {
+        await m.reply(`Uso: *${p}frases ${set} add <texto>*. Variables: {name}${set === 'ctm' ? ' y {target}' : ''}.`);
+        return;
+      }
+      if (phrase.length > MAX_PHRASE_LENGTH) {
+        await m.reply(`❌ Máximo ${MAX_PHRASE_LENGTH} caracteres por frase.`);
+        return;
+      }
+      if (phrases.length >= MAX_PHRASES) {
+        await m.reply(`❌ Ya hay ${MAX_PHRASES} frases; borra alguna con *${p}frases ${set} del <n>*.`);
+        return;
+      }
+      phrases.push(phrase);
+      db.updateChatSettings(m.chat, { [field]: phrases });
+      await m.reply(`✅ Frase ${phrases.length} añadida a ${set}.`);
       return;
     }
-
-    const removed = chatSettings.customPoka.splice(index, 1)[0];
-    db.updateChatSettings(m.chat, { customPoka: chatSettings.customPoka });
-
-    await m.reply(
-      `✅ *Frase eliminada*\n\n` +
-      `📝 "${removed}"\n\n` +
-      `📊 Frases restantes: *${chatSettings.customPoka.length}*`
-    );
-  }
-};
-
-/**
- * Comando /clearpoka - Limpiar todas las frases de poka
- */
-export const clearPokaPlugin: PluginHandler = {
-  command: ['clearpoka', 'limpiarpoka', 'resetpoka'],
-  description: 'Elimina todas las frases personalizadas de .poka',
-  category: 'fun',
-  group: true,
-  admin: true,
-
-  async handler(ctx: MessageContext) {
-    const { m } = ctx;
-    const db = getDatabase();
-
-    db.updateChatSettings(m.chat, { customPoka: [] });
-    await m.reply('✅ Todas las frases personalizadas de .poka han sido eliminadas.');
-  }
-};
-
-/**
- * Comando /addctm - Agregar frase personalizada para ctm
- */
-export const addCtmPlugin: PluginHandler = {
-  command: ['addctm', 'agregarctm'],
-  description: 'Agrega una frase personalizada para .ctm',
-  category: 'fun',
-  group: true,
-  admin: true,
-
-  async handler(ctx: MessageContext) {
-    const { m, args } = ctx;
-    const db = getDatabase();
-
-    const phrase = args.join(' ').trim();
-    if (!phrase) {
-      await m.reply(
-        `📝 *AGREGAR FRASE CTM*\n\n` +
-        `Uso: /addctm <frase>\n\n` +
-        `Variables disponibles:\n` +
-        `• {name} - Nombre del que usa el comando\n` +
-        `• {target} - Nombre del objetivo\n\n` +
-        `Ejemplo: /addctm 🤬 *{name}* le dice a *{target}*: ¡Chingas a tu madre!`
-      );
+    if (action === 'del' || action === 'borrar') {
+      const index = parseInt(args[2] ?? '', 10) - 1;
+      if (!(index >= 0 && index < phrases.length)) {
+        await m.reply(phrases.length === 0 ? 'No hay frases que borrar.' : `❌ Indica un número del 1 al ${phrases.length}.`);
+        return;
+      }
+      const [removed] = phrases.splice(index, 1);
+      db.updateChatSettings(m.chat, { [field]: phrases });
+      await m.reply(`✅ Frase eliminada: "${removed}". Quedan ${phrases.length}.`);
       return;
     }
-
-    const chatSettings = db.getChatSettings(m.chat);
-    if (!chatSettings.customCtm) {
-      chatSettings.customCtm = [];
-    }
-
-    chatSettings.customCtm.push(phrase);
-    db.updateChatSettings(m.chat, { customCtm: chatSettings.customCtm });
-
-    await m.reply(
-      `✅ *Frase agregada para .ctm*\n\n` +
-      `📝 "${phrase}"\n\n` +
-      `📊 Total de frases: *${chatSettings.customCtm.length}*`
-    );
-  }
-};
-
-/**
- * Comando /listctm - Ver frases personalizadas de ctm
- */
-export const listCtmPlugin: PluginHandler = {
-  command: ['listctm', 'verctm', 'frasesctm'],
-  description: 'Ver frases personalizadas de .ctm',
-  category: 'fun',
-  group: true,
-
-  async handler(ctx: MessageContext) {
-    const { m } = ctx;
-    const db = getDatabase();
-
-    const chatSettings = db.getChatSettings(m.chat);
-    const phrases = chatSettings.customCtm || [];
-
-    if (phrases.length === 0) {
-      await m.reply(
-        `📋 *FRASES CTM*\n\n` +
-        `No hay frases personalizadas.\n` +
-        `Se usa el insulto multilingüe por defecto.\n\n` +
-        `💡 Usa /addctm para agregar frases.`
-      );
+    if (action === 'clear' || action === 'limpiar') {
+      db.updateChatSettings(m.chat, { [field]: [] });
+      await m.reply(`✅ Frases de ${set} borradas; vuelven las de serie.`);
       return;
     }
-
-    let response = `📋 *FRASES CTM PERSONALIZADAS*\n\n`;
-    phrases.forEach((phrase, i) => {
-      response += `${i + 1}. ${phrase}\n\n`;
-    });
-    response += `\n💡 Usa /delctm <número> para eliminar una frase.`;
-
-    await m.reply(response);
-  }
+    await m.reply(`Acciones: list, add <texto>, del <n>, clear. Ej: *${p}frases ${set} list*`);
+  },
 };
 
-/**
- * Comando /delctm - Eliminar frase de ctm
- */
-export const delCtmPlugin: PluginHandler = {
-  command: ['delctm', 'borrarctm', 'removectm'],
-  description: 'Elimina una frase personalizada de .ctm',
-  category: 'fun',
-  group: true,
-  admin: true,
+/** Alias viejos (addpoka, delctm...) como atajos de `frases`. */
+function frasesShortcut(aliases: string[], set: PhraseSet, action: string): PluginHandler {
+  return {
+    command: aliases,
+    description: `Atajo de frases ${set} ${action}`,
+    category: 'fun',
+    group: true,
+    handler: (ctx) => frasesPlugin.handler({ ...ctx, args: [set, action, ...ctx.args], text: [set, action, ...ctx.args].join(' ') }),
+  };
+}
 
-  async handler(ctx: MessageContext) {
-    const { m, args } = ctx;
-    const db = getDatabase();
+export const addPokaPlugin = frasesShortcut(['addpoka', 'agregarpoka'], 'poka', 'add');
+export const listPokaPlugin = frasesShortcut(['listpoka', 'verpoka', 'frasespoka'], 'poka', 'list');
+export const delPokaPlugin = frasesShortcut(['delpoka', 'borrarpoka', 'removepoka'], 'poka', 'del');
+export const clearPokaPlugin = frasesShortcut(['clearpoka', 'limpiarpoka', 'resetpoka'], 'poka', 'clear');
+export const addCtmPlugin = frasesShortcut(['addctm', 'agregarctm'], 'ctm', 'add');
+export const listCtmPlugin = frasesShortcut(['listctm', 'verctm', 'frasesctm'], 'ctm', 'list');
+export const delCtmPlugin = frasesShortcut(['delctm', 'borrarctm', 'removectm'], 'ctm', 'del');
+export const clearCtmPlugin = frasesShortcut(['clearctm', 'limpiarctm', 'resetctm'], 'ctm', 'clear');
 
-    const index = parseInt(args[0]) - 1;
-    const chatSettings = db.getChatSettings(m.chat);
-
-    if (!chatSettings.customCtm || chatSettings.customCtm.length === 0) {
-      await m.reply('❌ No hay frases personalizadas para eliminar.');
-      return;
-    }
-
-    if (isNaN(index) || index < 0 || index >= chatSettings.customCtm.length) {
-      await m.reply(`❌ Número inválido. Usa un número del 1 al ${chatSettings.customCtm.length}`);
-      return;
-    }
-
-    const removed = chatSettings.customCtm.splice(index, 1)[0];
-    db.updateChatSettings(m.chat, { customCtm: chatSettings.customCtm });
-
-    await m.reply(
-      `✅ *Frase eliminada*\n\n` +
-      `📝 "${removed}"\n\n` +
-      `📊 Frases restantes: *${chatSettings.customCtm.length}*`
-    );
-  }
-};
-
-/**
- * Comando /clearctm - Limpiar todas las frases de ctm
- */
-export const clearCtmPlugin: PluginHandler = {
-  command: ['clearctm', 'limpiarctm', 'resetctm'],
-  description: 'Elimina todas las frases personalizadas de .ctm',
-  category: 'fun',
-  group: true,
-  admin: true,
-
-  async handler(ctx: MessageContext) {
-    const { m } = ctx;
-    const db = getDatabase();
-
-    db.updateChatSettings(m.chat, { customCtm: [] });
-    await m.reply('✅ Todas las frases personalizadas de .ctm han sido eliminadas.');
-  }
-};
-
-export default [
-  abrazoPlugin,
-  kissallPlugin,
-  gudmorninPlugin,
-  pokaPlugin,
-  chingatumadrePlugin,
-  hazanaPlugin,
-  addPokaPlugin,
-  listPokaPlugin,
-  delPokaPlugin,
-  clearPokaPlugin,
-  addCtmPlugin,
-  listCtmPlugin,
-  delCtmPlugin,
-  clearCtmPlugin
-];
+export function registerSocial(handler: MessageHandler): void {
+  const entries: [string, PluginHandler][] = [
+    ['fun-abrazo', abrazoPlugin], ['fun-kissall', kissallPlugin], ['fun-gudmornin', gudmorninPlugin],
+    ['fun-poka', pokaPlugin], ['fun-chingatumadre', chingatumadrePlugin], ['fun-hazana', hazanaPlugin],
+    ['fun-frases', frasesPlugin],
+    ['fun-addpoka', addPokaPlugin], ['fun-listpoka', listPokaPlugin], ['fun-delpoka', delPokaPlugin], ['fun-clearpoka', clearPokaPlugin],
+    ['fun-addctm', addCtmPlugin], ['fun-listctm', listCtmPlugin], ['fun-delctm', delCtmPlugin], ['fun-clearctm', clearCtmPlugin],
+  ];
+  for (const [name, plugin] of entries) handler.registerPlugin(name, plugin);
+}

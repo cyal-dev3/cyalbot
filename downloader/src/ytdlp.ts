@@ -1,21 +1,30 @@
-import { execFile } from 'node:child_process';
-import { rename, rm, stat, writeFile } from 'node:fs/promises';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
+import { rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { Config } from './config.js';
 import { DownloadError, mapYtdlpError } from './errors.js';
 import { extensionForMime } from './files.js';
 import { log } from './logger.js';
+import { clientClosedError } from './queue.js';
+import { assertPublicUrl, validateUrl } from './validate.js';
 
 export type Quality = 'best' | 'medium' | 'low';
 
 export const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-/** Presupuesto de tiempo compartido por todos los pasos de una misma peticion. */
+/**
+ * Presupuesto de tiempo compartido por todos los pasos de una misma peticion. Si se le pasa la
+ * senal de la peticion HTTP, tambien corta el trabajo cuando el cliente cierra la conexion.
+ */
 export class Deadline {
   private readonly endsAt: number;
 
-  constructor(totalMs: number) {
+  constructor(
+    totalMs: number,
+    readonly signal?: AbortSignal,
+  ) {
     this.endsAt = Date.now() + totalMs;
   }
 
@@ -24,6 +33,7 @@ export class Deadline {
   }
 
   assertAlive(): void {
+    if (this.signal?.aborted) throw clientClosedError();
     if (this.remaining() <= 0) throw new DownloadError('TIMEOUT', 'La descarga supero el tiempo maximo');
   }
 }
@@ -34,50 +44,127 @@ export interface RunResult {
   code: number | null;
 }
 
+// Hijos vivos (yt-dlp, ffmpeg, gallery-dl) para poder matarlos todos al apagar el servicio.
+const activeChildren = new Set<ChildProcess>();
+// Salida maxima (stdout+stderr) que se acepta de un proceso; el -J de una lista acotada cabe de sobra.
+const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+
+/** Mata al proceso y a todo su grupo (yt-dlp lanza ffmpeg como hijo y este ignora SIGPIPE). */
+function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // El grupo ya no existe o no es nuestro; se intenta con el PID directo.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // Ya habia terminado.
+  }
+}
+
+/** Numero de procesos hijos en ejecucion. */
+export function activeProcessCount(): number {
+  return activeChildren.size;
+}
+
 /**
- * Ejecuta un binario sin shell. Al vencer el timeout envia SIGTERM y, si no muere en 3 s, SIGKILL,
- * y rechaza con TIMEOUT. Nunca lanza por codigo de salida distinto de cero: eso lo decide quien llama.
+ * Envia SIGTERM a todos los hijos vivos y, si siguen vivos tras `graceMs`, SIGKILL.
+ * Se usa al apagar para no dejar ffmpeg huerfanos consumiendo CPU.
  */
-export function runProcess(bin: string, args: string[], timeoutMs: number, label = path.basename(bin)): Promise<RunResult> {
+export async function killAllProcesses(graceMs = 2000): Promise<number> {
+  const children = [...activeChildren];
+  if (!children.length) return 0;
+  for (const child of children) killTree(child, 'SIGTERM');
+  await new Promise((r) => setTimeout(r, graceMs).unref());
+  for (const child of children) killTree(child, 'SIGKILL');
+  return children.length;
+}
+
+/**
+ * Ejecuta un binario sin shell en su propio grupo de procesos. Al vencer el timeout (o abortarse
+ * `signal`) envia SIGTERM al grupo y, si no muere en 3 s, SIGKILL, y rechaza con TIMEOUT
+ * (o CLIENT_CLOSED). Nunca lanza por codigo de salida distinto de cero: eso lo decide quien llama.
+ */
+export function runProcess(bin: string, args: string[], timeoutMs: number, label = path.basename(bin), signal?: AbortSignal): Promise<RunResult> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(clientClosedError());
+      return;
+    }
     if (timeoutMs <= 0) {
       reject(new DownloadError('TIMEOUT', 'La descarga supero el tiempo maximo'));
       return;
     }
-    let timedOut = false;
+    let endedBy: 'timeout' | 'abort' | 'buffer' | null = null;
     let killTimer: NodeJS.Timeout | null = null;
+    let settled = false;
     const started = Date.now();
-    const child = execFile(
-      bin,
-      args,
-      { maxBuffer: 64 * 1024 * 1024, windowsHide: true, encoding: 'utf8' },
-      (error, stdout, stderr) => {
-        if (timer) clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let collected = 0;
+    // Grupo de procesos propio para poder matar tambien a los hijos (ffmpeg) de un golpe.
+    const child = spawn(bin, args, { windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+    activeChildren.add(child);
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      activeChildren.delete(child);
+      signal?.removeEventListener('abort', onAbort);
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      fn();
+    };
+    const terminate = (reason: 'timeout' | 'abort' | 'buffer') => {
+      if (endedBy) return;
+      endedBy = reason;
+      killTree(child, 'SIGTERM');
+      killTimer = setTimeout(() => killTree(child, 'SIGKILL'), 3000);
+    };
+    const onAbort = () => terminate('abort');
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => terminate('timeout'), timeoutMs);
+
+    const collect = (target: Buffer[]) => (chunk: Buffer) => {
+      collected += chunk.length;
+      if (collected > MAX_OUTPUT_BYTES) terminate('buffer');
+      else target.push(chunk);
+    };
+    child.stdout?.on('data', collect(out));
+    child.stderr?.on('data', collect(err));
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      finish(() => {
+        if (error.code === 'ENOENT') reject(new DownloadError('INTERNAL', `No se encontro el binario "${bin}"`));
+        else reject(new DownloadError('INTERNAL', `No se pudo ejecutar ${label}: ${error.message}`));
+      });
+    });
+    child.on('close', (code) => {
+      finish(() => {
         const ms = Date.now() - started;
-        if (timedOut) {
+        if (endedBy === 'timeout') {
           log.warn('Proceso terminado por timeout', { bin: label, ms });
           reject(new DownloadError('TIMEOUT', `${label} supero el tiempo maximo (${Math.round(timeoutMs / 1000)} s)`));
           return;
         }
-        const err = error as (NodeJS.ErrnoException & { code?: number | string }) | null;
-        if (err && err.code === 'ENOENT') {
-          reject(new DownloadError('INTERNAL', `No se encontro el binario "${bin}"`));
+        if (endedBy === 'abort') {
+          log.info('Proceso cancelado: el cliente cerro la conexion', { bin: label, ms });
+          reject(clientClosedError());
           return;
         }
-        const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
-        log.debug('Proceso finalizado', { bin: label, code, ms });
-        resolve({ stdout: String(stdout), stderr: String(stderr), code });
-      },
-    );
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => {
-        if (child.exitCode === null && !child.killed) child.kill('SIGKILL');
-        else if (child.exitCode === null) child.kill('SIGKILL');
-      }, 3000);
-    }, timeoutMs);
+        if (endedBy === 'buffer') {
+          reject(new DownloadError('INTERNAL', `${label} produjo demasiada salida`));
+          return;
+        }
+        const exit = code ?? 1;
+        log.debug('Proceso finalizado', { bin: label, code: exit, ms });
+        resolve({ stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), code: exit });
+      });
+    });
   });
 }
 
@@ -195,7 +282,7 @@ function parseJsonOutput(stdout: string): YtdlpInfo {
 
 async function runYtdlp(config: Config, args: string[], deadline: Deadline): Promise<RunResult> {
   deadline.assertAlive();
-  const result = await runProcess(config.ytdlpPath, args, deadline.remaining(), 'yt-dlp');
+  const result = await runProcess(config.ytdlpPath, args, deadline.remaining(), 'yt-dlp', deadline.signal);
   if (result.code !== 0) {
     throw mapYtdlpError(`${result.stderr}\n${result.stdout}`);
   }
@@ -228,12 +315,16 @@ export interface InfoResult {
   warnings: string;
 }
 
-/** Obtiene metadata sin descargar. Con `format` incluye requested_formats para estimar tamano y codecs. */
+/**
+ * Obtiene metadata sin descargar. Con `format` incluye requested_formats para estimar tamano y codecs.
+ * Siempre usa --flat-playlist: un video suelto se procesa completo; en una lista, las entradas que son
+ * solo URL (playlists de YouTube, canales) quedan sin resolver y las que ya traen datos (carruseles de
+ * Instagram, hilos de X) se procesan. En modo descarga ademas se acota a MAX_PLAYLIST_ITEMS entradas.
+ */
 export async function fetchInfo(config: Config, url: string, options: InfoOptions, deadline: Deadline): Promise<InfoResult> {
   await detectCapabilities(config);
-  const args = [...commonArgs(config, { warnings: true }), '-J', '--ignore-no-formats-error'];
-  if (!options.playlist) args.push('--no-playlist');
-  else args.push('--flat-playlist');
+  const args = [...commonArgs(config, { warnings: true }), '-J', '--ignore-no-formats-error', '--flat-playlist'];
+  if (!options.playlist) args.push('--no-playlist', '--playlist-items', `1:${config.maxPlaylistItems}`);
   if (options.format) args.push('-f', options.format, '-S', 'vcodec:h264,res,acodec:m4a');
   args.push('--', url);
   const result = await runYtdlp(config, args, deadline);
@@ -251,6 +342,27 @@ export function errorFromWarnings(warnings: string): DownloadError | null {
   for (const line of relevant.reverse()) {
     const mapped = mapYtdlpError(line);
     if (['NOT_FOUND', 'LOGIN_REQUIRED', 'RATE_LIMITED', 'TOO_LARGE', 'TIMEOUT'].includes(mapped.code)) return mapped;
+  }
+  return null;
+}
+
+/**
+ * Si la metadata es una lista cuyas entradas son solo referencias (playlist de YouTube, canal, album),
+ * devuelve la URL de la primera entrada para descargar solo esa; null si no es el caso (video suelto
+ * o carrusel con entradas ya resueltas).
+ */
+export function firstPlaylistEntryUrl(info: YtdlpInfo): string | null {
+  if (info._type !== 'playlist' && info._type !== 'multi_video') return null;
+  const entries = (info.entries ?? []).filter((e): e is YtdlpInfo => Boolean(e));
+  if (!entries.length) return null;
+  const unresolved = entries.every((e) => (e._type === 'url' || e._type === 'url_transparent') && !e.formats?.length && !e.requested_formats?.length);
+  if (!unresolved) return null;
+  const first = entries[0];
+  const url = first.webpage_url ?? first.url ?? null;
+  if (url && /^https?:\/\//i.test(url)) return url;
+  // Entradas de YouTube sin URL completa: se reconstruye a partir del id.
+  if (first.id && /youtube/i.test(String(first.ie_key ?? first.extractor_key ?? first.extractor ?? info.extractor_key ?? ''))) {
+    return `https://www.youtube.com/watch?v=${first.id}`;
   }
   return null;
 }
@@ -334,9 +446,45 @@ export function estimatedSize(info: YtdlpInfo): number | null {
   return known ? total : null;
 }
 
+const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'avif']);
+
+/** True si el formato es una imagen (el extractor generico expone imagenes como "formatos"). */
+export function isImageFormat(f: YtdlpFormat): boolean {
+  const ext = (f.ext ?? '').toLowerCase();
+  if (!IMAGE_EXTS.has(ext)) return false;
+  const noVideo = !f.vcodec || f.vcodec === 'none';
+  const noAudio = !f.acodec || f.acodec === 'none';
+  return noVideo && noAudio;
+}
+
+function formatsOf(item: YtdlpInfo): YtdlpFormat[] {
+  if (item.requested_formats?.length) return item.requested_formats;
+  if (item.formats?.length) return item.formats;
+  return item.format_id ? [item] : [];
+}
+
+function entriesOf(info: YtdlpInfo): YtdlpInfo[] {
+  return info._type === 'playlist' || info._type === 'multi_video' ? (info.entries ?? []).filter((e): e is YtdlpInfo => Boolean(e)) : [info];
+}
+
+/** True si algun elemento tiene formatos de video/audio reales (no imagenes). */
 export function hasVideoFormats(info: YtdlpInfo): boolean {
-  const items = info._type === 'playlist' ? (info.entries ?? []).filter((e): e is YtdlpInfo => Boolean(e)) : [info];
-  return items.some((item) => (item.requested_formats?.length ?? 0) > 0 || (item.formats?.length ?? 0) > 0 || Boolean(item.format_id));
+  return entriesOf(info).some((item) => {
+    const formats = formatsOf(item);
+    return formats.length > 0 && !formats.every(isImageFormat);
+  });
+}
+
+/**
+ * True si algun formato tiene pista de audio o si no se sabe (sin acodec declarado).
+ * Evita pedir -x sobre un video mudo, que termina en "unable to obtain file audio codec".
+ */
+export function hasAudioFormats(info: YtdlpInfo): boolean {
+  return entriesOf(info).some((item) => {
+    const formats = formatsOf(item).filter((f) => !isImageFormat(f));
+    if (!formats.length) return false;
+    return formats.some((f) => f.acodec === undefined || f.acodec === null || f.acodec !== 'none');
+  });
 }
 
 export interface DownloadOptions {
@@ -351,6 +499,8 @@ export async function downloadWithYtdlp(config: Config, options: DownloadOptions
   const args = [
     ...commonArgs(config),
     '--no-playlist',
+    '--playlist-items',
+    `1:${config.maxPlaylistItems}`,
     '--restrict-filenames',
     '--max-filesize',
     `${Math.floor(config.maxFileBytes / (1024 * 1024))}M`,
@@ -390,6 +540,7 @@ async function probeCodecs(config: Config, file: string, deadline: Deadline): Pr
       ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'json', file],
       Math.min(deadline.remaining(), 20_000),
       'ffprobe',
+      deadline.signal,
     );
     if (result.code !== 0) return null;
     const parsed = JSON.parse(result.stdout) as { streams?: { codec_type?: string; codec_name?: string }[] };
@@ -438,7 +589,7 @@ export async function ensureWhatsappCompatible(config: Config, file: string, inf
   if (!audioOk) args.push('-b:a', '128k');
   args.push('-movflags', '+faststart', tmp);
   log.info('Recodificando para WhatsApp', { video: codecs.video, audio: codecs.audio, file: path.basename(file) });
-  const result = await runProcess(config.ffmpegPath, args, deadline.remaining(), 'ffmpeg');
+  const result = await runProcess(config.ffmpegPath, args, deadline.remaining(), 'ffmpeg', deadline.signal);
   if (result.code !== 0) {
     await rm(tmp, { force: true });
     throw new DownloadError('INTERNAL', `ffmpeg fallo al recodificar: ${result.stderr.trim().split('\n').pop() ?? ''}`);
@@ -459,22 +610,96 @@ const IMAGE_EXT_RE = /\.(jpe?g|png|webp|gif|heic|avif)(?:[?#].*)?$/i;
 // En plataformas de video (YouTube, TikTok) una miniatura sin formatos significa fallo de extraccion.
 const IMAGE_PLATFORMS = /instagram|pinterest|threads|twitter|facebook|reddit|tumblr|imgur|bluesky|generic|weibo|vk/i;
 
-/** URLs de imagen candidatas cuando yt-dlp no ofrece formatos de video (posts de fotos). */
+/** URL de la imagen mas grande cuando los "formatos" del elemento son imagenes (extractor generico). */
+function imageFormatUrl(item: YtdlpInfo): string | null {
+  const formats = formatsOf(item);
+  if (!formats.length || !formats.every(isImageFormat)) return null;
+  const withUrl = formats.filter((f) => typeof f.url === 'string' && f.url);
+  if (!withUrl.length) return null;
+  const sorted = [...withUrl].sort((a, b) => (a.filesize ?? a.filesize_approx ?? 0) - (b.filesize ?? b.filesize_approx ?? 0));
+  return sorted[sorted.length - 1].url ?? null;
+}
+
+/** URLs de imagen candidatas cuando yt-dlp no ofrece formatos de video (posts de fotos, URL directa a imagen). */
 export function collectImageUrls(info: YtdlpInfo): string[] {
-  const items = info._type === 'playlist' ? (info.entries ?? []).filter((e): e is YtdlpInfo => Boolean(e)) : [info];
+  const items = entriesOf(info);
   const platform = String(info.extractor_key ?? info.ie_key ?? info.extractor ?? '');
   const urls: string[] = [];
   for (const item of items) {
-    const hasVideo = (item.formats?.length ?? 0) > 0 || (item.requested_formats?.length ?? 0) > 0;
+    const formats = formatsOf(item);
+    const hasVideo = formats.length > 0 && !formats.every(isImageFormat);
     if (hasVideo) continue;
+    const fromFormats = imageFormatUrl(item);
     const direct = [item.display_url, item.url].find((u) => typeof u === 'string' && IMAGE_EXT_RE.test(u));
-    const byExt = item.ext && /^(jpe?g|png|webp)$/i.test(item.ext) && item.url ? item.url : null;
+    const byExt = item.ext && IMAGE_EXTS.has(item.ext.toLowerCase()) && item.url ? item.url : null;
     const itemPlatform = String(item.extractor_key ?? item.ie_key ?? item.extractor ?? platform);
     const thumb = IMAGE_PLATFORMS.test(itemPlatform) && item.duration == null ? pickThumbnail(item) : null;
-    const candidate = direct ?? byExt ?? thumb;
+    const candidate = fromFormats ?? direct ?? byExt ?? thumb;
     if (candidate && /^https?:\/\//i.test(candidate) && !urls.includes(candidate)) urls.push(candidate);
   }
   return urls;
+}
+
+const MAX_IMAGE_REDIRECTS = 3;
+
+/**
+ * GET de una imagen siguiendo como mucho 3 redirecciones, validando cada URL (sintaxis, host publico,
+ * DNS no privado) antes de pedirla. Devuelve la respuesta final o null si algo no es admisible.
+ */
+async function fetchImageResponse(url: string, deadline: Deadline): Promise<Response | null> {
+  let current = url;
+  for (let hop = 0; hop <= MAX_IMAGE_REDIRECTS; hop += 1) {
+    deadline.assertAlive();
+    await assertPublicUrl(current);
+    const res = await fetch(current, {
+      headers: { 'user-agent': USER_AGENT, accept: 'image/*,*/*;q=0.8' },
+      signal: AbortSignal.any([AbortSignal.timeout(Math.min(deadline.remaining(), 30_000)), ...(deadline.signal ? [deadline.signal] : [])]),
+      redirect: 'manual',
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      await res.body?.cancel().catch(() => undefined);
+      if (!location) return null;
+      current = new URL(location, current).toString();
+      continue;
+    }
+    return res;
+  }
+  log.debug('Demasiadas redirecciones para la imagen', { url });
+  return null;
+}
+
+/**
+ * Escribe el cuerpo en disco por trozos sin pasar de `maxBytes`. Devuelve los bytes escritos, o -1 si
+ * se supero el limite (el archivo parcial se borra).
+ */
+async function streamToFile(res: Response, target: string, maxBytes: number): Promise<number> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => undefined);
+    return -1;
+  }
+  if (!res.body) return 0;
+  const out = createWriteStream(target);
+  let written = 0;
+  const reader = res.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      written += value.byteLength;
+      if (written > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        written = -1;
+        break;
+      }
+      if (!out.write(value)) await new Promise<void>((r) => out.once('drain', () => r()));
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())));
+  }
+  if (written <= 0) await rm(target, { force: true });
+  return written;
 }
 
 /** Descarga imagenes con fetch nativo al directorio indicado. Devuelve cuantas se guardaron. */
@@ -483,24 +708,30 @@ export async function downloadImages(config: Config, urls: string[], outDir: str
   for (const [index, url] of urls.entries()) {
     deadline.assertAlive();
     try {
-      const res = await fetch(url, {
-        headers: { 'user-agent': USER_AGENT, accept: 'image/*,*/*;q=0.8' },
-        signal: AbortSignal.timeout(Math.min(deadline.remaining(), 30_000)),
-        redirect: 'follow',
-      });
+      // Las URLs vienen de la metadata del sitio: se tratan como no confiables (SSRF).
+      validateUrl(url);
+      const res = await fetchImageResponse(url, deadline);
+      if (!res) continue;
       if (!res.ok) {
         log.debug('Imagen no descargable', { url, status: res.status });
+        await res.body?.cancel().catch(() => undefined);
         continue;
       }
       const mime = res.headers.get('content-type') ?? '';
-      if (!mime.startsWith('image/')) continue;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length === 0 || buf.length > config.maxFileBytes) continue;
+      if (!mime.startsWith('image/')) {
+        await res.body?.cancel().catch(() => undefined);
+        continue;
+      }
       const ext = extensionForMime(mime) ?? 'jpg';
       const name = urls.length === 1 ? `${baseId}.${ext}` : `${baseId}-${String(index + 1).padStart(2, '0')}.${ext}`;
-      await writeFile(path.join(outDir, name), buf);
+      const written = await streamToFile(res, path.join(outDir, name), config.maxFileBytes);
+      if (written <= 0) {
+        log.debug(written < 0 ? 'Imagen demasiado grande' : 'Imagen vacia', { url });
+        continue;
+      }
       saved += 1;
     } catch (err) {
+      if (err instanceof DownloadError && (err.code === 'TIMEOUT' || err.code === 'CLIENT_CLOSED')) throw err;
       log.debug('Fallo descargando imagen', { url, error: err instanceof Error ? err.message : String(err) });
     }
   }
@@ -514,7 +745,7 @@ export async function downloadWithGalleryDl(config: Config, url: string, outDir:
   if (config.cookiesPath) args.push('--cookies', config.cookiesPath);
   args.push(url);
   deadline.assertAlive();
-  const result = await runProcess(config.gallerydlPath, args, deadline.remaining(), 'gallery-dl');
+  const result = await runProcess(config.gallerydlPath, args, deadline.remaining(), 'gallery-dl', deadline.signal);
   if (result.code !== 0) {
     log.info('gallery-dl fallo', { code: result.code, error: result.stderr.trim().split('\n').pop() });
     return false;
