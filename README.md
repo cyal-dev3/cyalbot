@@ -59,6 +59,10 @@ pm2 save
 
 Desde WhatsApp, el owner puede usar `/restart`, `/gitpull` y `/logs`.
 
+### Producción en un servidor (recomendado)
+
+`docker-compose.prod.yml` es la versión endurecida: sin puertos publicados, contenedores sin capacidades ni escalada de privilegios, raíz de solo lectura, límites de memoria y CPU. El `.env` y la carpeta `data/` (sesión de WhatsApp y SQLite) viven fuera del árbol de fuentes. `deploy/deploy.sh [host]` sube el commit actual por SSH con `git archive`, construye las imágenes en el servidor y levanta los servicios; no hace falta Node ni acceso a GitHub allí. La primera vez, deja en el `.env` del servidor `PAIRING_ARGS=--method=code --phone=<número del bot>` y lee el código de vinculación en los logs.
+
 ### Producción con Docker
 
 ```bash

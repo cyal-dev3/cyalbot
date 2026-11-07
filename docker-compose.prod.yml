@@ -1,0 +1,89 @@
+# Despliegue en servidor. Igual que docker-compose.yml pero endurecido:
+# sin puertos publicados (el bot solo abre conexiones salientes), contenedores
+# sin capacidades, sin escalada de privilegios, raíz de solo lectura con
+# tmpfs para temporales, límites de memoria y CPU, logs rotados.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml logs -f bot
+#
+# El bot y el downloader hablan por la red interna `cyalbot`; ningún servicio
+# escucha en el host. Los datos (sesión de WhatsApp y SQLite) viven en ./data.
+
+name: cyalbot
+
+services:
+  bot:
+    build: .
+    image: cyalbot:latest
+    container_name: cyalbot
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      AUTH_FOLDER: /app/data/session
+      DATABASE_PATH: /app/data/database.sqlite
+      TMP_DIR: /tmp/cyalbot
+      BRIDGE_DATA_DIR: /app/data/bridge
+      DOWNLOADER_API_URL: http://downloader:3002
+      DOWNLOADER_API_TIMEOUT_MS: "120000"
+    # Sin ${PAIRING_ARGS} arranca con QR; para vincular por código: PAIRING_ARGS="--method=code --phone=521..."
+    command: ["sh", "-c", "exec node dist/index.js ${PAIRING_ARGS:-}"]
+    volumes:
+      # DATA_DIR se lee del .env del directorio del compose (interpolación), p. ej. /opt/cyalbot/data
+      - ${DATA_DIR:-./data}:/app/data
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [cyalbot]
+    depends_on:
+      downloader:
+        condition: service_healthy
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    stop_grace_period: 30s
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  downloader:
+    build: ./downloader
+    image: cyalbot-downloader:latest
+    container_name: cyalbot-downloader
+    environment:
+      PUBLIC_URL: http://downloader:3002
+      MAX_FILE_MB: "60"
+      DOWNLOAD_TIMEOUT_MS: "120000"
+      MAX_CONCURRENT: "2"
+      LOG_LEVEL: info
+      # Raíz de solo lectura: la caché de yt-dlp va a /tmp (tmpfs)
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+    volumes:
+      - downloads:/downloads
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [cyalbot]
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.5
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+networks:
+  cyalbot:
+    driver: bridge
+
+volumes:
+  downloads:
