@@ -14,6 +14,9 @@ import { startAutoEvents, stopAutoEvents, updateAutoEventsSocket } from './lib/a
 import { startAutoRegen, stopAutoRegen } from './lib/auto-regen.js';
 import { startReminders, stopReminders, setRemindersConnection } from './lib/reminders.js';
 import { setActiveConnection } from './lib/games/session.js';
+import { restoreCasino } from './lib/games/bets.js';
+import { stopDungeonCleanup } from './plugins/rpg-dungeon-interactivo.js';
+import { stopCalcWorker } from './plugins/tools-calc.js';
 import { recordReconnect, recordReconnectAttempt, recordError } from './lib/runtime-stats.js';
 import {
   startTelegramBridge, stopTelegramBridge, pauseMessageQueue, resumeMessageQueue, updateQueueSocket,
@@ -189,6 +192,8 @@ async function main(): Promise<void> {
 
   try {
     db = await initDatabase(CONFIG.databasePath);
+    // Devuelve las apuestas en custodia de mesas que un reinicio dejó a medias.
+    restoreCasino(db);
     startCleanupScheduler();
     await connectBot();
   } catch (error) {
@@ -220,7 +225,9 @@ async function gracefulShutdown(reason: string, exitCode = 0): Promise<void> {
     stopAutoRegen();
     stopAutoEvents();
     stopReminders();
+    stopDungeonCleanup();
     stopScheduledTasks();
+    await stopCalcWorker();
     await stopTelegramBridge();
     if (db) await db.stop();
   } catch (error) {

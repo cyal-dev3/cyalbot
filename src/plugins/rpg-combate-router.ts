@@ -2,7 +2,7 @@ import type { MessageHandler } from '../handler.js';
 import type { PluginHandler } from '../types/message.js';
 import { atacarPlugin } from './rpg-atacar.js';
 import { dueloPlugin, duelContext, duelPendingContext } from './rpg-duelo.js';
-import { bombardearPlugin, pagarDeudaPlugin, verDeudaPlugin } from './rpg-bombardear.js';
+import { pagarDeudaPlugin, verDeudaPlugin } from './rpg-bombardear.js';
 import { dungeonPlugin } from './rpg-dungeon.js';
 import { dungeonContext, startDungeonCleanup } from './rpg-dungeon-interactivo.js';
 import { forjaMenuPlugin, forgeContext } from './rpg-forja.js';
@@ -20,7 +20,6 @@ export const combatEntries: [string, PluginHandler][] = [
   ...shopPlugins,
   ['rpg-atacar', atacarPlugin],
   ['rpg-duelo', dueloPlugin],
-  ['rpg-bombardear', bombardearPlugin],
   ['rpg-pagardeuda', pagarDeudaPlugin],
   ['rpg-verdeuda', verDeudaPlugin],
   ['rpg-dungeon', dungeonPlugin],

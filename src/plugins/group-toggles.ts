@@ -253,15 +253,13 @@ const DEFS = {
     botAdmin: true,
   },
   bot: {
-    // "bot" también es alias de /ia, que se registra antes y se lo queda. El alias principal
-    // (el que ven estado, ayuda y panel) es botgrupo hasta que IA retire "bot" (ver handoff).
-    command: ['botgrupo', 'bot'],
+    command: ['bot', 'botgrupo'],
     field: 'enabled',
     label: 'Bot en este grupo',
     emoji: '🤖',
-    description: 'Apaga el bot en el grupo; solo el owner y "botgrupo on" siguen funcionando',
+    description: 'Apaga el bot en el grupo; solo el owner y "bot on" siguen funcionando',
     onText: '✅ *Bot activado en este grupo*',
-    offText: '😴 *Bot desactivado en este grupo*\n\nSolo el owner puede usarlo. Un admin lo reactiva con {p}botgrupo on.',
+    offText: '😴 *Bot desactivado en este grupo*\n\nSolo el owner puede usarlo. Un admin lo reactiva con {p}bot on.',
     defaultOn: true,
   },
 } satisfies Record<string, ToggleDefinition>;

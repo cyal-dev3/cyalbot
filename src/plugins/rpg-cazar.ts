@@ -57,7 +57,7 @@ export function selectPrey(roll: number = Math.random()): Prey {
  * los registra. Cuando combate los suelte, se añaden aquí.
  */
 export const cazarPlugin: PluginHandler = {
-  command: /^(caceria|cacería|cazarpresa)$/i,
+  command: /^(cazar|hunt|caceria|cacería|cazarpresa)$/i,
   tags: ['rpg'],
   help: [
     `caceria - Salir de caza: dinero, XP y materiales (cada ${CONFIG.cooldowns.hunt / 60000} minutos)`,

@@ -699,28 +699,6 @@ export const dungeonContext: CommandContext = {
   noPrefix: true
 };
 
-/**
- * Acciones sueltas: las usan `dungeonContext` y los puentes `@deprecated` de
- * rpg-duelo.ts (registro global antiguo de plugins/index.ts, donde los alias
- * del duelo van antes y despachan aquí si el remitente está en un dungeon).
- */
-export { atacarDungeonPlugin, defenderDungeonPlugin, habilidadDungeonPlugin, itemDungeonPlugin, huirDungeonPlugin, estadoDungeonPlugin };
-
-/** @deprecated Delegan en el /dungeon de rpg-dungeon.ts (import dinámico para no crear un ciclo). */
-export const dungeonInteractivoPlugin: PluginHandler = {
-  command: ['dungeon', 'dungeons', 'mazmorra', 'dr'],
-  tags: ['rpg'],
-  help: ['dungeon - Ver y entrar en mazmorras'],
-  register: true,
-  handler: async (ctx) => {
-    const { dungeonPlugin } = await import('./rpg-dungeon.js');
-    await dungeonPlugin.handler(ctx);
-  }
-};
-
-/** @deprecated Igual que dungeonInteractivoPlugin. */
-export const dungeonsInteractivoPlugin: PluginHandler = dungeonInteractivoPlugin;
-
 /** Cierra a la fuerza la sesión de un jugador (owner); devuelve false si no tenía */
 export async function cancelDungeon(jid: string): Promise<boolean> {
   const session = activeDungeons.get(jid);

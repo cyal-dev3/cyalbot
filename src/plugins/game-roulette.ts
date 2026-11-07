@@ -286,20 +286,3 @@ export function registerRuleta(handler: MessageHandler): void {
 // Exports que plugins/index.ts todavía importa. Alias viejos como atajos del
 // comando nuevo; se retiran cuando index.ts pase a registerRuleta.
 
-/** @deprecated `ruleta <tipo> <apuesta>` apuesta directamente */
-export const apostarPlugin: PluginHandler = {
-  command: ['apostar', 'ap'], category: 'casino', description: 'Atajo de ruleta <tipo> <apuesta>', register: true,
-  handler: ruletaPlugin.handler,
-};
-/** @deprecated `ruleta salir` */
-export const ruletaSalirPlugin: PluginHandler = {
-  command: ['ruletasalir', 'rsalir', 'cancelarapuesta'], category: 'casino', description: 'Atajo de ruleta salir',
-  async handler(ctx) {
-    enter(ctx);
-    await withdraw(ctx);
-  },
-};
-/** @deprecated `mesa` genérico (game-mesa.ts) */
-export const ruletaMesaPlugin: PluginHandler = {
-  command: ['ruletastatus', 'mesaruleta'], category: 'casino', description: 'Atajo de mesa', handler: mesaPlugin.handler,
-};

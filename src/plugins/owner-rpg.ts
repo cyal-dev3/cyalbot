@@ -1169,5 +1169,3 @@ export const ownerRpgEntries: [string, PluginHandler][] = [
   ['owner-rpg-eventstatus', rpgEventStatusPlugin]
 ];
 
-/** @deprecated plugins/index.ts lo recorre como `owner-rpg-N`; usar ownerRpgEntries (o registerCombatContexts). */
-export default ownerRpgEntries.map(([, plugin]) => plugin);

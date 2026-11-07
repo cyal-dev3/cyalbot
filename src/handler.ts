@@ -26,7 +26,7 @@ import { isBotEnabled, parseToggle, botTogglePlugin } from './plugins/group-togg
 
 const log = createLogger('handler');
 
-// La IA arrastra el SDK de Anthropic y el catálogo de plugins; solo se carga si está configurada.
+// La IA arrastra el SDK de Anthropic; solo se carga si está configurada.
 type AIModule = typeof import('./lib/ai.js');
 let aiModule: Promise<AIModule> | null = null;
 function loadAI(): Promise<AIModule> {
@@ -492,7 +492,7 @@ export class MessageHandler {
     return true;
   }
 
-  /** Con el bot apagado en el grupo solo pasa "botgrupo on" (y sus sinónimos), para poder reactivarlo. */
+  /** Con el bot apagado en el grupo solo pasa "bot on" (y sus sinónimos), para poder reactivarlo. */
   private isBotReactivation(text: string): boolean {
     const prefix = text.match(CONFIG.prefix);
     if (!prefix) return false;
@@ -587,8 +587,8 @@ export class MessageHandler {
     if (!prefixMatch) {
       if (!ai) return;
       if (m.isGroup) {
-        if (CONFIG.ai.replyToMentions && chatSettings.aiChat !== false && ai.isDirectedToBot(m, this.botIds())) {
-          await ai.respondWithAI({ conn: this.conn, m, rawMessage, text: m.text, isOwner });
+        if (CONFIG.ai.replyToMentions && ai.isDirectedToBot(m, this.botIds())) {
+          await ai.handleMention({ conn: this.conn, m, rawMessage, text: m.text, isOwner }, chatSettings.aiChat !== false);
         }
       } else if (CONFIG.ai.privateChat) {
         await ai.respondWithAI({ conn: this.conn, m, rawMessage, text: m.text, isOwner });

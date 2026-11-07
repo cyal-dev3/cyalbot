@@ -86,22 +86,6 @@ export const amorPlugin: PluginHandler = {
   },
 };
 
-export const gayPlugin: PluginHandler = {
-  command: ['gay', 'gaytest'],
-  description: 'Test de gayedad (broma)',
-  category: 'fun',
-  usage: ['gay', 'gay @usuario'],
-  async handler(ctx) {
-    const { m } = ctx;
-    const target = getTargetUserOrSelf(m);
-    const percentage = stableHash(`gay|${target}`) % 101;
-    const bar = '🏳️‍🌈'.repeat(Math.floor(percentage / 20)) + '⬜'.repeat(5 - Math.floor(percentage / 20));
-    const text = `🏳️‍🌈 *Gay test*\n\n👤 ${mentionTag(target)}\n\n${bar}\n\n📊 *Resultado:* ${percentage}%`;
-    await ctx.conn.sendMessage(m.chat, { text, mentions: [target] }, { quoted: m.rawMessage });
-  },
-};
-
 export function registerAmor(handler: MessageHandler): void {
   handler.registerPlugin('fun-amor', amorPlugin);
-  handler.registerPlugin('fun-gay', gayPlugin);
 }

@@ -145,17 +145,17 @@ test('welcome test envía una vista previa mencionando a quien lo pide', async (
   assert.deepEqual(fake.sent[0].mentions, [SENDER]);
 });
 
-test('el interruptor del bot muestra botgrupo (bot lo tiene la IA) y acepta bot como alias', async () => {
+test('el interruptor del bot se anuncia como bot y acepta botgrupo como alias', async () => {
   const def = TOGGLES.find((d) => d.field === 'enabled');
   assert.ok(def);
-  assert.equal(def.command[0], 'botgrupo');
+  assert.equal(def.command[0], 'bot');
+  assert.ok(def.command.includes('botgrupo'));
   assert.ok(def.command.includes('bot'));
   const chat = 'bot-alias@g.us';
   const off = await run(botTogglePlugin, chat, 'off');
-  assert.match(off.replies[0], /\/botgrupo on/);
-  assert.doesNotMatch(off.replies[0], /\/bot on/);
+  assert.match(off.replies[0], /\/bot on/);
   const status = await run(botTogglePlugin, chat, '');
-  assert.match(status.replies[0], /\/botgrupo on/);
+  assert.match(status.replies[0], /\/bot on/);
 });
 
 test('las descripciones no llevan marcadores sin sustituir', () => {

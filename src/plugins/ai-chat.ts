@@ -14,7 +14,7 @@ const log = createLogger('ia');
 const DISABLED = 'La IA no está configurada en este bot (falta ANTHROPIC_API_KEY).';
 
 export const aiPlugin: PluginHandler = {
-  command: ['ia', 'ai', 'bot', 'claude', 'pregunta', 'preguntar'],
+  command: ['ia', 'ai', 'claude', 'pregunta', 'preguntar'],
   description: 'Pregúntale algo al bot',
   category: 'ia',
   help: [

@@ -4,7 +4,9 @@
  * Cada entrada es [nombre, plugin]. El nombre identifica al plugin en logs,
  * errores y estadísticas; los comandos que responde los define el propio
  * plugin en `command`. Para añadir un comando nuevo: crea el archivo en esta
- * carpeta, impórtalo y agrégalo a la sección que le corresponda.
+ * carpeta, impórtalo y agrégalo a la sección que le corresponda. Los módulos
+ * que además registran contextos (acciones sin prefijo durante una partida)
+ * exponen una función `register*` y van como sección `register`.
  */
 
 import type { MessageHandler } from '../handler.js';
@@ -12,38 +14,27 @@ import type { PluginHandler, PluginRegistry } from '../types/message.js';
 import { createLogger } from '../lib/logger.js';
 import { commandAliases } from '../lib/command-suggest.js';
 
-// RPG
+// RPG: progresión y economía
 import { verificarPlugin } from './rpg-verificar.js';
 import { perfilPlugin } from './rpg-perfil.js';
 import { nivelPlugin } from './rpg-nivel.js';
 import { dailyPlugin } from './rpg-daily.js';
 import { workPlugin } from './rpg-work.js';
 import { minePlugin } from './rpg-minar.js';
+import { pescarPlugin } from './rpg-pescar.js';
+import { cazarPlugin } from './rpg-cazar.js';
+import { explorarPlugin } from './rpg-explorar.js';
+import { eventosPlugin } from './rpg-eventos.js';
 import { robarPlugin } from './rpg-robar.js';
-import { atacarPlugin } from './rpg-atacar.js';
-import {
-  dueloPlugin, aceptarPlugin, rechazarPlugin, atacarDueloPlugin, bloquearDueloPlugin,
-  poderDueloPlugin, skillDetectorPlugin, rendirsePlugin,
-} from './rpg-duelo.js';
-import { bombardearPlugin, pagarDeudaPlugin, verDeudaPlugin } from './rpg-bombardear.js';
-import { registerInventoryPlugins } from './rpg-inventario.js';
-import { registerShopPlugins } from './rpg-tienda.js';
 import { clasePlugin, clasesPlugin, habilidadesPlugin } from './rpg-clase.js';
-import { dungeonPlugin, dungeonsPlugin } from './rpg-dungeon.js';
-import {
-  dungeonsInteractivoPlugin, dungeonInteractivoPlugin, atacarDungeonPlugin, defenderDungeonPlugin,
-  habilidadDungeonPlugin, itemDungeonPlugin, huirDungeonPlugin, estadoDungeonPlugin,
-} from './rpg-dungeon-interactivo.js';
-import { registerRankingPlugins } from './rpg-ranking.js';
 import { misionesPlugin, reclamarMisionPlugin } from './rpg-misiones.js';
 import { fumarPlugin } from './rpg-fumar.js';
-import forjaMenuPlugin from './rpg-forja.js';
-import {
-  bancoPlugin, transferirPlugin, esclavizarPlugin, liberarPlugin, esclavosPlugin, pasivoPlugin, estadoEconomiaPlugin,
-} from './rpg-economia.js';
+import { bancoPlugin, transferirPlugin, pasivoPlugin, estadoEconomiaPlugin } from './rpg-economia.js';
 import { adoptarPlugin, mascotaPlugin, alimentarPlugin, entrenarPlugin } from './rpg-mascotas.js';
 import { gremioPlugin } from './rpg-gremios.js';
-import ownerRpgPlugins from './owner-rpg.js';
+import { registerRankingPlugins } from './rpg-ranking.js';
+// RPG: combate, inventario, tienda, forja, jefe mundial y owner (con sus contextos)
+import { registerCombatContexts } from './rpg-combate-router.js';
 
 // Grupos
 import { TOGGLE_ENTRIES } from './group-toggles.js';
@@ -64,6 +55,7 @@ import { tagAllPlugin, hideTagPlugin } from './group-tagall.js';
 import { restartPlugin, gitPullPlugin, logsPlugin } from './admin-restart.js';
 import { modePlugin } from './admin-mode.js';
 import { adminStatsPlugin } from './admin-stats.js';
+import { bridgePlugin } from './admin-bridge.js';
 
 // Media, stickers, descargas
 import { playPlugin } from './media-play.js';
@@ -83,29 +75,28 @@ import { climaPlugin } from './tools-clima.js';
 import { bugPlugin, featPlugin } from './tools-github.js';
 import { idPlugin } from './tools-id.js';
 import { ttsPlugin } from './tools-tts.js';
+import { horaPlugin } from './tools-hora.js';
+import { wikiPlugin } from './tools-wiki.js';
+import { calcPlugin } from './tools-calc.js';
+import { dadoPlugin, monedaPlugin, elegirPlugin } from './tools-random.js';
+import { qrPlugin } from './tools-qr.js';
+import { encuestaPlugin } from './tools-encuesta.js';
+import { notaPlugin } from './tools-notas.js';
+import { cumplePlugin, cumplesPlugin } from './tools-cumple.js';
+import { recordarPlugin, recordatoriosPlugin } from './tools-recordar.js';
 
 // IA (Claude)
 import { aiPlugin, aiToggleAdminPlugin, aiStatsPlugin, resumenPlugin } from './ai-chat.js';
 
-// Juegos y social
-import { slotPlugin, slotInfoPlugin } from './game-slot.js';
-import {
-  blackjackPlugin, jugarPlugin, pedirPlugin, plantarsePlugin, doblarPlugin, bjMesaPlugin, bjSalirPlugin, bjInfoPlugin,
-} from './game-blackjack.js';
-import {
-  ruletaPlugin, apostarPlugin, ruletaMesaPlugin, ruletaSalirPlugin, ruletaInfoPlugin, girarPlugin,
-} from './game-roulette.js';
-import { amorPlugin, gayPlugin } from './fun-amor.js';
-import { besoPlugin, misbesosPlugin, topbesosPlugin } from './fun-beso.js';
-import {
-  abrazoPlugin, kissallPlugin, gudmorninPlugin, pokaPlugin, chingatumadrePlugin, hazanaPlugin,
-  addPokaPlugin, listPokaPlugin, delPokaPlugin, clearPokaPlugin,
-  addCtmPlugin, listCtmPlugin, delCtmPlugin, clearCtmPlugin,
-} from './fun-social.js';
+// Juegos y social (cada módulo registra sus comandos y contextos)
+import { registerCasino, registerMinijuegos } from './game-casino.js';
+import { registerAmor } from './fun-amor.js';
+import { registerBesos } from './fun-beso.js';
+import { registerSocial } from './fun-social.js';
 
 // Betting / tipsters
 import { pickPlugin, verdePlugin, rojaPlugin, pendientesPlugin, seguirPickPlugin, cancelarPlugin } from './betting-pick.js';
-import { tipsterPlugin, misTipstersPlugin, tipstersDePlugin } from './betting-tipster.js';
+import { tipsterPlugin, tipstersDePlugin } from './betting-tipster.js';
 import {
   tipstatsPlugin, rankingTipstersPlugin, historialPlugin, bettingPlugin, bettingStatsPlugin, clearPicksPlugin,
 } from './betting-stats.js';
@@ -120,8 +111,8 @@ type Entry = [name: string, plugin: PluginHandler];
 /**
  * Secciones en orden de registro. El orden importa: cuando dos plugins comparten
  * un alias gana el que se registró primero (el handler lo avisa en el log y lo
- * expone en getAliasCollisions). `register` son módulos que añaden varios
- * comandos de golpe con sus propios nombres.
+ * expone en getAliasCollisions; el test de integración exige cero colisiones).
+ * `register` son módulos que añaden varios comandos y contextos de golpe.
  */
 interface Section {
   category: string;
@@ -130,8 +121,6 @@ interface Section {
 }
 
 const SECTIONS: Section[] = [
-  { category: 'inventario', register: registerInventoryPlugins },
-  { category: 'tienda', register: registerShopPlugins },
   {
     category: 'ia',
     entries: [
@@ -141,6 +130,9 @@ const SECTIONS: Section[] = [
       ['ai-resumen', resumenPlugin],
     ],
   },
+  // Inventario y tienda van dentro de combate y antes del resto del RPG para
+  // que `usar`, `info` y `remove` sigan siendo suyos.
+  { category: 'rpg-combate', register: registerCombatContexts },
   {
     category: 'rpg',
     entries: [
@@ -150,42 +142,19 @@ const SECTIONS: Section[] = [
       ['rpg-daily', dailyPlugin],
       ['rpg-work', workPlugin],
       ['rpg-minar', minePlugin],
+      ['rpg-pescar', pescarPlugin],
+      ['rpg-cazar', cazarPlugin],
+      ['rpg-explorar', explorarPlugin],
+      ['rpg-eventos', eventosPlugin],
       ['rpg-robar', robarPlugin],
-      ['rpg-atacar', atacarPlugin],
-      ['rpg-duelo', dueloPlugin],
-      ['rpg-aceptar', aceptarPlugin],
-      ['rpg-rechazar', rechazarPlugin],
-      ['rpg-atacar-duelo', atacarDueloPlugin],
-      ['rpg-bloquear-duelo', bloquearDueloPlugin],
-      ['rpg-poder-duelo', poderDueloPlugin],
-      ['rpg-skill-detector', skillDetectorPlugin],
-      ['rpg-rendirse', rendirsePlugin],
-      ['rpg-bombardear', bombardearPlugin],
-      ['rpg-pagardeuda', pagarDeudaPlugin],
-      ['rpg-verdeuda', verDeudaPlugin],
       ['rpg-clase', clasePlugin],
       ['rpg-clases', clasesPlugin],
       ['rpg-habilidades', habilidadesPlugin],
-      // El dungeon interactivo va antes que el rápido: comparten alias y gana el primero.
-      ['rpg-dungeons-interactivo', dungeonsInteractivoPlugin],
-      ['rpg-dungeon-interactivo', dungeonInteractivoPlugin],
-      ['rpg-dungeon-atacar', atacarDungeonPlugin],
-      ['rpg-dungeon-defender', defenderDungeonPlugin],
-      ['rpg-dungeon-habilidad', habilidadDungeonPlugin],
-      ['rpg-dungeon-item', itemDungeonPlugin],
-      ['rpg-dungeon-huir', huirDungeonPlugin],
-      ['rpg-dungeon-estado', estadoDungeonPlugin],
-      ['rpg-dungeon', dungeonPlugin],
-      ['rpg-dungeons', dungeonsPlugin],
       ['rpg-misiones', misionesPlugin],
       ['rpg-reclamarmision', reclamarMisionPlugin],
-      ['rpg-forja', forjaMenuPlugin],
       ['rpg-fumar', fumarPlugin],
       ['rpg-banco', bancoPlugin],
       ['rpg-transferir', transferirPlugin],
-      ['rpg-esclavizar', esclavizarPlugin],
-      ['rpg-liberar', liberarPlugin],
-      ['rpg-esclavos', esclavosPlugin],
       ['rpg-pasivo', pasivoPlugin],
       ['rpg-economia', estadoEconomiaPlugin],
       ['rpg-adoptar', adoptarPlugin],
@@ -193,7 +162,6 @@ const SECTIONS: Section[] = [
       ['rpg-alimentar', alimentarPlugin],
       ['rpg-entrenar', entrenarPlugin],
       ['rpg-gremio', gremioPlugin],
-      ...ownerRpgPlugins.map((p, i): Entry => [`owner-rpg-${commandAliases(p)[0] ?? i}`, p]),
     ],
   },
   { category: 'ranking', register: registerRankingPlugins },
@@ -205,6 +173,7 @@ const SECTIONS: Section[] = [
       ['admin-logs', logsPlugin],
       ['admin-mode', modePlugin],
       ['admin-stats', adminStatsPlugin],
+      ['admin-bridge', bridgePlugin],
     ],
   },
   {
@@ -263,6 +232,12 @@ const SECTIONS: Section[] = [
       ['download-status', downloadStatusPlugin],
     ],
   },
+  // Los juegos van antes que herramientas: `dados` es del casino.
+  { category: 'casino', register: registerCasino },
+  { category: 'minijuegos', register: registerMinijuegos },
+  { category: 'social', register: registerAmor },
+  { category: 'social-besos', register: registerBesos },
+  { category: 'social-grupo', register: registerSocial },
   {
     category: 'herramientas',
     entries: [
@@ -273,46 +248,19 @@ const SECTIONS: Section[] = [
       ['tools-feat', featPlugin],
       ['tools-id', idPlugin],
       ['tools-tts', ttsPlugin],
-    ],
-  },
-  {
-    category: 'juegos',
-    entries: [
-      ['game-slot', slotPlugin],
-      ['game-slotinfo', slotInfoPlugin],
-      ['game-blackjack', blackjackPlugin],
-      ['game-bj-jugar', jugarPlugin],
-      ['game-bj-pedir', pedirPlugin],
-      ['game-bj-plantarse', plantarsePlugin],
-      ['game-bj-doblar', doblarPlugin],
-      ['game-bj-mesa', bjMesaPlugin],
-      ['game-bj-salir', bjSalirPlugin],
-      ['game-bj-info', bjInfoPlugin],
-      ['game-ruleta', ruletaPlugin],
-      ['game-apostar', apostarPlugin],
-      ['game-ruleta-mesa', ruletaMesaPlugin],
-      ['game-ruleta-salir', ruletaSalirPlugin],
-      ['game-ruleta-info', ruletaInfoPlugin],
-      ['game-girar', girarPlugin],
-      ['fun-amor', amorPlugin],
-      ['fun-gay', gayPlugin],
-      ['fun-beso', besoPlugin],
-      ['fun-misbesos', misbesosPlugin],
-      ['fun-topbesos', topbesosPlugin],
-      ['fun-abrazo', abrazoPlugin],
-      ['fun-kissall', kissallPlugin],
-      ['fun-gudmornin', gudmorninPlugin],
-      ['fun-poka', pokaPlugin],
-      ['fun-chingatumadre', chingatumadrePlugin],
-      ['fun-hazana', hazanaPlugin],
-      ['fun-addpoka', addPokaPlugin],
-      ['fun-listpoka', listPokaPlugin],
-      ['fun-delpoka', delPokaPlugin],
-      ['fun-clearpoka', clearPokaPlugin],
-      ['fun-addctm', addCtmPlugin],
-      ['fun-listctm', listCtmPlugin],
-      ['fun-delctm', delCtmPlugin],
-      ['fun-clearctm', clearCtmPlugin],
+      ['tools-hora', horaPlugin],
+      ['tools-wiki', wikiPlugin],
+      ['tools-calc', calcPlugin],
+      ['tools-dado', dadoPlugin],
+      ['tools-moneda', monedaPlugin],
+      ['tools-elegir', elegirPlugin],
+      ['tools-qr', qrPlugin],
+      ['tools-encuesta', encuestaPlugin],
+      ['tools-notas', notaPlugin],
+      ['tools-cumple', cumplePlugin],
+      ['tools-cumples', cumplesPlugin],
+      ['tools-recordar', recordarPlugin],
+      ['tools-recordatorios', recordatoriosPlugin],
     ],
   },
   {
@@ -326,7 +274,6 @@ const SECTIONS: Section[] = [
       ['betting-cancelar', cancelarPlugin],
       ['betting-mybets', myBetsPlugin],
       ['betting-tipster', tipsterPlugin],
-      ['betting-mistipsters', misTipstersPlugin],
       ['betting-tipstersde', tipstersDePlugin],
       ['betting-tipstats', tipstatsPlugin],
       ['betting-ranking', rankingTipstersPlugin],

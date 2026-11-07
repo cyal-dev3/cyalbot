@@ -29,7 +29,7 @@ export function selectMonster(playerLevel: number): Monster {
 }
 
 export const atacarPlugin: PluginHandler = {
-  command: ['atacar', 'attack', 'cazar', 'hunt', 'pelear', 'fight'],
+  command: ['atacar', 'attack', 'pelear', 'fight'],
   tags: ['rpg'],
   help: [
     'atacar - Lucha contra un monstruo aleatorio',

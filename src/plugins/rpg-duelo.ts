@@ -13,9 +13,6 @@ import {
   getBusy, grantCombatRewards, handlePlayerDeath, playerStats, setBusy, tickEffects, type CombatantState
 } from '../lib/rpg-combat.js';
 import { addPetExp } from './rpg-mascotas.js';
-import {
-  activeDungeons, atacarDungeonPlugin, defenderDungeonPlugin, habilidadDungeonPlugin, huirDungeonPlugin
-} from './rpg-dungeon-interactivo.js';
 
 const log = createLogger('rpg');
 const PET_EXP_PER_DUEL = 25;
@@ -912,42 +909,5 @@ export function cancelDuel(db: Database, groupJid: string): SettleResult | null 
   if (!duel) return null;
   return settleDuel(db, duel, null, 'refund');
 }
-
-// ==================== REGISTRO GLOBAL ANTIGUO ====================
-
-function commandSource(command: PluginHandler['command']): string {
-  if (command instanceof RegExp) return command.source.replace(/^\^/, '').replace(/\$$/, '');
-  return command.map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-}
-
-/**
- * Un solo plugin para el registro global sin contextos: si el remitente está en
- * un dungeon la acción es del dungeon; si no, del duelo. Sin ninguno de los dos
- * no responde (igual que antes).
- */
-function legacyBridge(duel: PluginHandler, dungeon: PluginHandler): PluginHandler {
-  return {
-    command: new RegExp(`^(?:${commandSource(duel.command)}|${commandSource(dungeon.command)})$`, 'i'),
-    tags: ['rpg'],
-    help: duel.help,
-    handler: (ctx) => (activeDungeons.has(ctx.m.sender) ? dungeon.handler(ctx) : duel.handler(ctx))
-  };
-}
-
-/**
- * @deprecated Registro global antiguo (plugins/index.ts). Las acciones viven en
- * `duelContext` y `dungeonContext`; estos puentes despachan al dungeon o al
- * duelo según el remitente, solo con prefijo. Quitar cuando index.ts use
- * registerCombatContexts.
- */
-export const atacarDueloPlugin: PluginHandler = legacyBridge(atacarPlugin, atacarDungeonPlugin);
-/** @deprecated Ver atacarDueloPlugin. */
-export const bloquearDueloPlugin: PluginHandler = legacyBridge(bloquearPlugin, defenderDungeonPlugin);
-/** @deprecated Ver atacarDueloPlugin. */
-export const poderDueloPlugin: PluginHandler = legacyBridge(poderPlugin, habilidadDungeonPlugin);
-/** @deprecated Ver atacarDueloPlugin. */
-export const rendirsePlugin: PluginHandler = legacyBridge(abandonarPlugin, huirDungeonPlugin);
-/** @deprecated Ver atacarDueloPlugin. */
-export { skillDetectorPlugin };
 
 export default dueloPlugin;

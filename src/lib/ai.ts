@@ -22,7 +22,7 @@ import { RateLimiter } from './rate-limit.js';
 import type { SerializedMessage } from '../types/message.js';
 import type { AIUsageDay } from '../types/database.js';
 import type { MessageHandler } from '../handler.js';
-import { commandAliases } from '../plugins/index.js';
+import { commandAliases } from './command-suggest.js';
 import { getWeather } from '../plugins/tools-clima.js';
 import { getTimeIn } from '../plugins/tools-hora.js';
 import { getWikiSummary } from '../plugins/tools-wiki.js';

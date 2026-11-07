@@ -37,48 +37,6 @@ export const abrazoPlugin = createInteractionPlugin({
 });
 
 // ---------------------------------------------------------------------------
-// Kissall: un beso simbólico a los registrados del grupo
-// ---------------------------------------------------------------------------
-
-const KISSALL_COOLDOWN_MS = 60 * 60_000;
-const KISSALL_MAX_MENTIONS = 20;
-const kissallLast = new Map<string, number>();
-
-export const kissallPlugin: PluginHandler = {
-  command: ['kissall', 'besartodos', 'besoatodos'],
-  description: 'Da un beso a los registrados del grupo (una vez por hora)',
-  category: 'fun',
-  group: true,
-  register: true,
-  async handler(ctx) {
-    const { m } = ctx;
-    const last = kissallLast.get(m.sender) ?? 0;
-    if (Date.now() - last < KISSALL_COOLDOWN_MS) {
-      await m.reply(`💋 Ya repartiste besos hace poco. Vuelve en ${msToTime(KISSALL_COOLDOWN_MS - (Date.now() - last))}.`);
-      return;
-    }
-    const db = getDatabase();
-    const participants = ctx.participants ?? (await ctx.conn.groupMetadata(m.chat)).participants.map((p) => p.id);
-    const kissed = participants.filter((jid) => jid !== m.sender && db.hasUser(jid) && db.getUser(jid).registered);
-    if (kissed.length === 0) {
-      await m.reply('😢 No hay otros usuarios registrados en el grupo para besar.');
-      return;
-    }
-    kissallLast.set(m.sender, Date.now());
-    // Cuenta como un solo beso dado en el ranking; cada receptor recibe uno.
-    const giver = db.getUser(m.sender);
-    giver.kissStats.totalGiven += 1;
-    for (const jid of kissed) db.getUser(jid).kissStats.totalReceived += 1;
-    db.markDirty();
-
-    const mentioned = kissed.slice(0, KISSALL_MAX_MENTIONS);
-    const rest = kissed.length - mentioned.length;
-    const text = `💋 *¡Beso masivo!*\n\n${mentionTag(m.sender)} le dio un beso a *${kissed.length}* personas:\n${mentioned.map(mentionTag).join(' ')}${rest > 0 ? ` y ${rest} más` : ''}\n\n_¡Mucho amor en este grupo!_ 💕`;
-    await ctx.conn.sendMessage(m.chat, { text, mentions: [m.sender, ...mentioned] }, { quoted: m.rawMessage });
-  },
-};
-
-// ---------------------------------------------------------------------------
 // Buenos días
 // ---------------------------------------------------------------------------
 
@@ -107,7 +65,7 @@ export const gudmorninPlugin: PluginHandler = {
 };
 
 // ---------------------------------------------------------------------------
-// Poka y ctm con frases personalizables por grupo
+// Poka con frases personalizables por grupo
 // ---------------------------------------------------------------------------
 
 const DEFAULT_POKA = [
@@ -118,16 +76,8 @@ const DEFAULT_POKA = [
   '🥫😢 *{name}* muestra su cartera vacía...\n\n_"No me alcanza ni pa\'l camión..."_',
 ];
 
-const INSULTS: { flag: string; lang: string; lines: string[] }[] = [
-  { flag: '🇲🇽', lang: 'Español', lines: ['¡Chinga tu madre, {target}!', '¡Vete a la verga, {target}!', '¡Que te folle un pez, {target}!'] },
-  { flag: '🇺🇸', lang: 'English', lines: ['Go f*ck yourself, {target}!', 'Screw you, {target}!', 'Kiss my a**, {target}!'] },
-  { flag: '🇫🇷', lang: 'Français', lines: ['Va te faire foutre, {target}!', 'Nique ta mère, {target}!', 'Casse-toi, {target}!'] },
-  { flag: '🇩🇪', lang: 'Deutsch', lines: ['Leck mich am Arsch, {target}!', 'Verpiss dich, {target}!', 'Du Hurensohn, {target}!'] },
-  { flag: '🇮🇹', lang: 'Italiano', lines: ['Vaffanculo, {target}!', 'Figlio di puttana, {target}!', 'Vai a farti fottere, {target}!'] },
-];
-
-type PhraseSet = 'poka' | 'ctm';
-const PHRASE_FIELD: Record<PhraseSet, 'customPoka' | 'customCtm'> = { poka: 'customPoka', ctm: 'customCtm' };
+type PhraseSet = 'poka';
+const PHRASE_FIELD: Record<PhraseSet, 'customPoka'> = { poka: 'customPoka' };
 const MAX_PHRASES = 30;
 const MAX_PHRASE_LENGTH = 300;
 
@@ -144,28 +94,6 @@ export const pokaPlugin: PluginHandler = {
     const custom = customPhrases(ctx, 'poka');
     const name = nameOf(ctx.m.sender, ctx.m.pushName);
     await ctx.m.reply(pickRandom(custom.length > 0 ? custom : DEFAULT_POKA).replace(/\{name\}/g, name));
-  },
-};
-
-export const chingatumadrePlugin: PluginHandler = {
-  command: ['chingatumadre', 'ctm', 'fuck', 'insultar'],
-  description: 'Insulta a alguien en 5 idiomas',
-  category: 'fun',
-  async handler(ctx) {
-    const { m } = ctx;
-    const target = getTargetUser(m);
-    if (!target) {
-      await m.reply(`🤬 Uso: *${ctx.usedPrefix || '/'}ctm @usuario*\n_Porque a veces las palabras duelen más en varios idiomas..._`);
-      return;
-    }
-    const custom = customPhrases(ctx, 'ctm');
-    const senderTag = mentionTag(m.sender);
-    const targetTag = mentionTag(target);
-    const text = custom.length > 0
-      ? pickRandom(custom).replace(/\{name\}/g, senderTag).replace(/\{target\}/g, targetTag)
-      : `🤬 ${senderTag} le menta la madre a ${targetTag} en 5 idiomas:\n\n`
-        + INSULTS.map((i) => `${i.flag} *${i.lang}:*\n${pickRandom(i.lines).replace('{target}', targetTag)}`).join('\n\n');
-    await ctx.conn.sendMessage(m.chat, { text, mentions: [m.sender, target] }, { quoted: m.rawMessage });
   },
 };
 
@@ -197,12 +125,12 @@ function textAfter(ctx: MessageContext, skip: number): string {
 async function runFrases(ctx: MessageContext, set: string, action: string, rest: string): Promise<void> {
   const { m } = ctx;
   const p = ctx.usedPrefix || '/';
-  if (set !== 'poka' && set !== 'ctm') {
-    await m.reply(`📝 *Frases*\n• ${p}frases poka list\n• ${p}frases ctm add <texto> ({name} y {target})\n• ${p}frases poka del <n>\n• ${p}frases ctm clear\n\nAñadir, borrar y limpiar es solo para admins.`);
+  if (set !== 'poka') {
+    await m.reply(`📝 *Frases*\n• ${p}frases poka list\n• ${p}frases poka add <texto> ({name})\n• ${p}frases poka del <n>\n• ${p}frases poka clear\n\nAñadir, borrar y limpiar es solo para admins.`);
     return;
   }
   const db = getDatabase();
-  const field = PHRASE_FIELD[set];
+  const field = PHRASE_FIELD[set as PhraseSet];
   const phrases = [...(db.getChatSettings(m.chat)[field] ?? [])];
 
   if (action === 'list' || action === 'ver') {
@@ -220,7 +148,7 @@ async function runFrases(ctx: MessageContext, set: string, action: string, rest:
   if (action === 'add' || action === 'agregar') {
     const phrase = rest.trim();
     if (!phrase) {
-      await m.reply(`Uso: *${p}frases ${set} add <texto>*. Variables: {name}${set === 'ctm' ? ' y {target}' : ''}.`);
+      await m.reply(`Uso: *${p}frases ${set} add <texto>*. Variables: {name}.`);
       return;
     }
     if (phrase.length > MAX_PHRASE_LENGTH) {
@@ -255,17 +183,17 @@ async function runFrases(ctx: MessageContext, set: string, action: string, rest:
   await m.reply(`Acciones: list, add <texto>, del <n>, clear. Ej: *${p}frases ${set} list*`);
 }
 
-/** `frases <poka|ctm> add <texto> | list | del <n> | clear` */
+/** `frases poka add <texto> | list | del <n> | clear` */
 export const frasesPlugin: PluginHandler = {
   command: ['frases'],
-  description: 'Frases personalizadas de poka y ctm del grupo',
+  description: 'Frases personalizadas de poka del grupo',
   category: 'fun',
   group: true,
-  usage: ['frases poka list', 'frases ctm add 🤬 {name} le dice a {target}...', 'frases poka del 2', 'frases ctm clear'],
+  usage: ['frases poka list', 'frases poka add 🥫 {name} pide una moneda...', 'frases poka del 2', 'frases poka clear'],
   handler: (ctx) => runFrases(ctx, (ctx.args[0] ?? '').toLowerCase(), (ctx.args[1] ?? 'list').toLowerCase(), textAfter(ctx, 3)),
 };
 
-/** Alias viejos (addpoka, delctm...) como atajos de `frases`; no copian ctx para no disparar el getter perezoso `user`. */
+/** Alias viejos (addpoka, delpoka...) como atajos de `frases`; no copian ctx para no disparar el getter perezoso `user`. */
 function frasesShortcut(aliases: string[], set: PhraseSet, action: string): PluginHandler {
   return {
     command: aliases,
@@ -280,18 +208,13 @@ export const addPokaPlugin = frasesShortcut(['addpoka', 'agregarpoka'], 'poka', 
 export const listPokaPlugin = frasesShortcut(['listpoka', 'verpoka', 'frasespoka'], 'poka', 'list');
 export const delPokaPlugin = frasesShortcut(['delpoka', 'borrarpoka', 'removepoka'], 'poka', 'del');
 export const clearPokaPlugin = frasesShortcut(['clearpoka', 'limpiarpoka', 'resetpoka'], 'poka', 'clear');
-export const addCtmPlugin = frasesShortcut(['addctm', 'agregarctm'], 'ctm', 'add');
-export const listCtmPlugin = frasesShortcut(['listctm', 'verctm', 'frasesctm'], 'ctm', 'list');
-export const delCtmPlugin = frasesShortcut(['delctm', 'borrarctm', 'removectm'], 'ctm', 'del');
-export const clearCtmPlugin = frasesShortcut(['clearctm', 'limpiarctm', 'resetctm'], 'ctm', 'clear');
 
 export function registerSocial(handler: MessageHandler): void {
   const entries: [string, PluginHandler][] = [
-    ['fun-abrazo', abrazoPlugin], ['fun-kissall', kissallPlugin], ['fun-gudmornin', gudmorninPlugin],
-    ['fun-poka', pokaPlugin], ['fun-chingatumadre', chingatumadrePlugin], ['fun-hazana', hazanaPlugin],
+    ['fun-abrazo', abrazoPlugin], ['fun-gudmornin', gudmorninPlugin],
+    ['fun-poka', pokaPlugin], ['fun-hazana', hazanaPlugin],
     ['fun-frases', frasesPlugin],
     ['fun-addpoka', addPokaPlugin], ['fun-listpoka', listPokaPlugin], ['fun-delpoka', delPokaPlugin], ['fun-clearpoka', clearPokaPlugin],
-    ['fun-addctm', addCtmPlugin], ['fun-listctm', listCtmPlugin], ['fun-delctm', delCtmPlugin], ['fun-clearctm', clearCtmPlugin],
   ];
   for (const [name, plugin] of entries) handler.registerPlugin(name, plugin);
 }
