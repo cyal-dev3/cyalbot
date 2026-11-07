@@ -52,6 +52,12 @@ test('bloquea las funciones que redefinen el entorno, evalúan texto o cambian l
   for (const expr of ['import({})', 'evaluate("1+1")', 'parse("1")', 'compile("1")', 'createUnit("foo")', 'simplify("x+x")', 'derivative("x^2", "x")', 'config({number: "BigNumber"})', 'parser()']) {
     assert.match(error(expr), /deshabilitada/, expr);
   }
+  // Las matrices y rangos gigantes se rechazan antes de asignar memoria (un OOM del hilo tumbaría el proceso).
+  for (const expr of ['ones(4000,4000)', 'zeros([1000, 1000])', 'identity(600)', 'random([600, 600])', 'range(0, 1e7)', '1:1e7']) {
+    assert.match(error(expr), /demasiado grande/, expr);
+  }
+  assert.equal(result('size(ones(3,4))'), '[3, 4]');
+  assert.equal(result('sum(1:100)'), '5050');
   // Tras los intentos el entorno sigue funcionando y con la configuración de siempre.
   assert.equal(result('1 + 1'), '2');
   assert.equal(result('typeOf(1/3)'), '"number"');
@@ -80,7 +86,8 @@ test('una expresión que bloquea se corta al vencer el plazo sin congelar el pro
   const started = Date.now();
   let ticks = 0;
   const ticker = setInterval(() => ticks++, 20);
-  const outcome = await calculateWithTimeout('ones(4000,4000) * ones(4000,4000)', 300);
+  // Recursión exponencial: millones de llamadas del intérprete sin asignar memoria.
+  const outcome = await calculateWithTimeout('f(n) = n < 2 ? n : f(n - 1) + f(n - 2); f(34)', 300);
   clearInterval(ticker);
   assert.equal(outcome.ok, false);
   assert.match(outcome.ok ? '' : outcome.error, /demasiado/);

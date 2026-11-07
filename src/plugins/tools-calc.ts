@@ -17,9 +17,73 @@ function disabled(name: string): () => never {
   };
 }
 
+/**
+ * Tope de elementos para las funciones que construyen matrices o rangos. Una
+ * sola llamada como ones(4000,4000) pide 128 MB de golpe: supera el límite del
+ * hilo en una única asignación y V8 aborta el proceso entero en vez de matar
+ * solo el hilo, así que hay que rechazarla antes de ejecutarla.
+ */
+export const MAX_MATRIX_ELEMENTS = 250_000;
+
+function toNumbers(value: unknown): number[] {
+  if (typeof value === 'number') return [value];
+  if (Array.isArray(value)) return value.flatMap(toNumbers);
+  if (value && typeof (value as { toArray?: () => unknown }).toArray === 'function') {
+    return toNumbers((value as { toArray: () => unknown }).toArray());
+  }
+  return [];
+}
+
+/** Elementos que produciría una llamada con esas dimensiones (sin contar formatos ni tipos de dato). */
+function elementCount(dims: number[]): number {
+  return dims.reduce((total, dim) => total * Math.max(1, Math.abs(Math.trunc(dim))), 1);
+}
+
+function tooLarge(name: string): Error {
+  return new Error(`La función ${name} es demasiado grande (máximo ${MAX_MATRIX_ELEMENTS.toLocaleString('es-MX')} elementos)`);
+}
+
+type MathFn = (...args: unknown[]) => unknown;
+const original = (name: string): MathFn => (math as unknown as Record<string, MathFn>)[name];
+const rangeTransform: MathFn = (math.expression as unknown as { mathWithTransform: Record<string, MathFn> }).mathWithTransform.range;
+
+/** ones/zeros/identity: dimensiones sueltas (ones(3,4)) o en lista (ones([3,4])). */
+function sizedBuilder(name: string): MathFn {
+  const fn = original(name);
+  return (...args: unknown[]) => {
+    let dims = Array.isArray(args[0]) || (args[0] && typeof args[0] === 'object') ? toNumbers(args[0]) : toNumbers(args);
+    // identity(n) es una matriz n x n; ones(n)/zeros(n) son vectores de n.
+    if (name === 'identity' && dims.length === 1) dims = [dims[0], dims[0]];
+    if (elementCount(dims) > MAX_MATRIX_ELEMENTS) throw tooLarge(name);
+    return fn(...args);
+  };
+}
+
+/** random/randomInt: solo construyen matriz cuando el primer argumento es una lista de dimensiones. */
+function sizedRandom(name: string): MathFn {
+  const fn = original(name);
+  return (...args: unknown[]) => {
+    if (args[0] && typeof args[0] === 'object' && elementCount(toNumbers(args[0])) > MAX_MATRIX_ELEMENTS) throw tooLarge(name);
+    return fn(...args);
+  };
+}
+
+/** range(inicio, fin[, paso]): la longitud se conoce antes de asignar nada. */
+function sizedRange(fn: MathFn): MathFn {
+  return (...args: unknown[]) => {
+    const nums = args.filter((a): a is number => typeof a === 'number');
+    if (nums.length >= 2) {
+      const [start, end, step = 1] = nums;
+      if (step !== 0 && Math.abs((end - start) / step) > MAX_MATRIX_ELEMENTS) throw tooLarge('range');
+    }
+    return fn(...args);
+  };
+}
+
 // Las expresiones del usuario no deben poder redefinir el entorno, volver a
 // evaluar texto arbitrario ni cambiar la configuración compartida (config
 // persiste entre llamadas y alteraría los resultados de todos los usuarios).
+// Un solo import: después de este, `import` queda deshabilitado también para nosotros.
 math.import(
   {
     import: disabled('import'),
@@ -31,9 +95,19 @@ math.import(
     compile: disabled('compile'),
     config: disabled('config'),
     parser: disabled('parser'),
+    ones: sizedBuilder('ones'),
+    zeros: sizedBuilder('zeros'),
+    identity: sizedBuilder('identity'),
+    random: sizedRandom('random'),
+    randomInt: sizedRandom('randomInt'),
+    range: sizedRange(original('range')),
   },
   { override: true },
 );
+// Dentro de una expresión (1:10 o range(1,10)) mathjs usa una variante con el final incluido
+// que vive en el espacio de transformaciones; el import la pisa, así que se envuelve aparte.
+const withTransform = (math.expression as unknown as { mathWithTransform: Record<string, MathFn> }).mathWithTransform;
+withTransform.range = sizedRange(rangeTransform);
 
 /**
  * Pasa a sintaxis de mathjs lo que la gente escribe a mano: "15% de 2400",
@@ -59,7 +133,7 @@ function translateError(error: unknown): string {
   if (symbol) return `No sé qué es "${symbol[1]}".`;
   const fn = message.match(/Undefined function (\w+)/);
   if (fn) return `No existe la función "${fn[1]}".`;
-  if (/deshabilitada/.test(message)) return message;
+  if (/deshabilitada|demasiado grande/.test(message)) return message;
   if (/Unexpected|Parenthesis|Value expected|Unexpected end/.test(message)) return 'La expresión no está bien formada.';
   if (/Division by zero/i.test(message)) return 'No se puede dividir entre cero.';
   return 'No pude calcular eso.';
