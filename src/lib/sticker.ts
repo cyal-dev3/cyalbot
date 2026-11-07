@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runFfmpeg, withTempDir } from './ffmpeg.js';
+import { FfmpegError, runFfmpeg, withTempDir } from './ffmpeg.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('sticker');
@@ -232,13 +232,20 @@ export function stickerToVideo(buffer: Buffer): Promise<Buffer> {
   return withTempDir(async (dir) => {
     const input = await mediaInputArgs(buffer, dir);
     const outPath = join(dir, 'out.mp4');
-    // -vsync (y no -fps_mode, que es de ffmpeg >= 5.1) para que funcione también con ffmpeg 4.4.
-    await runFfmpeg([
+    const encode = (vfrFlag: string) => runFfmpeg([
       ...input,
       '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p',
-      '-vsync', 'vfr', '-c:v', 'libx264', '-crf', '23', '-preset', 'fast', '-movflags', '+faststart',
+      vfrFlag, 'vfr', '-c:v', 'libx264', '-crf', '23', '-preset', 'fast', '-movflags', '+faststart',
       outPath,
     ]);
+    // -fps_mode existe desde ffmpeg 5.1 y -vsync desapareció en ffmpeg 8; se prueba el
+    // moderno y, si la versión instalada no lo conoce, se repite con el antiguo (ffmpeg 4.4).
+    try {
+      await encode('-fps_mode');
+    } catch (error) {
+      if (!(error instanceof FfmpegError) || !/fps_mode|Option not found|Unrecognized option/i.test(error.message)) throw error;
+      await encode('-vsync');
+    }
     return readFile(outPath);
   });
 }
