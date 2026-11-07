@@ -1,7 +1,9 @@
 # Despliegue en servidor. Igual que docker-compose.yml pero endurecido:
 # sin puertos publicados (el bot solo abre conexiones salientes), contenedores
-# sin capacidades, sin escalada de privilegios, raíz de solo lectura con
-# tmpfs para temporales, límites de memoria y CPU, logs rotados.
+# sin capacidades, raíz de solo lectura con tmpfs para temporales, límites de
+# memoria y CPU, logs rotados. No se usa no-new-privileges: con el Docker
+# instalado como snap (AppArmor) impide ejecutar el entrypoint
+# ("operation not permitted"); los contenedores ya corren como usuario node.
 #
 #   docker compose -f docker-compose.prod.yml up -d --build
 #   docker compose -f docker-compose.prod.yml logs -f bot
@@ -34,8 +36,6 @@ services:
       - /tmp:size=512m,mode=1777
     read_only: true
     cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
     networks: [cyalbot]
     depends_on:
       downloader:
@@ -70,8 +70,6 @@ services:
       - /tmp:size=1g,mode=1777
     read_only: true
     cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
     networks: [cyalbot]
     restart: unless-stopped
     mem_limit: 1g
