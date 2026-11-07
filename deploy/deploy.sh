@@ -32,8 +32,8 @@ echo "==> Construyendo y levantando en $HOST"
 ssh "$HOST" "
   set -e
   cd '$REMOTE_DIR/src'
-  ln -sfn ../.env .env
-  ln -sfn ../data data
+  # Copia (no enlace): el Docker en snap no sigue enlaces fuera del directorio del proyecto.
+  install -m 600 -o root -g root '$REMOTE_DIR/.env' .env
   docker compose -f docker-compose.prod.yml build --pull
   docker compose -f docker-compose.prod.yml up -d --remove-orphans
   docker image prune -f >/dev/null
