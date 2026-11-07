@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setLogLevel } from '../src/lib/logger.js';
@@ -128,28 +128,44 @@ test('resetUser deja un clon limpio independiente', async () => {
   });
 });
 
-test('init recupera desde .bak si el JSON está corrupto y aparta el archivo dañado', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'cyalbot-db-'));
-  const file = join(dir, 'database.json');
-  const backup = {
-    users: { 'bak@s.whatsapp.net': { ...structuredClone(DEFAULT_USER), name: 'Respaldo', registered: true } },
+test('init importa la BD JSON antigua una sola vez y la renombra a .migrated', async () => {
+  const seed = {
+    users: { 'old@s.whatsapp.net': { ...structuredClone(DEFAULT_USER), name: 'Importado', registered: true, money: 123 } },
     chats: {},
     stats: {},
-    settings: { autoRead: false, selfMode: false, publicMode: true, botMode: 'public' }
+    settings: { autoRead: false, selfMode: false, publicMode: true, botMode: 'public' },
+    birthdays: { 'old@s.whatsapp.net': '03-14' }
   };
-  await writeFile(file, '{ esto no es json', 'utf-8');
-  await writeFile(`${file}.bak`, JSON.stringify(backup), 'utf-8');
+  await withDb(async (db, dir) => {
+    assert.equal(db.getUser('old@s.whatsapp.net').money, 123);
+    assert.equal(db.data.birthdays?.['old@s.whatsapp.net'], '03-14');
+    const files = await readdir(dir);
+    assert.ok(files.includes('database.json.migrated'), files.join(', '));
+    assert.ok(!files.includes('database.json'));
+    assert.ok(files.includes('database.sqlite'));
+    // Una segunda instancia lee de SQLite, no del JSON ya renombrado
+    const again = new Database(join(dir, 'database.json'));
+    await again.init();
+    try {
+      assert.equal(again.getUser('old@s.whatsapp.net').name, 'Importado');
+      assert.equal(again.data.birthdays?.['old@s.whatsapp.net'], '03-14');
+    } finally {
+      await again.stop();
+    }
+  }, seed);
+});
 
+test('init aparta un JSON antiguo corrupto y arranca con una base vacía', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cyalbot-db-'));
+  const file = join(dir, 'database.json');
+  await writeFile(file, '{ esto no es json', 'utf-8');
   const db = new Database(file);
   try {
     await db.init();
-    assert.equal(db.getUser('bak@s.whatsapp.net').name, 'Respaldo');
+    assert.deepEqual(db.data.users, {});
     const files = await readdir(dir);
     assert.ok(files.some(f => f.startsWith('database.json.corrupt-')), `sin archivo corrupt-*: ${files.join(', ')}`);
-    assert.equal(db.isDirty, true);
     assert.equal(await db.save(), true);
-    const written = JSON.parse(await readFile(file, 'utf-8'));
-    assert.equal(written.users['bak@s.whatsapp.net'].name, 'Respaldo');
   } finally {
     await db.stop();
     await rm(dir, { recursive: true, force: true });
@@ -167,20 +183,26 @@ test('init reemplaza secciones raíz que no son objetos planos', async () => {
   }, seed);
 });
 
-test('save crea respaldo .bak y devuelve false si no puede escribir', async () => {
-  await withDb(async (db, dir) => {
+test('save solo escribe las filas que cambiaron y devuelve false si no puede abrir el archivo', async () => {
+  await withDb(async (db) => {
     db.getUser('s@s.whatsapp.net');
+    db.getUser('t@s.whatsapp.net');
     assert.equal(await db.save(), true);
+    const sqlite = (db as unknown as { sqlite: import('better-sqlite3').Database }).sqlite;
+    const count = () => (sqlite.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n;
+    assert.equal(count(), 2);
+    db.updateUser('s@s.whatsapp.net', { money: 42 });
+    assert.equal(await db.save(), true);
+    const row = sqlite.prepare('SELECT data FROM users WHERE key = ?').get('s@s.whatsapp.net') as { data: string };
+    assert.equal(JSON.parse(row.data).money, 42);
+    delete db.data.users['t@s.whatsapp.net'];
     db.markDirty();
     assert.equal(await db.save(), true);
-    const files = await readdir(dir);
-    assert.ok(files.includes('database.json.bak'));
+    assert.equal(count(), 1);
   });
 
-  const broken = new Database(join(tmpdir(), 'cyalbot-no-existe-' + Date.now(), 'sub', 'db.json'));
-  broken.markDirty();
-  assert.equal(await broken.save(), false);
-  assert.equal(broken.isDirty, true);
+  const broken = new Database(join(tmpdir(), 'cyalbot-no-existe-' + Date.now(), 'sub', 'db.sqlite'));
+  await assert.rejects(broken.init());
 });
 
 test('gremios: getGuild/saveGuild/deleteGuild/listGuilds marcan dirty', async () => {
@@ -233,10 +255,10 @@ test('betting: cada usuario tiene su propio betting y followTipster respeta el l
     assert.equal(b.favoriteTipsters.length, 0);
 
     for (let i = 0; i < 19; i++) b.favoriteTipsters.push(`t${i}`);
-    assert.equal(db.betting.followTipster(chat, 'Tipster Veinte', 'b@s.whatsapp.net'), true);
-    assert.equal(db.betting.followTipster(chat, 'Tipster Veintiuno', 'b@s.whatsapp.net'), false);
+    assert.equal(db.betting.followTipster(chat, 'Tipster Veinte', 'b@s.whatsapp.net'), 'ok');
+    assert.equal(db.betting.followTipster(chat, 'Tipster Veintiuno', 'b@s.whatsapp.net'), 'limit');
     assert.deepEqual(db.betting.getTipsterFollowers(chat, 'Tipster Veintiuno'), []);
-    assert.equal(db.followTipster(chat, 'Tipster Veinte', 'b@s.whatsapp.net'), false);
+    assert.equal(db.betting.followTipster(chat, 'Tipster Veinte', 'b@s.whatsapp.net'), 'already');
   });
 });
 
@@ -341,7 +363,8 @@ test('init propaga errores de E/S en vez de tratarlos como corrupción', async (
   try {
     await assert.rejects(db.init(), (error: NodeJS.ErrnoException) => error.code === 'EISDIR');
     const files = await readdir(dir);
-    assert.deepEqual(files, ['database.json']);
+    assert.ok(files.includes('database.json'));
+    assert.ok(!files.some(f => f.includes('corrupt') || f.includes('migrated')));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -362,31 +385,34 @@ test('la migración de clase sanea primero usuarios incompletos', () => {
   assert.equal(crudo.health, DEFAULT_USER.maxHealth);
 });
 
-test('stop escribe los cambios hechos mientras había una escritura en curso', async () => {
+test('stop escribe los cambios pendientes y otra instancia los lee', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cyalbot-db-'));
-  const file = join(dir, 'database.json');
+  const file = join(dir, 'database.sqlite');
   const db = new Database(file);
   try {
     await db.init();
-    // Simula lowdb+steno: el JSON se serializa al llamar a write y el disco se escribe después
-    const low = (db as unknown as { db: { write: () => Promise<void> } }).db;
-    low.write = async () => {
-      const snapshot = JSON.stringify(db.data);
-      await new Promise(resolve => setTimeout(resolve, 50));
-      await writeFile(file, snapshot, 'utf-8');
-    };
-
     db.updateUser('early@s.whatsapp.net', { money: 15 });
     const inFlight = db.save();
-    await new Promise(resolve => setTimeout(resolve, 10));
     db.updateUser('late@s.whatsapp.net', { money: 777 });
+    db.saveGuild({
+      id: 'g1', name: 'Lobos', tag: 'LOB', leader: 'l@s.whatsapp.net', members: ['l@s.whatsapp.net'],
+      treasury: 0, level: 1, exp: 0, createdAt: 1, description: ''
+    });
+    db.updateSettings({ botMode: 'group' });
     await db.stop();
     assert.equal(await inFlight, true);
-
-    const written = JSON.parse(await readFile(file, 'utf-8'));
-    assert.equal(written.users['early@s.whatsapp.net'].money, 15);
-    assert.equal(written.users['late@s.whatsapp.net'].money, 777);
     assert.equal(db.isDirty, false);
+
+    const again = new Database(file);
+    await again.init();
+    try {
+      assert.equal(again.getUser('early@s.whatsapp.net').money, 15);
+      assert.equal(again.getUser('late@s.whatsapp.net').money, 777);
+      assert.equal(again.getGuild('g1')?.name, 'Lobos');
+      assert.equal(again.getSettings().botMode, 'group');
+    } finally {
+      await again.stop();
+    }
   } finally {
     await db.stop();
     await rm(dir, { recursive: true, force: true });

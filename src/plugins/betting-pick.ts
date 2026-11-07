@@ -80,7 +80,7 @@ export const pickPlugin: PluginHandler = {
     store.getUserBetting(m.sender).stats.totalFollowed++;
     getDatabase().markDirty();
 
-    const follow = store.followTipsterStatus(m.chat, tipsterName, m.sender);
+    const follow = store.followTipster(m.chat, tipsterName, m.sender);
     const followNote = follow === 'ok'
       ? '\n🔔 Te suscribí a este tipster; sus próximos picks te mencionarán.'
       : follow === 'limit' ? `\nℹ️ No lo añadí a tus favoritos: ya tienes ${MAX_FAVORITE_TIPSTERS}.` : '';

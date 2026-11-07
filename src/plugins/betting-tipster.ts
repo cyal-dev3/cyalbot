@@ -47,7 +47,7 @@ export const tipsterPlugin: PluginHandler = {
         if (!name) {
           return m.reply(`Dime a quién: *${usedPrefix}tipster seguir NombreTipster*, o responde a un mensaje que empiece con #NombreTipster.`);
         }
-        const result = store.followTipsterStatus(m.chat, name, m.sender);
+        const result = store.followTipster(m.chat, name, m.sender);
         if (result === 'invalid') return m.reply(`Ese nombre no sirve como tipster: usa letras o números (máximo ${MAX_TIPSTER_NAME_CHARS} caracteres).`);
         if (result === 'already') return m.reply(`Ya sigues a *${name}*.`);
         if (result === 'limit') return m.reply(`Ya tienes ${MAX_FAVORITE_TIPSTERS} favoritos. Quita alguno con *${usedPrefix}tipster dejar <nombre>*.`);

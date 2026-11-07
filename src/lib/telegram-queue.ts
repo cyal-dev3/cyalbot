@@ -5,9 +5,7 @@
  * con reanudación automática cuando WhatsApp no responde.
  */
 
-import { Low } from 'lowdb';
-import { JSONFile } from 'lowdb/node';
-import { mkdir, readFile, unlink, writeFile, access } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile, access, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createLogger } from './logger.js';
 import { RateLimiter } from './rate-limit.js';
@@ -99,7 +97,7 @@ export class MessageQueue {
   private readonly ready = new Map<string, Promise<void>>();
   /** Resultado de prepare() por id: se calcula una vez aunque el envío se reintente. */
   private readonly prepared = new Map<string, Delivery>();
-  private readonly file: Low<QueueFile>;
+  private readonly filePath: string;
   private readonly mediaDir: string;
   private sock: QueueSocket | null = null;
   private processing = false;
@@ -126,7 +124,7 @@ export class MessageQueue {
   constructor(options: QueueOptions = {}) {
     const dir = options.dir ?? 'data';
     this.mediaDir = join(dir, 'bridge-media');
-    this.file = new Low(new JSONFile<QueueFile>(join(dir, 'telegram-queue.json')), { queue: [] });
+    this.filePath = join(dir, 'telegram-queue.json');
     this.delayBetweenMessages = options.delayBetweenMessages ?? 1_000;
     this.retryDelays = options.retryDelays ?? [2_000, 5_000, 10_000, 15_000, 30_000];
     this.maxConsecutiveErrors = options.maxConsecutiveErrors ?? 5;
@@ -146,13 +144,15 @@ export class MessageQueue {
   /** Recarga lo que quedó en disco en la ejecución anterior. Llamar una vez al arrancar. */
   async load(): Promise<number> {
     await mkdir(this.mediaDir, { recursive: true });
+    let data: QueueFile = { queue: [] };
     try {
-      await this.file.read();
+      data = JSON.parse(await readFile(this.filePath, 'utf8')) as QueueFile;
     } catch (error) {
-      log.error('telegram-queue.json ilegible, se empieza con la cola vacía:', error instanceof Error ? error.message : error);
-      this.file.data = { queue: [] };
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        log.error('telegram-queue.json ilegible, se empieza con la cola vacía:', error instanceof Error ? error.message : error);
+      }
     }
-    const stored = Array.isArray(this.file.data?.queue) ? this.file.data.queue : [];
+    const stored = Array.isArray(data?.queue) ? data.queue : [];
     const restored: QueuedMessage[] = [];
     for (const item of stored) {
       if (!item || typeof item.id !== 'string' || typeof item.whatsappGroupId !== 'string') continue;
@@ -173,8 +173,10 @@ export class MessageQueue {
     // Las escrituras se encadenan para que dos guardados seguidos no se pisen.
     this.persist = this.persist
       .then(async () => {
-        this.file.data = { queue: this.queue };
-        await this.file.write();
+        // Escritura atómica: temporal + rename, para no dejar un JSON a medias si el proceso muere.
+        const tmp = `${this.filePath}.tmp`;
+        await writeFile(tmp, JSON.stringify({ queue: this.queue } satisfies QueueFile), 'utf8');
+        await rename(tmp, this.filePath);
       })
       .catch((error) => log.error('no se pudo guardar telegram-queue.json:', error instanceof Error ? error.message : error));
     return this.persist;

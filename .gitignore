@@ -7,8 +7,13 @@ dist/
 # Sesión de WhatsApp (IMPORTANTE: nunca subir)
 CyaltronicSession/
 
-# Base de datos local
+# Base de datos local (SQLite y la JSON anterior ya migrada)
 database.json
+database.json.*
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite.bak
 
 # Logs
 *.log

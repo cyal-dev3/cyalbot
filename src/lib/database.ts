@@ -1,9 +1,10 @@
-import { Low } from 'lowdb';
-import { JSONFile } from 'lowdb/node';
-import { copyFile, readFile, rename, stat } from 'node:fs/promises';
-import type { DatabaseSchema, ChatSettings, UserWarning, BettingSystem, TipsterStats, BettingPick, Guild } from '../types/database.js';
+import SQLite from 'better-sqlite3';
+import { readFile, rename, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import type { DatabaseSchema, ChatSettings, UserWarning, Guild } from '../types/database.js';
 import { DEFAULT_DATABASE, DEFAULT_CHAT_SETTINGS } from '../types/database.js';
-import { DEFAULT_USER, DEFAULT_USER_BETTING, type UserRPG, type UserBetting } from '../types/user.js';
+import { DEFAULT_USER, DEFAULT_USER_BETTING, type UserRPG } from '../types/user.js';
 import { CLASSES } from '../types/rpg.js';
 import { BettingStore } from './betting-store.js';
 import { createLogger } from './logger.js';
@@ -11,10 +12,11 @@ import * as scheduler from './scheduler.js';
 
 const log = createLogger('db');
 
-const AUTOSAVE_INTERVAL_MS = 30_000;
+/** Con SQLite cada guardado escribe solo las filas que cambiaron, así que puede ser frecuente. */
+const AUTOSAVE_INTERVAL_MS = 10_000;
 /** Cada instancia tiene su propia tarea de autoguardado (los tests abren varias a la vez). */
 let instanceCounter = 0;
-const BACKUP_MIN_INTERVAL_MS = 60_000;
+const BACKUP_INTERVAL_MS = 24 * 60 * 60_000;
 const MAX_WARNINGS_PER_GROUP = 1000;
 const MAX_STOP_SAVE_ATTEMPTS = 3;
 
@@ -160,88 +162,197 @@ export function removeClassBaseStats(user: UserRPG): boolean {
   return true;
 }
 
+// ==================== ALMACENAMIENTO SQLITE ====================
+
 /**
- * Persistencia JSON tipada sobre LowDB: usuarios, chats, gremios y configuración.
- * El betting delega en BettingStore; los wrappers de aquí existen para que los
- * plugins antiguos compilen sin cambios.
+ * Secciones raíz que son colecciones (una fila por clave). El resto de claves de
+ * DatabaseSchema (settings, reminders, birthdays...) van a la tabla `kv`, una
+ * fila por clave raíz.
+ */
+const COLLECTIONS = ['users', 'chats', 'guilds', 'stats'] as const;
+type Collection = (typeof COLLECTIONS)[number];
+const KV_TABLE = 'kv';
+
+const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS users  (key TEXT PRIMARY KEY, data TEXT NOT NULL) WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS chats  (key TEXT PRIMARY KEY, data TEXT NOT NULL) WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS guilds (key TEXT PRIMARY KEY, data TEXT NOT NULL) WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS stats  (key TEXT PRIMARY KEY, data TEXT NOT NULL) WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS kv     (key TEXT PRIMARY KEY, data TEXT NOT NULL) WITHOUT ROWID;
+`;
+
+interface Row {
+  key: string;
+  data: string;
+}
+
+/**
+ * Rutas de almacenamiento. Si la ruta configurada termina en .json se trata
+ * como la base de datos antigua: el archivo SQLite se crea al lado con la misma
+ * base de nombre y el JSON se importa una sola vez.
+ */
+export function resolveStoragePaths(filepath: string): { sqlitePath: string; legacyJson: string } {
+  if (/\.json$/i.test(filepath)) {
+    return { sqlitePath: filepath.replace(/\.json$/i, '.sqlite'), legacyJson: filepath };
+  }
+  return { sqlitePath: filepath, legacyJson: join(dirname(filepath), 'database.json') };
+}
+
+/**
+ * Persistencia tipada sobre SQLite (better-sqlite3): usuarios, chats, gremios,
+ * estadísticas y configuración. El modelo en memoria sigue siendo `data`
+ * (DatabaseSchema), que los plugins leen y mutan directamente marcando `dirty`;
+ * cada guardado compara la serialización de cada entrada con la última escrita
+ * y solo toca en disco las filas que cambiaron, dentro de una transacción.
  */
 export class Database {
-  private db: Low<DatabaseSchema>;
+  private sqlite: SQLite.Database | null = null;
+  private store: DatabaseSchema = structuredClone(DEFAULT_DATABASE);
+  private readonly sqlitePath: string;
+  private readonly legacyJson: string;
   private readonly autosaveTask = `db:autosave:${++instanceCounter}`;
   private dirty = false;
   private saving: Promise<boolean> | null = null;
   private lastBackupAt = 0;
+  /** Última serialización escrita por tabla y clave; sirve para detectar qué filas cambiaron. */
+  private readonly written: Record<Collection | typeof KV_TABLE, Map<string, string>> = {
+    users: new Map(), chats: new Map(), guilds: new Map(), stats: new Map(), kv: new Map(),
+  };
   readonly betting: BettingStore;
 
-  constructor(private readonly filepath: string = 'database.json') {
-    const adapter = new JSONFile<DatabaseSchema>(filepath);
-    this.db = new Low(adapter, structuredClone(DEFAULT_DATABASE));
+  constructor(filepath: string = 'database.sqlite') {
+    const paths = resolveStoragePaths(filepath);
+    this.sqlitePath = paths.sqlitePath;
+    this.legacyJson = paths.legacyJson;
     this.betting = new BettingStore(this);
   }
 
-  /** Carga el archivo (o su .bak si está corrupto), valida la estructura y arranca el autoguardado */
+  /** Abre (o crea) el archivo SQLite, importa la BD JSON antigua si procede, valida la estructura y arranca el autoguardado */
   async init(): Promise<void> {
-    await this.load();
-    this.ensureStructure();
-    this.runMigrations();
+    const sqlite = new SQLite(this.sqlitePath);
+    sqlite.pragma('journal_mode = WAL');
+    sqlite.pragma('synchronous = NORMAL');
+    sqlite.exec(SCHEMA_SQL);
+    this.sqlite = sqlite;
+
+    try {
+      const loaded = this.loadFromSqlite();
+      if (!loaded) await this.importLegacyJson();
+      this.ensureStructure();
+      this.runMigrations();
+    } catch (error) {
+      sqlite.close();
+      this.sqlite = null;
+      throw error;
+    }
 
     scheduler.every(this.autosaveTask, AUTOSAVE_INTERVAL_MS, () => {
       if (this.dirty) void this.save();
     });
 
     const size = await this.fileSize();
-    log.info(`base de datos inicializada (${this.filepath}, ${(size / 1024).toFixed(1)} KB, ${Object.keys(this.db.data.users).length} usuarios)`);
+    log.info(`base de datos inicializada (${this.sqlitePath}, ${(size / 1024).toFixed(1)} KB, ${Object.keys(this.store.users).length} usuarios)`);
   }
 
   private async fileSize(): Promise<number> {
     try {
-      return (await stat(this.filepath)).size;
+      return (await stat(this.sqlitePath)).size;
     } catch {
       return 0;
     }
   }
 
+  private db(): SQLite.Database {
+    if (!this.sqlite) throw new Error('Base de datos no inicializada');
+    return this.sqlite;
+  }
+
+  /** Carga todas las tablas en memoria. Devuelve false si el archivo estaba vacío (recién creado). */
+  private loadFromSqlite(): boolean {
+    const sqlite = this.db();
+    let rows = 0;
+    const data = this.store as unknown as Record<string, unknown>;
+
+    for (const table of COLLECTIONS) {
+      const section: Record<string, unknown> = {};
+      for (const row of sqlite.prepare(`SELECT key, data FROM ${table}`).iterate() as IterableIterator<Row>) {
+        rows++;
+        try {
+          section[row.key] = JSON.parse(row.data);
+          this.written[table].set(row.key, row.data);
+        } catch (error) {
+          log.error(`fila corrupta en ${table}/${row.key}, se descarta:`, error);
+          this.dirty = true;
+        }
+      }
+      data[table] = section;
+    }
+    for (const row of sqlite.prepare(`SELECT key, data FROM ${KV_TABLE}`).iterate() as IterableIterator<Row>) {
+      rows++;
+      try {
+        data[row.key] = JSON.parse(row.data);
+        this.written.kv.set(row.key, row.data);
+      } catch (error) {
+        log.error(`fila corrupta en ${KV_TABLE}/${row.key}, se descarta:`, error);
+        this.dirty = true;
+      }
+    }
+    return rows > 0;
+  }
+
   /**
-   * Lee el archivo. Solo un JSON inválido cuenta como corrupción (y pasa a la
-   * recuperación desde .bak); un error de E/S transitorio se propaga para no
-   * apartar un archivo sano ni arrancar con datos viejos.
+   * Importa la base de datos JSON anterior (lowdb) si existe junto al archivo
+   * SQLite y este acaba de crearse. El JSON se renombra a .migrated para no
+   * importarlo dos veces; si no es JSON válido se aparta como .corrupt y se
+   * arranca vacío. Un error de E/S distinto se propaga.
    */
-  private async load(): Promise<void> {
+  private async importLegacyJson(): Promise<void> {
+    if (!existsSync(this.legacyJson)) return;
+    let raw: string;
     try {
-      await this.db.read();
-      return;
+      raw = await readFile(this.legacyJson, 'utf-8');
     } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-      log.error(`${this.filepath} no contiene JSON válido:`, error);
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
     }
 
-    const backupPath = `${this.filepath}.bak`;
+    let parsed: unknown;
     try {
-      const raw = await readFile(backupPath, 'utf-8');
-      this.db.data = JSON.parse(raw) as DatabaseSchema;
-      log.warn(`datos restaurados desde ${backupPath}`);
-    } catch (backupError) {
-      log.error(`tampoco se pudo usar ${backupPath}:`, backupError);
-      this.db.data = structuredClone(DEFAULT_DATABASE);
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      log.error(`${this.legacyJson} no contiene JSON válido; se arranca con una base vacía:`, error);
+      await this.setAside(this.legacyJson, `.corrupt-${Date.now()}`);
+      this.dirty = true;
+      return;
     }
 
-    const corruptPath = `${this.filepath}.corrupt-${Date.now()}`;
-    try {
-      await rename(this.filepath, corruptPath);
-      log.warn(`archivo corrupto renombrado a ${corruptPath}`);
-    } catch {
-      // Si no existe no hay nada que apartar
+    if (isPlainObject(parsed)) {
+      this.store = parsed as unknown as DatabaseSchema;
     }
     this.dirty = true;
+    const users = isPlainObject(parsed) && isPlainObject(parsed.users) ? Object.keys(parsed.users).length : 0;
+    log.info(`importada la base de datos JSON (${users} usuarios) a ${this.sqlitePath}`);
+    this.ensureStructure();
+    await this.save();
+    await this.setAside(this.legacyJson, '.migrated');
+  }
+
+  private async setAside(path: string, suffix: string): Promise<void> {
+    try {
+      await rename(path, `${path}${suffix}`);
+      log.warn(`${path} renombrado a ${path}${suffix}`);
+    } catch (error) {
+      log.warn(`no se pudo renombrar ${path}:`, error);
+    }
   }
 
   /** Garantiza que cada sección raíz sea un objeto plano; lo que no lo sea se reemplaza por el default */
   private ensureStructure(): void {
-    if (!isPlainObject(this.db.data)) {
-      this.db.data = structuredClone(DEFAULT_DATABASE);
+    if (!isPlainObject(this.store)) {
+      this.store = structuredClone(DEFAULT_DATABASE);
       this.dirty = true;
     }
-    const data = this.db.data as unknown as Record<string, unknown>;
+    const data = this.store as unknown as Record<string, unknown>;
     const sections: Record<string, unknown> = {
       users: {},
       chats: {},
@@ -256,13 +367,13 @@ export class Database {
         this.dirty = true;
       }
     }
-    if (applyDefaults(this.db.data.settings, DEFAULT_DATABASE.settings)) {
+    if (applyDefaults(this.store.settings, DEFAULT_DATABASE.settings)) {
       this.dirty = true;
     }
   }
 
   private runMigrations(): void {
-    const settings = this.db.data.settings;
+    const settings = this.store.settings;
     const current = settings.schemaVersion ?? 1;
     if (current >= SCHEMA_VERSION) return;
 
@@ -272,7 +383,7 @@ export class Database {
         return;
       }
       let migrated = 0;
-      for (const user of Object.values(this.db.data.users)) {
+      for (const user of Object.values(this.store.users)) {
         if (!isPlainObject(user)) continue;
         // Primero se sanea el usuario: sobre campos ausentes la resta daría NaN
         migrateUser(user);
@@ -298,21 +409,21 @@ export class Database {
 
   /** Devuelve el usuario, creándolo o completando campos faltantes con copias de DEFAULT_USER */
   getUser(jid: string): UserRPG {
-    const existing = this.db.data.users[jid];
+    const existing = this.store.users[jid];
     if (!existing || !isPlainObject(existing)) {
-      this.db.data.users[jid] = structuredClone(DEFAULT_USER);
+      this.store.users[jid] = structuredClone(DEFAULT_USER);
       this.dirty = true;
     } else if (migrateUser(existing)) {
       this.dirty = true;
     }
-    return this.db.data.users[jid];
+    return this.store.users[jid];
   }
 
   /** Reemplaza al usuario por un clon limpio de DEFAULT_USER */
   resetUser(jid: string): UserRPG {
-    this.db.data.users[jid] = structuredClone(DEFAULT_USER);
+    this.store.users[jid] = structuredClone(DEFAULT_USER);
     this.dirty = true;
-    return this.db.data.users[jid];
+    return this.store.users[jid];
   }
 
   /**
@@ -350,11 +461,11 @@ export class Database {
   }
 
   hasUser(jid: string): boolean {
-    return jid in this.db.data.users;
+    return jid in this.store.users;
   }
 
   getRegisteredUsers(): [string, UserRPG][] {
-    return Object.entries(this.db.data.users).filter(([, user]) => user.registered);
+    return Object.entries(this.store.users).filter(([, user]) => user.registered);
   }
 
   getTopUsers(limit: number = 10): [string, UserRPG][] {
@@ -366,13 +477,10 @@ export class Database {
   // ==================== PERSISTENCIA ====================
 
   /**
-   * Guarda en disco. Devuelve true si se escribió. isDirty se baja antes de
-   * escribir y se vuelve a subir si falla, para no perder cambios hechos durante
-   * la escritura ni repetir escrituras innecesarias.
-   *
-   * Si ya hay una escritura en curso, su JSON se serializó al empezar: lo que
-   * haya cambiado después no está en ella, así que al terminar se encadena otra
-   * escritura si la BD volvió a quedar sucia.
+   * Guarda en disco las filas que cambiaron desde el último guardado. Devuelve
+   * true si terminó bien. isDirty se baja antes de escribir y se vuelve a subir
+   * si falla. La escritura es síncrona (better-sqlite3), pero la firma sigue
+   * siendo asíncrona por compatibilidad con quien la espera.
    */
   async save(): Promise<boolean> {
     if (this.saving) {
@@ -387,8 +495,9 @@ export class Database {
   private async doSave(): Promise<boolean> {
     this.dirty = false;
     try {
+      const changed = this.flush();
+      if (changed > 0) log.debug(`${changed} filas escritas`);
       await this.backupIfDue();
-      await this.db.write();
       return true;
     } catch (error) {
       this.dirty = true;
@@ -397,48 +506,98 @@ export class Database {
     }
   }
 
-  /** Copia el archivo actual a .bak como máximo una vez por minuto */
+  /** Escribe en una transacción solo las filas cuya serialización cambió y borra las que desaparecieron. */
+  private flush(): number {
+    const sqlite = this.db();
+    const data = this.store as unknown as Record<string, unknown>;
+    let changed = 0;
+
+    const run = sqlite.transaction(() => {
+      for (const table of COLLECTIONS) {
+        const section = isPlainObject(data[table]) ? (data[table] as Record<string, unknown>) : {};
+        changed += this.syncTable(table, section);
+      }
+      const kv: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(data)) {
+        if ((COLLECTIONS as readonly string[]).includes(key) || value === undefined) continue;
+        kv[key] = value;
+      }
+      changed += this.syncTable(KV_TABLE, kv);
+    });
+    run();
+    return changed;
+  }
+
+  private syncTable(table: Collection | typeof KV_TABLE, section: Record<string, unknown>): number {
+    const sqlite = this.db();
+    const written = this.written[table];
+    const upsert = sqlite.prepare(`INSERT INTO ${table} (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data`);
+    const remove = sqlite.prepare(`DELETE FROM ${table} WHERE key = ?`);
+    let changed = 0;
+
+    for (const [key, value] of Object.entries(section)) {
+      const json = JSON.stringify(value);
+      if (json === undefined || written.get(key) === json) continue;
+      upsert.run(key, json);
+      written.set(key, json);
+      changed++;
+    }
+    for (const key of [...written.keys()]) {
+      if (key in section) continue;
+      remove.run(key);
+      written.delete(key);
+      changed++;
+    }
+    return changed;
+  }
+
+  /** Copia consistente del archivo a .bak como máximo una vez al día */
   private async backupIfDue(): Promise<void> {
     const now = Date.now();
-    if (now - this.lastBackupAt < BACKUP_MIN_INTERVAL_MS) return;
+    if (now - this.lastBackupAt < BACKUP_INTERVAL_MS) return;
+    this.lastBackupAt = now;
     try {
-      await copyFile(this.filepath, `${this.filepath}.bak`);
-      this.lastBackupAt = now;
+      await this.db().backup(`${this.sqlitePath}.bak`);
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') log.warn('no se pudo crear el respaldo .bak:', error);
+      log.warn('no se pudo crear el respaldo .bak:', error);
     }
   }
 
   get data(): DatabaseSchema {
-    return this.db.data;
+    return this.store;
   }
 
   /**
-   * Detiene el autoguardado y hace flush final a disco. Espera la escritura en
-   * curso y repite mientras queden cambios sin escribir (con tope, por si el
-   * disco falla de forma persistente).
+   * Detiene el autoguardado, hace el flush final y cierra el archivo. Repite
+   * mientras queden cambios sin escribir (con tope, por si el disco falla).
    */
   async stop(): Promise<void> {
     scheduler.stop(this.autosaveTask);
+    if (!this.sqlite) return;
     if (this.saving) await this.saving;
     for (let attempt = 0; attempt < MAX_STOP_SAVE_ATTEMPTS && this.dirty; attempt++) {
       if (!(await this.save())) break;
     }
     if (this.dirty) log.error('la base de datos se detiene con cambios sin guardar');
+    try {
+      this.sqlite.close();
+    } catch (error) {
+      log.warn('error al cerrar la base de datos:', error);
+    }
+    this.sqlite = null;
   }
 
   // ==================== CHATS ====================
 
   getChatSettings(chatId: string): ChatSettings {
-    const existing = this.db.data.chats[chatId];
+    const existing = this.store.chats[chatId];
     if (!existing || !isPlainObject(existing)) {
-      this.db.data.chats[chatId] = structuredClone(DEFAULT_CHAT_SETTINGS);
+      this.store.chats[chatId] = structuredClone(DEFAULT_CHAT_SETTINGS);
       this.dirty = true;
     } else if (migrateChatSettings(existing)) {
       this.dirty = true;
     }
-    return this.db.data.chats[chatId];
+    return this.store.chats[chatId];
   }
 
   updateChatSettings(chatId: string, updates: Partial<ChatSettings>): void {
@@ -447,7 +606,7 @@ export class Database {
   }
 
   getAllChatIds(): string[] {
-    return Object.keys(this.db.data.chats);
+    return Object.keys(this.store.chats);
   }
 
   // ==================== ADVERTENCIAS ====================
@@ -494,11 +653,11 @@ export class Database {
   // ==================== GREMIOS ====================
 
   private guilds(): Record<string, Guild> {
-    if (!this.db.data.guilds) {
-      this.db.data.guilds = {};
+    if (!this.store.guilds) {
+      this.store.guilds = {};
       this.dirty = true;
     }
-    return this.db.data.guilds;
+    return this.store.guilds;
   }
 
   getGuild(id: string): Guild | null {
@@ -526,119 +685,12 @@ export class Database {
   // ==================== CONFIGURACIÓN GLOBAL ====================
 
   getSettings(): DatabaseSchema['settings'] {
-    return this.db.data.settings;
+    return this.store.settings;
   }
 
   updateSettings(settings: Partial<DatabaseSchema['settings']>): void {
-    Object.assign(this.db.data.settings, settings);
+    Object.assign(this.store.settings, settings);
     this.dirty = true;
-  }
-
-  // ==================== BETTING (wrappers de compatibilidad) ====================
-
-  /** @deprecated Usa db.betting.normalizeTipsterName */
-  normalizeTipsterName(name: string): string {
-    return this.betting.normalizeTipsterName(name);
-  }
-
-  /** @deprecated Usa db.betting.getBettingSystem */
-  getBettingSystem(chatId: string): BettingSystem {
-    return this.betting.getBettingSystem(chatId);
-  }
-
-  /** @deprecated Usa db.betting.updateBettingSystem */
-  updateBettingSystem(chatId: string, updates: Partial<BettingSystem>): void {
-    this.betting.updateBettingSystem(chatId, updates);
-  }
-
-  /** @deprecated Usa db.betting.getOrCreateTipster */
-  getOrCreateTipster(chatId: string, tipsterName: string): TipsterStats {
-    return this.betting.getOrCreateTipster(chatId, tipsterName);
-  }
-
-  /** @deprecated Usa db.betting.getTipster */
-  getTipster(chatId: string, tipsterName: string): TipsterStats | null {
-    return this.betting.getTipster(chatId, tipsterName);
-  }
-
-  /** @deprecated Usa db.betting.registerPick */
-  registerPick(chatId: string, pick: Omit<BettingPick, 'id'>): BettingPick {
-    return this.betting.registerPick(chatId, pick);
-  }
-
-  /** @deprecated Usa db.betting.resolvePick */
-  resolvePick(chatId: string, pickId: string, won: boolean, resolvedBy: string): BettingPick | null {
-    return this.betting.resolvePick(chatId, pickId, won, resolvedBy);
-  }
-
-  /** @deprecated Usa db.betting.cancelPick */
-  cancelPick(chatId: string, pickId: string, cancelledBy: string): BettingPick | null {
-    return this.betting.cancelPick(chatId, pickId, cancelledBy);
-  }
-
-  /** @deprecated Usa db.betting.getPendingPicks */
-  getPendingPicks(chatId: string, tipsterName?: string): BettingPick[] {
-    return this.betting.getPendingPicks(chatId, tipsterName);
-  }
-
-  /** @deprecated Usa db.betting.getPickByMessageId */
-  getPickByMessageId(chatId: string, messageId: string): BettingPick | null {
-    return this.betting.getPickByMessageId(chatId, messageId);
-  }
-
-  /** @deprecated Usa db.betting.setPickMessageId */
-  setPickMessageId(chatId: string, pickId: string, messageId: string): boolean {
-    return this.betting.setPickMessageId(chatId, pickId, messageId);
-  }
-
-  /** @deprecated Usa db.betting.clearPendingPicks */
-  clearPendingPicks(chatId: string): number {
-    return this.betting.clearPendingPicks(chatId);
-  }
-
-  /** @deprecated Usa db.betting.getPickById */
-  getPickById(chatId: string, pickId: string): BettingPick | null {
-    return this.betting.getPickById(chatId, pickId);
-  }
-
-  /** @deprecated Usa db.betting.getLastPendingPick */
-  getLastPendingPick(chatId: string, tipsterName?: string): BettingPick | null {
-    return this.betting.getLastPendingPick(chatId, tipsterName);
-  }
-
-  /** @deprecated Usa db.betting.followPick */
-  followPick(chatId: string, pickId: string, userJid: string): boolean {
-    return this.betting.followPick(chatId, pickId, userJid);
-  }
-
-  /** @deprecated Usa db.betting.getTipsterFollowers */
-  getTipsterFollowers(chatId: string, tipsterName: string): string[] {
-    return this.betting.getTipsterFollowers(chatId, tipsterName);
-  }
-
-  /** @deprecated Usa db.betting.followTipster */
-  followTipster(chatId: string, tipsterName: string, userJid: string): boolean {
-    return this.betting.followTipster(chatId, tipsterName, userJid);
-  }
-
-  /** @deprecated Usa db.betting.unfollowTipster */
-  unfollowTipster(chatId: string, tipsterName: string, userJid: string): boolean {
-    return this.betting.unfollowTipster(chatId, tipsterName, userJid);
-  }
-
-  /** @deprecated Usa db.betting.getUserBetting */
-  getUserBetting(userJid: string): UserBetting {
-    return this.betting.getUserBetting(userJid);
-  }
-
-  /** @deprecated Usa db.betting.getTipsterRanking */
-  getTipsterRanking(chatId: string, sortBy: 'winrate' | 'roi' | 'wins' | 'streak' = 'winrate', limit: number = 10): TipsterStats[] {
-    return this.betting.getTipsterRanking(chatId, sortBy, limit);
-  }
-
-  /** @deprecated Usa db.betting.getPickHistory */
-  getPickHistory(chatId: string, tipsterName?: string, limit: number = 100): BettingPick[] {
-    return this.betting.getPickHistory(chatId, tipsterName, limit);
   }
 }
 
@@ -651,7 +703,7 @@ export function getDatabase(): Database {
   return database;
 }
 
-export async function initDatabase(filepath: string = 'database.json'): Promise<Database> {
+export async function initDatabase(filepath: string = 'database.sqlite'): Promise<Database> {
   database = new Database(filepath);
   await database.init();
   return database;

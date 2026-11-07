@@ -233,6 +233,9 @@ test('transferir: "Tu nuevo saldo" coincide con el saldo real del emisor', async
     const receiver = 'receptor@s.whatsapp.net';
     db.updateUser(sender, { registered: true, name: 'Emisor', money: 5000 });
     db.updateUser(receiver, { registered: true, name: 'Receptor', money: 0 });
+    // Las misiones se sortean al azar; una de "transfer" autorreclamaría dinero y rompería el saldo esperado.
+    const fixed = (questId: string) => ({ questId, progress: 0, completed: false });
+    db.updateUser(sender, { dailyQuests: [fixed('daily_mine_3')], weeklyQuests: [fixed('weekly_work_15')], lastDailyReset: Date.now(), lastWeeklyReset: Date.now() });
 
     const { ctx, sent } = fakeCtx(db, { sender, command: 'transferir', args: ['1k'], target: receiver });
     await transferirPlugin.handler(ctx);

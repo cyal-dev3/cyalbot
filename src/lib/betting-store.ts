@@ -293,7 +293,7 @@ export class BettingStore {
    * al máximo de favoritos; 'invalid' si el nombre no sirve como clave. El
    * tipster solo se crea cuando el seguimiento va a registrarse.
    */
-  followTipsterStatus(chatId: string, tipsterName: string, userJid: string): FollowResult {
+  followTipster(chatId: string, tipsterName: string, userJid: string): FollowResult {
     const normalized = normalizeTipsterName(tipsterName);
     if (!normalized || tipsterName.trim().length > MAX_TIPSTER_NAME_CHARS) return 'invalid';
 
@@ -314,10 +314,6 @@ export class BettingStore {
     return 'ok';
   }
 
-  /** @deprecated Usa followTipsterStatus, que distingue "ya lo seguía" de "límite alcanzado". */
-  followTipster(chatId: string, tipsterName: string, userJid: string): boolean {
-    return this.followTipsterStatus(chatId, tipsterName, userJid) === 'ok';
-  }
 
   /** Invierte las notificaciones de favoritos del usuario y devuelve el nuevo estado. */
   toggleNotify(userJid: string): boolean {

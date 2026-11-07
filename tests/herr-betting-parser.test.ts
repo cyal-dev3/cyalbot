@@ -159,19 +159,19 @@ test('normalizeTipsterName rechaza claves reservadas del prototipo y el store no
     tipster: '', tipsterOriginal: '__proto__', description: '', units: 1, status: 'pending', createdAt: 0, createdBy: 'u', followers: [],
   }), /inválido/);
   assert.equal(({} as { pending?: number }).pending, undefined, 'Object.prototype intacto');
-  assert.equal(store.followTipsterStatus('g', 'constructor', 'u@s.whatsapp.net'), 'invalid');
-  assert.equal(store.followTipsterStatus('g', '__proto__', 'u@s.whatsapp.net'), 'invalid');
+  assert.equal(store.followTipster('g', 'constructor', 'u@s.whatsapp.net'), 'invalid');
+  assert.equal(store.followTipster('g', '__proto__', 'u@s.whatsapp.net'), 'invalid');
   assert.deepEqual(store.getPendingPicks('g', '__proto__'), []);
 });
 
-test('followTipsterStatus no crea el tipster cuando el usuario está al límite o el nombre no vale', () => {
+test('followTipster no crea el tipster cuando el usuario está al límite o el nombre no vale', () => {
   const { store } = storeFor();
   const user = 'u@s.whatsapp.net';
-  for (let i = 0; i < MAX_FAVORITE_TIPSTERS; i++) assert.equal(store.followTipsterStatus('g', `Tip${i}`, user), 'ok');
+  for (let i = 0; i < MAX_FAVORITE_TIPSTERS; i++) assert.equal(store.followTipster('g', `Tip${i}`, user), 'ok');
   assert.equal(Object.keys(store.getBettingSystem('g').tipsters).length, MAX_FAVORITE_TIPSTERS);
-  assert.equal(store.followTipsterStatus('g', 'Basura', user), 'limit');
-  assert.equal(store.followTipsterStatus('g', 'x'.repeat(41), user), 'invalid');
+  assert.equal(store.followTipster('g', 'Basura', user), 'limit');
+  assert.equal(store.followTipster('g', 'x'.repeat(41), user), 'invalid');
   assert.equal(Object.keys(store.getBettingSystem('g').tipsters).length, MAX_FAVORITE_TIPSTERS, 'no se crearon tipsters de más');
-  assert.equal(store.followTipsterStatus('g', 'Tip0', user), 'already');
-  assert.equal(store.followTipsterStatus('g', 'Tip0', 'otro@s.whatsapp.net'), 'ok');
+  assert.equal(store.followTipster('g', 'Tip0', user), 'already');
+  assert.equal(store.followTipster('g', 'Tip0', 'otro@s.whatsapp.net'), 'ok');
 });

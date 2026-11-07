@@ -54,7 +54,7 @@ export const CONFIG = {
   authFolder: process.env.AUTH_FOLDER || 'CyaltronicSession',
 
   /** Archivo JSON de la base de datos (lowdb). */
-  databasePath: process.env.DATABASE_PATH || 'database.json',
+  databasePath: process.env.DATABASE_PATH || 'database.sqlite',
 
   /** Nombre del proceso en pm2 (para /restart y /logs). */
   pm2Name: process.env.PM2_NAME || botName,

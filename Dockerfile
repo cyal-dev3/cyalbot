@@ -6,6 +6,10 @@
 
 FROM node:22-slim AS build
 WORKDIR /app
+# better-sqlite3 trae binarios precompilados; python3/make/g++ solo se usan si no hay uno para la plataforma.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY tsconfig.json ./
@@ -15,7 +19,7 @@ RUN npm run build && npm prune --omit=dev
 FROM node:22-slim
 ENV NODE_ENV=production \
     AUTH_FOLDER=/app/data/session \
-    DATABASE_PATH=/app/data/database.json
+    DATABASE_PATH=/app/data/database.sqlite
 # ffmpeg: stickers animados y conversión de video. git: para /gitpull (opcional).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg git ca-certificates \
