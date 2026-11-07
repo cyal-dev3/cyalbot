@@ -23,6 +23,11 @@ export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
 }
 
+/** Para no calcular mensajes caros (p. ej. pedir metadata del grupo) que luego no se imprimirían. */
+export function isLevelEnabled(level: LogLevel): boolean {
+  return LEVELS[level] >= LEVELS[currentLevel];
+}
+
 function timestamp(): string {
   return new Date().toLocaleTimeString('es-MX', { hour12: false });
 }

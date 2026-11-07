@@ -12,9 +12,9 @@ No usa la API oficial de WhatsApp Business: se vincula como un dispositivo más 
 | Grupos | antilink, antispam, antipalabras, anti-delete, warns con expulsión automática, mute, bienvenidas, `/tagall`, abrir/cerrar grupo, limpieza de mensajes del bot |
 | Descargas | TikTok, Instagram, Facebook, Twitter/X, Pinterest, Threads, YouTube (`/dl <url>` o autodescarga al pegar un enlace) |
 | Stickers | `/s` sobre una imagen o video, `/toimg`, `/tovideo`, autosticker por grupo |
-| RPG | registro, niveles, trabajo, minería, duelos, dungeons por turnos, clases, forja, inventario, tienda, banco, misiones, mascotas, gremios, rankings |
-| Casino | slots, blackjack y ruleta con las monedas del RPG |
-| Herramientas | `/clima`, `/translate`, `/tts`, `/id`, reporte de bugs a GitHub |
+| RPG | registro, niveles, trabajo, minería, pesca, caza, exploración, duelos, dungeons por turnos, jefe mundial, clases, forja, inventario, tienda, banco, misiones, mascotas, gremios, rankings, eventos globales |
+| Casino y minijuegos | slots, blackjack, ruleta, dados, piedra-papel-tijera, adivina el número, gato, carrera con las monedas del RPG; trivia, ahorcado y memoria con premios (`/casino`) |
+| Herramientas | `/clima`, `/hora`, `/wiki`, `/calc`, `/translate`, `/tts`, `/qr`, `/encuesta`, `/nota`, `/recordar`, `/cumple`, `/id`, reporte de bugs a GitHub |
 | Betting | registro de picks de tipsters, verde/roja, estadísticas, puente opcional desde grupos de Telegram |
 
 `/menu` dentro de WhatsApp lista todo por categorías.
@@ -111,7 +111,7 @@ src/
   config.ts         configuración por variables de entorno
   lib/
     ai.ts           integración con Claude (memoria, límites, herramientas, resumen)
-    database.ts     lowdb (JSON) con migraciones de usuarios
+    database.ts     SQLite (better-sqlite3) con migraciones de usuarios
     moderation.ts   detección de palabras prohibidas
     anti-delete.ts  reenvío de mensajes borrados
     group-events.ts bienvenidas, despedidas, cambios de admin
@@ -142,7 +142,7 @@ export const holaPlugin: PluginHandler = {
 };
 ```
 
-Luego impórtalo en `src/plugins/index.ts` y añádelo a la sección que corresponda. Si quieres que aparezca en `/menu`, agrégalo también a `src/plugins/menu.ts`.
+Luego impórtalo en `src/plugins/index.ts` y añádelo a la sección que corresponda. `/menu` se genera del registro: con `description`, `usage` y `category` el comando aparece solo. El test de integración falla si un alias ya lo usa otro plugin.
 
 ## Scripts
 
@@ -157,7 +157,7 @@ npm test            # pruebas unitarias
 ## Avisos
 
 - Los descargadores dependen de sitios de terceros que cambian sin aviso. Cuando uno deja de funcionar, se prueba el siguiente. Para algo estable monta un dev3-downloader propio.
-- La base de datos es un JSON (lowdb). Aguanta bien grupos medianos; para miles de usuarios activos conviene migrar a SQLite.
+- La base de datos es un archivo SQLite (`DATABASE_PATH`, por defecto `database.sqlite`). Si vienes de una versión anterior con `database.json`, se importa solo en el primer arranque y el JSON queda renombrado a `.migrated`. Haz copia de la carpeta antes de actualizar.
 - El puente de Telegram usa una cuenta de usuario (GramJS), no un bot de Telegram. Lee los términos de Telegram antes de usarlo.
 
 ## Licencia

@@ -59,12 +59,14 @@ test('runtime-stats cuenta reconexiones y errores y guarda las últimas 200 lín
   recordReconnectAttempt();
   recordReconnectAttempt();
   recordReconnect();
-  recordError(new Error('boom'), 'prueba');
+  recordError(new Error('boom'));
   assert.equal(runtimeStats.reconnectAttempts, 2);
   assert.equal(runtimeStats.reconnects, 1);
   assert.equal(runtimeStats.errors, 1);
   assert.equal(runtimeStats.lastError, 'boom');
-  assert.equal(getRecentLogLines().length, 1);
+  // recordError solo cuenta; la línea la pone el logger, si no saldría dos veces en /logs.
+  assert.equal(getRecentLogLines().length, 0);
+  recordLogLine('error', 'prueba', 'boom');
   assert.match(formatLogLine(getRecentLogLines()[0]), /error prueba boom$/);
 
   for (let i = 0; i < LOG_BUFFER_SIZE + 50; i++) recordLogLine('warn', 'bucle', `linea ${i}`);

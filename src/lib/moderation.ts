@@ -76,20 +76,20 @@ export function isForbiddenLink(text: string, mode: AntiLinkMode = 'wa'): boolea
   return mode === 'all' && ANY_URL.test(text);
 }
 
-/** Lee ChatSettings.antiLinkMode (campo pendiente en types/database.ts) con default 'wa'. */
+/** Modo del antilink con default 'wa'. */
 export function getAntiLinkMode(settings: ChatSettings): AntiLinkMode {
-  return (settings as ChatSettings & { antiLinkMode?: AntiLinkMode }).antiLinkMode === 'all' ? 'all' : 'wa';
+  return settings.antiLinkMode === 'all' ? 'all' : 'wa';
 }
 
-/** Lee ChatSettings.maxWarnings (campo pendiente en types/database.ts) con fallback a CONFIG. */
+/** Advertencias antes de expulsar, con fallback a CONFIG. */
 export function getMaxWarnings(settings: ChatSettings): number {
-  const value = (settings as ChatSettings & { maxWarnings?: number }).maxWarnings;
+  const value = settings.maxWarnings;
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : CONFIG.protection.maxWarnings;
 }
 
-/** Lee ChatSettings.mutedUntil (campo pendiente en types/database.ts): vencimiento por jid de los mutes temporales. */
+/** Vencimiento por jid de los mutes temporales (siempre un objeto). */
 export function getMutedUntil(settings: ChatSettings): Record<string, number> {
-  const until = (settings as ChatSettings & { mutedUntil?: Record<string, number> }).mutedUntil;
+  const until = settings.mutedUntil;
   return until && typeof until === 'object' ? until : {};
 }
 

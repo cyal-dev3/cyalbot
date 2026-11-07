@@ -33,12 +33,15 @@ export function recordReconnect(): void {
   runtimeStats.reconnects++;
 }
 
-export function recordError(error: unknown, scope = 'bot'): void {
+/**
+ * Cuenta un error y guarda el último. No escribe en el buffer de /logs: quien
+ * llama ya lo hace con log.error/log.warn (si no, aparecería dos veces).
+ */
+export function recordError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   runtimeStats.errors++;
   runtimeStats.lastErrorAt = Date.now();
   runtimeStats.lastError = message;
-  recordLogLine('error', scope, message);
 }
 
 export type BufferedLevel = 'warn' | 'error';

@@ -29,7 +29,7 @@ export function parseMuteDuration(text: string | undefined | null): number | nul
 }
 
 function saveMutedUntil(chat: string, until: Record<string, number>): void {
-  getDatabase().updateChatSettings(chat, { mutedUntil: until } as Partial<ChatSettings>);
+  getDatabase().updateChatSettings(chat, { mutedUntil: until });
 }
 
 /**

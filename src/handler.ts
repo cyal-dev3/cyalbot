@@ -237,8 +237,7 @@ export class MessageHandler {
     const expiredKeys = Object.keys(until).filter((u) => areJidsSameUser(u, userId));
     if (remaining.length === muted.length && expiredKeys.length === 0) return false;
     for (const key of expiredKeys) delete until[key];
-    // mutedUntil todavía no está en ChatSettings (lo añade datos en la ronda 2).
-    this.db.updateChatSettings(groupId, { mutedUsers: remaining, mutedUntil: until } as Partial<ChatSettings>);
+    this.db.updateChatSettings(groupId, { mutedUsers: remaining, mutedUntil: until });
     return remaining.length !== muted.length;
   }
 

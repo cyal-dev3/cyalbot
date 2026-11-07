@@ -24,14 +24,9 @@ export function parseToggle(text: string | undefined | null): ToggleState {
   return 'status';
 }
 
-/** Campos que todavía no existen en ChatSettings (los añade el agente de datos; ver handoff). */
-type PendingBooleanField = 'enabled';
-
-type BooleanField = {
+export type ToggleField = {
   [K in keyof ChatSettings]-?: NonNullable<ChatSettings[K]> extends boolean ? K : never;
 }[keyof ChatSettings];
-
-export type ToggleField = BooleanField | PendingBooleanField;
 
 export interface ToggleDefinition {
   command: string[];
@@ -117,9 +112,9 @@ export function createTogglePlugin(def: ToggleDefinition): PluginHandler {
         return;
       }
 
-      const updates: Record<string, unknown> = { [def.field]: enable };
+      const updates: Partial<ChatSettings> = { [def.field]: enable };
       if (enable) Object.assign(updates, def.onEnable?.(settings) ?? {});
-      db.updateChatSettings(m.chat, updates as Partial<ChatSettings>);
+      db.updateChatSettings(m.chat, updates);
       await m.reply((enable ? def.onText : def.offText).replace(/{p}/g, usedPrefix));
     },
   };
@@ -127,7 +122,7 @@ export function createTogglePlugin(def: ToggleDefinition): PluginHandler {
 
 function setAntiLinkMode(mode: AntiLinkMode) {
   return async (ctx: MessageContext): Promise<void> => {
-    getDatabase().updateChatSettings(ctx.m.chat, { antiLink: true, antiLinkMode: mode } as Partial<ChatSettings>);
+    getDatabase().updateChatSettings(ctx.m.chat, { antiLink: true, antiLinkMode: mode });
     await ctx.m.reply(mode === 'all'
       ? '✅ *Antilink activado en modo estricto*\n\n🔗 Se eliminará cualquier URL que envíe un usuario que no sea admin.'
       : '✅ *Antilink activado*\n\n🔗 Se eliminarán las invitaciones de WhatsApp y Telegram.');

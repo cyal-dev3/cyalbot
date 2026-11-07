@@ -54,9 +54,9 @@ Cambios:
 |---|---|---|
 | 4.1 | `db.getUser(m.sender)` se llamaba en cada mensaje recibido, antes de saber si era comando. Cada persona que escribía en cualquier grupo quedaba creada en `database.json` con el objeto completo del RPG (unos 60 campos). En grupos grandes el JSON crece sin uso real. | **Hecho**: solo se crea al ejecutar un comando o al consultarlo |
 | 4.2 | `uncaughtException` solo hace log y sigue. Con pm2/Docker es aceptable, pero un error en un `setInterval` puede dejar estado a medias. | Sin cambios; documentado |
-| 4.3 | La base de datos escribe el JSON completo cada 30 s si hubo cambios. lowdb usa escritura atómica (temp + rename), así que no corrompe, pero con miles de usuarios cada escritura son varios MB. | Pendiente: migrar a SQLite (`better-sqlite3`) si el bot crece |
+| 4.3 | La base de datos escribía el JSON completo cada 30 s si hubo cambios; con miles de usuarios cada escritura eran varios MB. | **Hecho** (nov. 2026): SQLite con `better-sqlite3`. Solo se escriben las filas que cambiaron; el JSON antiguo se importa una vez |
 | 4.4 | Los descargadores (1150 líneas) raspan sitios de terceros (snaptik, ssstik, snapinsta, savetwitter...). Se rompen a menudo y no hay forma de saber cuál falla sin leer logs. | Sin cambios de fondo. Recomendación: usar `DOWNLOADER_API_URL` con un Cobalt propio y tratar los scrapers como respaldo |
-| 4.5 | `tags` vs `category`, `help` vs `description`: dos convenciones mezcladas en los plugins. El menú (`menu.ts`, 199 comandos a mano) no se genera de los plugins, así que se desincroniza. | Pendiente: generar `/menu` desde el registro. `commandAliases()` y `listCommands()` ya existen para eso |
+| 4.5 | `tags` vs `category`, `help` vs `description`: dos convenciones mezcladas en los plugins. El menú (`menu.ts`, 199 comandos a mano) no se generaba de los plugins. | **Hecho**: `/menu` se genera del registro (`listCommands`), con alias sombreados ocultos y comandos más usados según `stats` |
 | 4.6 | Baileys 6.7 (rama legacy). La 7.0 lleva un año en release candidate con cambios incompatibles. | Sin cambios: 6.7.24 es la última estable. Revisar al salir 7.0 final |
 
 ## 5. Comparación con otros bots
@@ -99,27 +99,29 @@ Fuentes consultadas: [botmesh](https://github.com/andresayac/botmesh/wiki), [zai
 
 ## 7. Contenido a revisar por el dueño
 
-No se tocó la lógica de juego ni se eliminaron comandos. Hay algunos que conviene reconsiderar antes de poner el bot en grupos con desconocidos, porque pueden resultar ofensivos o dar problemas:
+**Retirados en noviembre de 2026 por decisión del dueño** (el código de la economía de esclavos y de la bomba sigue en `rpg-economia.ts` y `rpg-bombardear.ts` sin registrar, por si se quiere recuperar; `/gay`, `/kissall`, `/chingatumadre` y las frases `ctm` se borraron):
 
 - `/esclavizar`, `/esclavos`, `/liberar` (economía RPG).
 - `/chingatumadre` y la lista `ctm`, `/gay` (fun).
 - `/kissall`, `/bombardear`.
 
-Son decisiones de producto, no técnicas. Si se quitan, basta borrar las entradas de `plugins/index.ts` y `menu.ts`.
+Nota: `escudo_antibombas` sigue en la tienda aunque ya no haya bombas; `/pagardeuda` y `/deuda` (IMSS) se conservan porque los usan atacar, duelo y dungeon.
 
 ## 8. Roadmap sugerido
 
 Orden de valor por esfuerzo:
 
 1. **Probar la IA en vivo** con una API key, ajustar `AI_PERSONA` y los límites, y mirar `/iastats` tras un día de uso real.
-2. **Generar `/menu` desde el registro** de plugins y unificar `help`/`description`. Elimina la lista manual de 199 comandos.
-3. **Cooldown en `/bug` y `/feat`** (uno por usuario cada 10 minutos) y etiquetado del issue con el número del remitente truncado.
-4. **Más herramientas para la IA** que usen lo que el bot ya sabe: `tienda`, `ranking`, `clima` ya existe. Cada herramienta son 15 líneas en `lib/ai.ts`.
+2. ~~Generar `/menu` desde el registro~~ Hecho.
+3. ~~Cooldown en `/bug` y `/feat`~~ Hecho (3 por usuario y hora, cupo global diario).
+4. **Más herramientas para la IA** que usen lo que el bot ya sabe: `tienda`, `ranking`; `clima`, `hora`, `wiki` y `perfil_rpg` ya existen. Cada herramienta son 15 líneas en `lib/ai.ts`.
 5. **Transcripción de notas de voz** con `/ia` sobre un audio (Whisper local o servicio).
-6. **Migrar `console.log` de plugins** al logger, archivo por archivo, al tocar cada uno.
-7. **SQLite** cuando `database.json` pase de unos pocos MB.
-8. **Reemplazar scrapers** por una instancia propia de Cobalt y dejar los scrapers como último recurso.
+6. ~~Migrar `console.log` de plugins al logger~~ Hecho (solo `main.ts` imprime directo, para el QR y el código de vinculación).
+7. ~~SQLite~~ Hecho.
+8. **Scrapers**: ya existe el servicio propio `downloader/` (yt-dlp); los scrapers de `downloaders.ts` quedan como respaldo.
 9. **Baileys 7** cuando salga la versión final.
+10. **Torneo RPG** (`rpg-torneo.ts`): inscripción, emparejamientos con `simulateFight`, pot al campeón. Diseñado en `docs/dev/handoff-rpg-combate.md`, no implementado.
+11. **`protobufjs` 6.8.8** dentro de `libsignal` (Baileys): sin arreglo hasta que Baileys actualice.
 
 ## 9. Resumen de archivos
 
@@ -130,3 +132,18 @@ Reescritos: `src/index.ts`, `src/main.ts`, `src/config.ts`, `src/plugins/index.t
 Modificados: `src/handler.ts` (owner, antibad, usuario perezoso, enganche de IA, logger), `src/types/database.ts` (`aiChat`, `aiUsage`), `src/plugins/menu.ts` (categoría IA), `src/plugins/tools-github.ts`, `src/plugins/tools-clima.ts`, `src/lib/downloaders.ts`, `package.json`, `.gitignore`, y cabeceras de 81 archivos.
 
 Eliminado: `src/lidsresolve.json`.
+
+## 10. Segunda pasada (noviembre de 2026): integración y despliegue
+
+Tras la ronda de agentes por áreas (ver `docs/dev/handoff-*.md`) quedaba la integración final. Lo que se hizo:
+
+- `plugins/index.ts` registra todo: casino y minijuegos (con sus contextos sin prefijo), social, 13 herramientas nuevas, `admin-bridge`, RPG de progresión (pescar, cazar, explorar, eventos) y el área de combate completa vía `registerCombatContexts` (duelo, dungeon, forja, jefe mundial, owner). Cero colisiones de alias; `tests/integracion-registry.test.ts` lo exige.
+- `index.ts`: `restoreCasino` al arrancar (devuelve apuestas en custodia tras un reinicio), `stopDungeonCleanup` y `stopCalcWorker` al apagar. `/bot on|off` vuelve a ser el interruptor del grupo; la IA responde a `ia`, `ai`, `claude`, `pregunta`.
+- Base de datos en SQLite (punto 4.3). `DATABASE_PATH` por defecto `database.sqlite`; un `.json` antiguo se importa solo.
+- `/calc`: tope de 250 000 elementos en matrices y rangos. Una matriz de 4000x4000 agotaba el heap del hilo en una sola asignación y V8 abortaba el proceso entero, no solo el worker.
+- `stickerToVideo` usa `-fps_mode` (ffmpeg 8+ eliminó `-vsync`) con respaldo para ffmpeg 4.4.
+- `ChatSettings` tipa `enabled`, `antiLinkMode`, `maxWarnings`, `mutedUntil`, `adminAlerts` (antes se leían con casts en seis archivos).
+- El log de mensajes entrantes solo pide el nombre del grupo si `LOG_LEVEL=debug`. `recordError` ya no duplica la línea en `/logs`.
+- Comandos retirados: ver sección 7.
+
+Estado: `npm run typecheck`, `npm test` (387 pruebas) y `npm run build` pasan. Pendiente de probar en vivo: la IA con API key real, el puente de Telegram y la primera arrancada con un `database.json` de producción (hacer copia antes).

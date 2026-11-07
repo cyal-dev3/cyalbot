@@ -87,9 +87,9 @@ export async function resolveGroupRoles(conn: WASocket, groupId: string, sender:
   };
 }
 
-/** Lee ChatSettings.adminAlerts (campo pendiente en types/database.ts) con default true. */
+/** Avisos de promote/demote, encendidos salvo que el grupo los apague. */
 function adminAlertsEnabled(settings: ChatSettings): boolean {
-  return (settings as ChatSettings & { adminAlerts?: boolean }).adminAlerts !== false;
+  return settings.adminAlerts !== false;
 }
 
 interface ParticipantsUpdate {

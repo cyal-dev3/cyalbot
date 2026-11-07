@@ -211,7 +211,7 @@ export const setWarnsPlugin: PluginHandler = {
       return;
     }
 
-    db.updateChatSettings(m.chat, { maxWarnings: requested } as Partial<ChatSettings>);
+    db.updateChatSettings(m.chat, { maxWarnings: requested });
     await m.reply(`✅ A partir de ahora se expulsa a la advertencia número *${requested}*.`);
   },
 };

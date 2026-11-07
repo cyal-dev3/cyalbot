@@ -25,7 +25,7 @@ import { startCleanupScheduler, stopCleanupScheduler } from './lib/cleanup-sched
 import { registerReactionHandler } from './lib/reaction-handler.js';
 import { rememberMessage, handleMessageUpdates } from './lib/anti-delete.js';
 import { handleParticipantsUpdate, handleGroupsUpdate, getGroupName } from './lib/group-events.js';
-import { createLogger } from './lib/logger.js';
+import { createLogger, isLevelEnabled } from './lib/logger.js';
 import { initAI } from './lib/ai.js';
 import { unwrapMessage, getText } from './lib/wa-message.js';
 import { stopAll as stopScheduledTasks } from './lib/scheduler.js';
@@ -45,6 +45,8 @@ const RECONNECT_BACKOFF_MS = [3000, 6000, 12000, 24000, 30000];
 const MAX_CONSECUTIVE_FAILURES = 10;
 
 async function logIncoming(conn: WASocket, message: proto.IWebMessageInfo): Promise<void> {
+  // Solo en debug: el nombre del grupo puede implicar una consulta de metadata por mensaje.
+  if (!isLevelEnabled('debug')) return;
   const key = message.key;
   if (!key?.remoteJid) return;
   const text = getText(unwrapMessage(message));
@@ -96,7 +98,7 @@ function scheduleReconnect(): void {
     try {
       await connectBot();
     } catch (error) {
-      recordError(error, 'conexion');
+      recordError(error);
       log.error('error al reconectar:', error);
       isReconnecting = false;
       scheduleReconnect();
@@ -145,7 +147,10 @@ async function connectBot(): Promise<WASocket> {
   conn.ev.on('connection.update', ({ connection, lastDisconnect }) => {
     if (connection === 'close') {
       pauseMessageQueue();
-      if (lastDisconnect?.error) recordError(lastDisconnect.error, 'conexion');
+      if (lastDisconnect?.error) {
+        recordError(lastDisconnect.error);
+        log.warn('conexión cerrada:', lastDisconnect.error.message);
+      }
       if (shouldReconnect(lastDisconnect?.error)) {
         scheduleReconnect();
       } else {

@@ -53,6 +53,16 @@ export interface ChatSettings {
   notes?: Record<string, ChatNote>;
   /** Anunciar cumpleaños a las 09:00 en este grupo (/cumpleanios on|off) */
   birthdayAnnounce?: boolean;
+  /** Bot encendido en el grupo (/bot on|off). Ausente = encendido. */
+  enabled?: boolean;
+  /** 'wa' borra solo enlaces de WhatsApp; 'all' cualquier URL. Ausente = 'wa'. */
+  antiLinkMode?: 'wa' | 'all';
+  /** Advertencias antes de expulsar (/setwarns). Ausente = CONFIG.protection.maxWarnings. */
+  maxWarnings?: number;
+  /** Vencimiento (ms epoch) de los mutes temporales por jid (/tempmute). */
+  mutedUntil?: Record<string, number>;
+  /** Avisar en el grupo al promover/degradar admins. Ausente = true. */
+  adminAlerts?: boolean;
 }
 
 /** Nota guardada en un chat con /nota guardar */
