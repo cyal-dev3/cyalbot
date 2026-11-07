@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HOST="${1:-ebon}"
-REMOTE_DIR="${REMOTE_DIR:-/opt/cyalbot}"
+REMOTE_DIR="${REMOTE_DIR:-/home/cyalbot}"
 REV="$(git rev-parse --short HEAD)"
 
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
