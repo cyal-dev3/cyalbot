@@ -44,8 +44,34 @@ export function cancelPairingTimeout(): void {
   }
 }
 
+/**
+ * Hay sesión solo si el emparejamiento terminó (creds.registered). Pedir un
+ * código o mostrar un QR ya escribe creds.json; si el usuario no completa la
+ * vinculación, ese archivo a medias no debe tomarse por una sesión válida.
+ */
 function hasExistingSession(): boolean {
-  return fs.existsSync(path.join(CONFIG.authFolder, 'creds.json'));
+  const file = path.join(CONFIG.authFolder, 'creds.json');
+  if (!fs.existsSync(file)) return false;
+  try {
+    return (JSON.parse(fs.readFileSync(file, 'utf-8')) as { registered?: boolean }).registered === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Borra una sesión que nunca llegó a registrarse para que el siguiente arranque
+ * pida un código o QR nuevo. Devuelve true si borró algo. Una sesión registrada
+ * no se toca: cerrarla es decisión del dueño.
+ */
+export function discardUnregisteredSession(): boolean {
+  if (hasExistingSession() || !fs.existsSync(CONFIG.authFolder)) return false;
+  let removed = false;
+  for (const entry of fs.readdirSync(CONFIG.authFolder)) {
+    fs.rmSync(path.join(CONFIG.authFolder, entry), { recursive: true, force: true });
+    removed = true;
+  }
+  return removed;
 }
 
 function ask(prompt: string): Promise<string> {

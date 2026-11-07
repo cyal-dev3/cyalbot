@@ -5,7 +5,7 @@
 
 import 'dotenv/config';
 import type { WASocket, proto } from 'baileys';
-import { startBot, shouldReconnect, cancelPairingTimeout } from './main.js';
+import { startBot, shouldReconnect, cancelPairingTimeout, discardUnregisteredSession } from './main.js';
 import { MessageHandler } from './handler.js';
 import { initDatabase, type Database } from './lib/database.js';
 import { loadPlugins } from './plugins/index.js';
@@ -154,7 +154,12 @@ async function connectBot(): Promise<WASocket> {
       if (shouldReconnect(lastDisconnect?.error)) {
         scheduleReconnect();
       } else {
-        log.error(`sesión cerrada de forma permanente. Borra la carpeta ${CONFIG.authFolder} y vuelve a vincular.`);
+        if (discardUnregisteredSession()) {
+          // Emparejamiento que no se completó: al reiniciar se pide un código/QR nuevo.
+          log.warn('la vinculación no se completó; sesión parcial descartada, al reiniciar se pedirá otro código');
+        } else {
+          log.error(`sesión cerrada de forma permanente. Borra la carpeta ${CONFIG.authFolder} y vuelve a vincular.`);
+        }
         void gracefulShutdown('sesión cerrada', 1);
       }
       return;
